@@ -1,0 +1,11 @@
+node_modules/
+dist/
+odd/
+
+# Defensive: a real config must never live in the repository.
+# The real configuration lives OUTSIDE the repo at
+# ~/.config/ssff-mcp/config.json and contains secrets in plain text.
+# NEVER copy it into this directory.
+config.json
+
+.env

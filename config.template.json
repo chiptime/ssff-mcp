@@ -1,0 +1,12 @@
+{
+  "environments": {
+    "<environment-alias>": {
+      "baseUrl": "https://<tenant-api-host>",
+      "auth": {
+        "type": "basic",
+        "username": "<api-username>",
+        "password": "<api-password>"
+      }
+    }
+  }
+}
