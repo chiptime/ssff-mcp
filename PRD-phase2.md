@@ -236,7 +236,7 @@ V1 automatizada (suite negativa/positiva extendida) es la base, misma condición
 ## OPEN QUESTIONS
 
 1. **Q-P2-1** — Verificación empírica del techo 180 (R9 es documentación web; un probe real de `$batch` es un POST al tenant y se ejecutará en implementación con lote GET-only de prueba).
-2. **Q-P2-2** — Verificación **live** de OAuth con los datos reales del maintainer (registro existente del cliente OAuth): primer flujo idp→token completo desde ssff-mcp. El nivel de flujo ya está verificado (E2); falta la verización en vivo desde este producto. Gate bloqueante de FR-32; hereda Q-6 de PRD.md.
+2. **Q-P2-2** — ~~Verificación live de OAuth~~ **CERRADA (2026-10-01)**: flujo idp→token→lectura con Bearer verificado en vivo desde ssff-mcp contra `api2.successfactors.eu` (entorno PROD, `query_entity User` devuelve registros). Hallazgos operativos: (a) `private_key` se envía **verbatim**, tal como la exporta/almacena el maintainer (valor compuesto `base64(clave###compañía)/base64(...)`); decodificarlo o retranscribirlo rompe la clave; (b) SAP responde los errores de `/oauth/*` con `{errorHttpCode, errorMessage}`, no con RFC 6749; (c) `/oauth/idp` responde 500 "Invalid X.509 private key" ante clave inválida y el token endpoint 401 "Unable to verify the signature" ante clave que no es la pareja del `client_id`.
 3. **Q-P2-3** — Compatibilidad efectiva `odata-batch` ↔ formato `$batch` de este tenant (la librería nació de uso real; validación en integración).
 
 ## ASSUMPTIONS

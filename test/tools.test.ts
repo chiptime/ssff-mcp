@@ -422,6 +422,22 @@ test("list_environments reports the oauth auth type", async () => {
   });
 });
 
+test("oauth failures are not masked as METADATA_UNAVAILABLE", async () => {
+  const configPath = await writeConfigFile(oauthConfigJson("oa-fail"), { mode: 0o600 });
+  const { fetch } = recordingFetch((url) =>
+    url.endsWith("/oauth/idp")
+      ? jsonResponse({ errorHttpCode: "500", errorMessage: "Invalid X.509 private key." }, 500)
+      : jsonResponse({}),
+  );
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const result = await callTool(client, "query_entity", { environment: "oa-fail", entityPath: "User" });
+    const payload = errorPayload(result);
+    assert.equal(payload.code, "OAUTH_ASSERTION_ERROR");
+    assert.match(payload.message, /Invalid X\.509 private key/);
+    assert.doesNotMatch(payload.message, /KEYMAT|api-key-1/);
+  });
+});
+
 test("query_entity works end to end for an oauth environment", async () => {
   const configPath = await writeConfigFile(oauthConfigJson("oa-query"), { mode: 0o600 });
   const { fetch, requests } = recordingFetch(oauthSfResponder(feed([{ userId: "1001" }])));

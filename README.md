@@ -56,7 +56,7 @@ SAML signing, no extra dependencies):
 | `auth.clientId` | OAuth2 client **API key** generated when the client was registered in SF Admin Center (Manage OAuth2 Client Applications). |
 | `auth.companyId` | Tenant company id; sent as `company_id` to the token endpoint. |
 | `auth.userId` | Technical user id **WITHOUT** the `@companyId` suffix (configurations containing `@` are rejected with a hint). |
-| `auth.privateKey` | RSA private key exported from SF Admin, inline in plain text — see security disclosures. |
+| `auth.privateKey` | The private key value **exactly as exported/stored** (a single line; it may be a composite value such as `<base64>/<base64>`). Paste it **verbatim: never decode, re-encode or retype it** (copy it programmatically if it is long). Inline plain text — see security disclosures. |
 | `auth.tokenUrl` | Fixed token endpoint, e.g. `https://<host>/oauth/token`. Must be `https`. Must match exactly what SAP expects (SAP embeds it in the assertion audience). |
 | `auth.idpUrl` | Optional. SAP IdP helper endpoint; defaults to the `tokenUrl` origin + `/oauth/idp`. |
 

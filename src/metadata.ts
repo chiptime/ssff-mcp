@@ -108,9 +108,13 @@ export class MetadataService {
       });
       xml = result.body;
     } catch (error) {
-      if (error instanceof SanitizedError && error.code === "HTTP_ERROR") {
-        // The service answered with an HTTP error: keep the richer sanitized
-        // error (e.g. 401 invalid credentials) instead of masking it.
+      if (
+        error instanceof SanitizedError &&
+        (error.code === "HTTP_ERROR" || error.code === "OAUTH_ASSERTION_ERROR" || error.code === "OAUTH_TOKEN_ERROR")
+      ) {
+        // The service (or its OAuth endpoints) answered with an error: keep the
+        // richer sanitized error (e.g. 401 invalid credentials, rejected key)
+        // instead of masking it.
         throw error;
       }
       // Fetch-level failures (network, timeout, blocked redirect) map to
