@@ -224,3 +224,27 @@ test("token endpoint 200 with a JSON payload lacking access_token is rejected", 
     },
   );
 });
+
+test("SAP errorHttpCode/errorMessage bodies are surfaced sanitized", async () => {
+  const { fetch } = makePostFetch(
+    () =>
+      new FakeResponse(
+        500,
+        JSON.stringify({ errorHttpCode: "500", errorMessage: "Invalid X.509 private key. See https://help.sap.com/x" }),
+      ),
+  );
+  await assert.rejects(
+    () =>
+      getAuthorizationHeader("env-10", oauthConfig(), {
+        fetchImpl: fetch,
+        sleep: async () => {},
+      }),
+    (error: unknown) => {
+      assert.ok(isSanitizedError(error));
+      assert.match(error.code, /OAUTH_(ASSERTION|TOKEN)_ERROR/);
+      assert.match(error.message, /Invalid X\.509 private key/);
+      assert.doesNotMatch(error.message, /https:\/\//);
+      return true;
+    },
+  );
+});

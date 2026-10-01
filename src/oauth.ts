@@ -163,16 +163,21 @@ async function postForm(
   }
 }
 
-/** Extract `error`/`error_description` from an OAuth JSON error body, sanitized. */
+/** Extract error detail from an OAuth JSON error body (RFC 6749 shape or SAP's
+ * `errorHttpCode`/`errorMessage` shape), sanitized. */
 function oauthErrorDetail(body: string): string {
   try {
     const parsed: unknown = JSON.parse(body);
-    if (typeof parsed === "object" && parsed !== null && "error" in parsed) {
-      const e = parsed as { error?: unknown; error_description?: unknown };
+    if (typeof parsed === "object" && parsed !== null) {
+      const e = parsed as { error?: unknown; error_description?: unknown; errorMessage?: unknown };
       const parts: string[] = [];
       if (typeof e.error === "string" && e.error.length > 0) parts.push(e.error);
       if (typeof e.error_description === "string" && e.error_description.length > 0) {
         parts.push(redactUrls(e.error_description));
+      }
+      // SAP /oauth endpoints answer with {"errorHttpCode": "...", "errorMessage": "..."}.
+      if (typeof e.errorMessage === "string" && e.errorMessage.length > 0) {
+        parts.push(redactUrls(e.errorMessage));
       }
       if (parts.length > 0) return sanitizeMessage(parts.join(": "), 300);
     }
