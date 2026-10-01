@@ -679,6 +679,138 @@ test("a cursor from a json call is rejected on an otherwise identical xml call",
   });
 });
 
+// --- Entity allowlist (FR-28, D-30, DS-P2-03) ----------------------------------
+
+function allowlistConfigJson(entries: Array<Record<string, unknown>>): string {
+  return JSON.stringify({
+    environments: {
+      "tenant-a": {
+        baseUrl: "https://tenant-a.example.com",
+        auth: { type: "basic", username: "apiuser@tenantA", password: "secret-password-a" },
+      },
+    },
+    entityAllowlist: entries,
+  });
+}
+
+test("query_entity succeeds for an entity listed in the allowlist", async () => {
+  const configPath = await writeConfigFile(allowlistConfigJson([{ entity: "User" }]), { mode: 0o600 });
+  const { fetch, requests } = recordingFetch(standardSfResponder(feed([{ userId: "u1" }])));
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const result = await callTool(client, "query_entity", { environment: "tenant-a", entityPath: "User" });
+    assert.equal(result.isError, undefined);
+    const structured = result.structuredContent as { recordCount: number; records: unknown[] };
+    assert.equal(structured.recordCount, 1);
+    const dataRequests = requests.filter((r) => !r.url.includes("$metadata"));
+    assert.equal(dataRequests.length, 1);
+  });
+});
+
+test("entity absent from the allowlist yields ENTITY_NOT_ALLOWED with zero fetches", async () => {
+  const configPath = await writeConfigFile(allowlistConfigJson([{ entity: "FOOBar" }]), { mode: 0o600 });
+  const { fetch, requests } = recordingFetch(standardSfResponder(feed([])));
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const result = await callTool(client, "query_entity", { environment: "tenant-a", entityPath: "User" });
+    const payload = errorPayload(result);
+    assert.equal(payload.code, "ENTITY_NOT_ALLOWED");
+    assert.equal(payload.message, "the entity is not permitted by the configured entityAllowlist");
+    // Generic message: the path/entity is never echoed.
+    assert.ok(!payload.message.includes("User"));
+    // Denied BEFORE metadata classification: not even $metadata was fetched.
+    assert.equal(requests.length, 0);
+  });
+});
+
+test("allowlist matching is case-sensitive (User listed, user denied)", async () => {
+  const configPath = await writeConfigFile(allowlistConfigJson([{ entity: "User" }]), { mode: 0o600 });
+  const { fetch, requests } = recordingFetch(standardSfResponder(feed([])));
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const result = await callTool(client, "query_entity", { environment: "tenant-a", entityPath: "user" });
+    assert.equal(errorPayload(result).code, "ENTITY_NOT_ALLOWED");
+    assert.equal(requests.length, 0);
+  });
+});
+
+test("a v4-only allowlist entry is denied in this phase (DS-P2-03)", async () => {
+  const configPath = await writeConfigFile(
+    allowlistConfigJson([{ entity: "User", protocols: ["v4"] }]),
+    { mode: 0o600 },
+  );
+  const { fetch, requests } = recordingFetch(standardSfResponder(feed([])));
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const result = await callTool(client, "query_entity", { environment: "tenant-a", entityPath: "User" });
+    assert.equal(errorPayload(result).code, "ENTITY_NOT_ALLOWED");
+    assert.equal(requests.length, 0);
+  });
+});
+
+test("an entry restricted to [\"v2\"] allows the entity", async () => {
+  const configPath = await writeConfigFile(
+    allowlistConfigJson([{ entity: "User", protocols: ["v2"] }]),
+    { mode: 0o600 },
+  );
+  const { fetch, requests } = recordingFetch(standardSfResponder(feed([{ userId: "u1" }])));
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const result = await callTool(client, "query_entity", { environment: "tenant-a", entityPath: "User" });
+    assert.equal(result.isError, undefined);
+    assert.equal(requests.filter((r) => !r.url.includes("$metadata")).length, 1);
+  });
+});
+
+test("navigation after an allowed first segment is not re-checked against the allowlist", async () => {
+  // FOOBar is NOT in the allowlist, but the check only covers the FIRST
+  // segment's entity set (D-30: navigation may only start from a listed entity).
+  const configPath = await writeConfigFile(allowlistConfigJson([{ entity: "User" }]), { mode: 0o600 });
+  const { fetch, requests } = recordingFetch(standardSfResponder(feed([{ id: "x1" }])));
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const result = await callTool(client, "query_entity", {
+      environment: "tenant-a",
+      entityPath: "User('u1')/FOOBar",
+    });
+    assert.equal(result.isError, undefined);
+    const structured = result.structuredContent as { recordCount: number };
+    assert.equal(structured.recordCount, 1);
+    const dataUrl = new URL(requests.filter((r) => !r.url.includes("$metadata"))[0]!.url);
+    assert.equal(dataUrl.pathname, "/odata/v2/User('u1')/FOOBar");
+  });
+});
+
+test("an empty allowlist array is a configured deny-all for query_entity", async () => {
+  const configPath = await writeConfigFile(allowlistConfigJson([]), { mode: 0o600 });
+  const { fetch, requests } = recordingFetch(standardSfResponder(feed([])));
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    for (const entityPath of ["User", "FOOBar"]) {
+      const result = await callTool(client, "query_entity", { environment: "tenant-a", entityPath });
+      assert.equal(errorPayload(result).code, "ENTITY_NOT_ALLOWED", entityPath);
+    }
+    assert.equal(requests.length, 0);
+  });
+});
+
+test("get_metadata is never filtered by the allowlist, even a deny-all one", async () => {
+  const configPath = await writeConfigFile(allowlistConfigJson([]), { mode: 0o600 });
+  const { fetch, requests } = recordingFetch((url) => xmlResponse(SAMPLE_METADATA_XML));
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const result = await callTool(client, "get_metadata", { environment: "tenant-a" });
+    assert.equal(result.isError, undefined);
+    assert.equal((result.content[0] as { text: string }).text, SAMPLE_METADATA_XML);
+    assert.equal(requests.length, 1);
+    assert.ok(requests[0]!.url.endsWith("/$metadata"));
+  });
+});
+
+test("without an allowlist configured, queries are unrestricted as before", async () => {
+  const configPath = await writeStandardConfig();
+  const { fetch, requests } = recordingFetch(standardSfResponder(feed([{ id: "f1" }])));
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const result = await callTool(client, "query_entity", { environment: "tenant-a", entityPath: "FOOBar" });
+    assert.equal(result.isError, undefined);
+    const structured = result.structuredContent as { recordCount: number };
+    assert.equal(structured.recordCount, 1);
+    assert.equal(requests.filter((r) => !r.url.includes("$metadata")).length, 1);
+  });
+});
+
 // --- OAuth environments (FR-32/FR-33) ----------------------------------------
 
 const OAUTH_ASSERTION = "PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0idXRmLTgiPz48IZZTIW9u";

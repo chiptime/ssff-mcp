@@ -15,7 +15,10 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
+import type { AllowlistEntry } from "./allowlist.js";
 import { SanitizedError } from "./errors.js";
+
+export type { AllowlistEntry, AllowlistProtocol } from "./allowlist.js";
 
 /** Literal tilde form used in every user-facing message. */
 export const CONFIG_TILDE_PATH = "~/.config/ssff-mcp/config.json";
@@ -54,6 +57,12 @@ export interface EnvironmentConfig {
 
 export interface SsffConfig {
   environments: Record<string, EnvironmentConfig>;
+  /**
+   * Entity allowlist (FR-28/D-30). The key is ABSENT when no allowlist is
+   * configured (no restriction). An empty array IS a configured allowlist
+   * and means deny-all (fail-closed).
+   */
+  entityAllowlist?: AllowlistEntry[];
 }
 
 const basicAuthSchema = z
@@ -95,11 +104,47 @@ const aliasSchema = z.string().refine((value) => value.trim().length > 0, {
   message: "environment alias must be a non-empty string",
 });
 
+// OData entity set name (case-sensitive exact match; no predicates here).
+const ENTITY_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+const allowlistProtocolsSchema = z
+  .array(z.enum(["v2", "v4"]))
+  .min(1, "entityAllowlist protocols must be a non-empty array")
+  .refine((protocols) => new Set(protocols).size === protocols.length, {
+    message: "entityAllowlist protocols must not contain duplicates",
+  });
+
+const allowlistEntrySchema = z
+  .object({
+    entity: z.string().regex(ENTITY_NAME_PATTERN, {
+      message: "entityAllowlist entity must be an OData entity set name matching ^[A-Za-z_][A-Za-z0-9_]*$",
+    }),
+    protocols: allowlistProtocolsSchema.optional(),
+  })
+  .strict();
+
+// Duplicate entities are ambiguous (which protocols apply?) => rejected.
+const entityAllowlistSchema = z.array(allowlistEntrySchema).superRefine((entries, ctx) => {
+  const seen = new Set<string>();
+  for (const [index, entry] of entries.entries()) {
+    if (seen.has(entry.entity)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [index, "entity"],
+        message: `entityAllowlist contains a duplicate entity entry for "${entry.entity}"`,
+      });
+    }
+    seen.add(entry.entity);
+  }
+});
+
 const configSchema = z
   .object({
     environments: z.record(aliasSchema, environmentSchema),
     // Implicit environment selection is forbidden: null/absent only.
     defaultEnvironment: z.null().optional(),
+    // Optional entity allowlist (FR-28/D-30): absent => no restriction.
+    entityAllowlist: entityAllowlistSchema.optional(),
   })
   .strict();
 
@@ -243,7 +288,12 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<SsffC
           : materializeOAuthAuth(env.auth),
     };
   }
-  return { environments };
+  // entityAllowlist stays absent (key not set) when not configured; an empty
+  // array is a configured deny-all allowlist and is preserved as-is.
+  if (result.data.entityAllowlist === undefined) {
+    return { environments };
+  }
+  return { environments, entityAllowlist: result.data.entityAllowlist };
 }
 
 /** Collapse whitespace and clamp length of zod issue text (bounded, no body echo). */

@@ -14,6 +14,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { isEntityAllowed, type AllowlistEntry } from "./allowlist.js";
 import { loadConfig, type EnvironmentConfig } from "./config.js";
 import { CURSOR_VERSION, defaultCursorCodec } from "./cursor.js";
 import { SanitizedError, toSanitizedError } from "./errors.js";
@@ -207,9 +208,18 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
   const metadataService = new MetadataService({ fetchImpl: deps.fetchImpl, now: deps.now });
   const fetchImpl = deps.fetchImpl;
 
-  async function loadFreshConfig(): Promise<Record<string, EnvironmentConfig>> {
+  /** Freshly loaded config per tool call: environments + optional allowlist. */
+  interface FreshConfig {
+    environments: Record<string, EnvironmentConfig>;
+    entityAllowlist?: AllowlistEntry[];
+  }
+
+  async function loadFreshConfig(): Promise<FreshConfig> {
     const config = await loadConfig({ configPath: deps.configPath, onWarning: deps.onConfigWarning });
-    return config.environments;
+    if (config.entityAllowlist === undefined) {
+      return { environments: config.environments };
+    }
+    return { environments: config.environments, entityAllowlist: config.entityAllowlist };
   }
 
   async function executeTool(
@@ -262,7 +272,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     },
     async () =>
       await executeTool("list_environments", undefined, async () => {
-        const environments = await loadFreshConfig();
+        const { environments } = await loadFreshConfig();
         const list = Object.keys(environments)
           .sort()
           .map((alias) => ({ alias, authType: environments[alias]!.auth.type }));
@@ -280,7 +290,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     },
     async (args) =>
       await executeTool("get_metadata", args.environment, async () => {
-        const environments = await loadFreshConfig();
+        const { environments } = await loadFreshConfig();
         const { alias, env } = resolveEnvironment(environments, args.environment);
         // Always fresh from the source; the metadata cache is never used here.
         const result = await dispatchGet(envTargetFor(env, alias), "$metadata", {
@@ -305,7 +315,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     },
     async (args) =>
       await executeTool("query_entity", args.environment, async () => {
-        const environments = await loadFreshConfig();
+        const { environments, entityAllowlist } = await loadFreshConfig();
         const { alias, env } = resolveEnvironment(environments, args.environment);
 
         const output = args.output ?? "json";
@@ -321,6 +331,19 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
 
         // Validate shape and bounds BEFORE any dispatch.
         const validatedPath = validateEntityPath(args.entityPath);
+
+        // Allowlist enforcement (FR-28/D-30): checked after path validation
+        // but BEFORE any network call or metadata classification. Only the
+        // FIRST segment's entity set is checked; navigation segments after
+        // an allowed first segment are not re-checked. v2 is the only active
+        // protocol in this phase, so entries restricted to ["v4"] are denied
+        // (DS-P2-03). Generic message: the path is never echoed.
+        if (!isEntityAllowed(entityAllowlist, validatedPath.firstSegmentName)) {
+          throw new SanitizedError(
+            "ENTITY_NOT_ALLOWED",
+            "the entity is not permitted by the configured entityAllowlist",
+          );
+        }
 
         // Cursor verification is pre-dispatch by construction: signature plus
         // binding against the CURRENT call (same env, path, canonical options).

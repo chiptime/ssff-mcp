@@ -244,3 +244,84 @@ test("missing oauth fields are rejected", async () => {
   );
   await rejectsCode(() => loadConfig({ configPath: filePath }), "CONFIG_INVALID");
 });
+
+// --- entityAllowlist (FR-28, D-30 with D-15 semantics) -------------------------
+
+function withAllowlist(entries: unknown): string {
+  return JSON.stringify({
+    environments: { a: { baseUrl: "https://a.example.com", auth: { type: "basic", username: "u", password: "p" } } },
+    entityAllowlist: entries,
+  });
+}
+
+test("a valid entityAllowlist parses with entries preserved", async () => {
+  const filePath = await writeConfigRaw(
+    withAllowlist([
+      { entity: "User" },
+      { entity: "JobRequisition", protocols: ["v2"] },
+      { entity: "Foobar", protocols: ["v2", "v4"] },
+    ]),
+  );
+  const config = await loadConfig({ configPath: filePath });
+  assert.deepEqual(config.entityAllowlist, [
+    { entity: "User" },
+    { entity: "JobRequisition", protocols: ["v2"] },
+    { entity: "Foobar", protocols: ["v2", "v4"] },
+  ]);
+});
+
+test("entityAllowlist absent leaves config.entityAllowlist undefined", async () => {
+  const filePath = await writeConfigRaw(JSON.stringify({
+    environments: { a: { baseUrl: "https://a.example.com", auth: { type: "basic", username: "u", password: "p" } } },
+  }));
+  const config = await loadConfig({ configPath: filePath });
+  assert.equal("entityAllowlist" in config, false);
+  assert.equal(config.entityAllowlist, undefined);
+});
+
+test("an empty entityAllowlist parses as a configured deny-all", async () => {
+  const filePath = await writeConfigRaw(withAllowlist([]));
+  const config = await loadConfig({ configPath: filePath });
+  assert.deepEqual(config.entityAllowlist, []);
+});
+
+test("invalid entity names are rejected", async () => {
+  for (const entity of ["", "9User", "User Peterson", "User-X", "User(X)"]) {
+    const filePath = await writeConfigRaw(withAllowlist([{ entity }]));
+    await rejectsCode(() => loadConfig({ configPath: filePath }), "CONFIG_INVALID");
+  }
+});
+
+test("an empty protocols array is rejected", async () => {
+  const filePath = await writeConfigRaw(withAllowlist([{ entity: "User", protocols: [] }]));
+  await rejectsCode(() => loadConfig({ configPath: filePath }), "CONFIG_INVALID");
+});
+
+test("duplicate protocols in one entry are rejected", async () => {
+  const filePath = await writeConfigRaw(withAllowlist([{ entity: "User", protocols: ["v2", "v2"] }]));
+  await rejectsCode(() => loadConfig({ configPath: filePath }), "CONFIG_INVALID");
+});
+
+test("unknown protocols are rejected", async () => {
+  const filePath = await writeConfigRaw(withAllowlist([{ entity: "User", protocols: ["v3"] }]));
+  await rejectsCode(() => loadConfig({ configPath: filePath }), "CONFIG_INVALID");
+});
+
+test("duplicate entities are rejected as ambiguous", async () => {
+  const filePath = await writeConfigRaw(
+    withAllowlist([{ entity: "User" }, { entity: "JobRequisition" }, { entity: "User", protocols: ["v2"] }]),
+  );
+  await assert.rejects(
+    () => loadConfig({ configPath: filePath }),
+    (error: unknown) => {
+      expectSanitized(error, "CONFIG_INVALID");
+      assert.match((error as { message: string }).message, /duplicate/);
+      return true;
+    },
+  );
+});
+
+test("unknown keys inside an allowlist entry are rejected", async () => {
+  const filePath = await writeConfigRaw(withAllowlist([{ entity: "User", protocol: "v2" }]));
+  await rejectsCode(() => loadConfig({ configPath: filePath }), "CONFIG_INVALID");
+});

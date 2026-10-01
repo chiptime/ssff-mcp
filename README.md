@@ -44,6 +44,46 @@ The file is re-read and re-validated on **every tool call** (stateless). It is n
 | `environments.<alias>.auth.username` | Basic auth API username. SuccessFactors API users are often of the form `user@companyId`. |
 | `environments.<alias>.auth.password` | Basic auth API password. Stored in plain text — see security disclosures below. |
 | `defaultEnvironment` | Optional. If present it MUST be `null`. Any non-null value is rejected: implicit environment selection is forbidden. |
+| `entityAllowlist` | Optional array. See [Entity allowlist](#entity-allowlist-optional) below. |
+
+### Entity allowlist (optional)
+
+`entityAllowlist` restricts which entity sets `query_entity` may read. It is a
+local, explicit scope control on top of the tenant account's permissions.
+
+| Field | Meaning |
+|---|---|
+| `entity` | OData entity set name (for example `User`). Matched case-sensitively and exactly against the FIRST path segment of the query. |
+| `protocols` | Optional. Array of `"v2"` and/or `"v4"`, without duplicates. Omitted means both protocols. |
+
+Semantics:
+
+- **Absent** — no allowlist: every entity the account can read is reachable (default behavior).
+- **Present** — only the listed entities are queryable; any other entity is rejected with `ENTITY_NOT_ALLOWED` before any network request (not even `$metadata` is fetched for a denied query).
+- **`[]` (empty array)** — a configured deny-all: every `query_entity` call is rejected. Deliberate fail-closed behavior, not "no allowlist".
+- **`protocols`** — omitted = both protocols; `["v2"]` = v2 only. This phase is v2-only, so an entry whose `protocols` exclude `"v2"` (for example `["v4"]`) is **denied** — without v4 there is no available protocol for that entity.
+- **Navigation** — only the first path segment is checked: once a query starts from a listed entity, navigation segments after it (`User('123')/navProperty`) are not re-checked.
+- **`get_metadata` is never filtered** by the allowlist; it always returns the raw, complete `$metadata` document.
+
+```json
+{
+  "environments": {
+    "prod": {
+      "baseUrl": "https://api4.successfactors.com",
+      "auth": { "type": "basic", "username": "integration@mycompany", "password": "<secret>" }
+    }
+  },
+  "entityAllowlist": [
+    { "entity": "User" },
+    { "entity": "JobRequisition", "protocols": ["v2"] }
+  ]
+}
+```
+
+The key is deliberately NOT part of `config.template.json`: a copied template
+must not silently activate an allowlist. Invalid allowlists (bad entity names,
+empty/duplicate/unknown `protocols`, duplicate entities, unknown keys) are
+rejected with `CONFIG_INVALID`.
 
 ### OAuth 2.0 (alternative to Basic, per environment)
 
@@ -156,7 +196,7 @@ Response (`structuredContent`, XML output): `{ environment, path, contentType: "
 ## Limitations & MVP scope
 
 - OData **v2 only**; OData v4 is deferred until a tenant with a verified v4 endpoint exists.
-- **No entity allowlist** yet: reads are bounded by the tenant account's permissions.
+- Optional **`entityAllowlist`** (see [Configuration](#entity-allowlist-optional)): without it, reads are bounded by the tenant account's permissions.
 - **No function imports / custom service operations** (rejected with `FUNCTION_IMPORT_UNSUPPORTED`).
 - **No writes of any kind**: no POST/PUT/PATCH/DELETE/MERGE, no `$batch`, no method-tunneling headers (there is no input surface for headers at all).
 - Cursor-based continuation (`cursor`), `inlinecount` totals and `output: "xml"` are implemented; **no `batch_get`** yet.
