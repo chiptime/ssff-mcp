@@ -9,3 +9,6 @@ odd/
 config.json
 
 .env
+
+# Internal AI tooling artifacts (skill registry cache).
+.atl/
