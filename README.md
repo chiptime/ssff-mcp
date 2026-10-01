@@ -138,24 +138,29 @@ Fetches `{serviceRoot}/$metadata` (GET, `Accept: application/xml`, 60s timeout) 
 | `select` | `$select` | Raw value, passed through unmodified. |
 | `expand` | `$expand` | Raw value, passed through unmodified. |
 | `top` | `$top` | Integer >= 1. Values above 1000 are clamped to 1000 and flagged (`topClamped: true`). |
-| `skip` | `$skip` | Integer 0..1,000,000. |
+| `skip` | `$skip` | Integer 0..1,000,000. Cannot be combined with `cursor`. |
+| `cursor` | `$skiptoken` | Opaque continuation cursor from a previous response (see below). Must be replayed with the SAME `environment`, `entityPath` and options as the call that produced it; otherwise `CURSOR_INVALID`. |
+| `inlinecount` | `$inlinecount` | Only `"allpages"`. Adds `$inlinecount=allpages`; the response includes `totalCount` when the service provides `__count`. |
+| `output` | — | `"json"` (default) or `"xml"` (raw service XML body, Atom, `Accept: application/atom+xml`, native fields, no normalization). |
 
 Unknown option names are structurally impossible: the tool schema is typed and strict, so there is no passthrough map to smuggle arbitrary query options.
 
-Response (`structuredContent`): `{ environment, path, recordCount, records, hasMore, topClamped?, truncatedToCeiling? }`. Records are preserved **verbatim** with native SuccessFactors fields (`__metadata` kept, no normalization).
+Response (`structuredContent`, JSON output): `{ environment, path, recordCount, records, hasMore, topClamped?, truncatedToCeiling?, totalCount?, cursor? }`. Records are preserved **verbatim** with native SuccessFactors fields (`__metadata` kept, no normalization). `totalCount` appears only when the service returns `__count`; `cursor` appears only when `hasMore` is true **and** a `$skiptoken` could be extracted from the service's next link (continuation is never invented).
+
+Response (`structuredContent`, XML output): `{ environment, path, contentType: "xml", hasMore, cursor?, totalCount? }` — the tool text is the **raw XML body** exactly as the service returned it. `hasMore`/`cursor`/`totalCount` are derived from the Atom `<link rel="next">` href and `<m:count>` elements. XML cannot be truncated safely, so a response with more than 1,000 `<entry>` elements is rejected with `RESPONSE_INVALID` instead of being cut.
 
 **Pagination ceiling:** at most **1,000 records** and exactly **one OData page** per call. Next links (`__next`) are never followed automatically and never returned; `hasMore` merely reports that a next page exists. If a page somehow contains more than 1,000 records, it is truncated to 1,000 (`truncatedToCeiling: true`).
 
-**Continuation in this MVP** means re-issuing an explicit call with `skip`. Note that SAP cautions that client-side `$top`/`skip` paging can lose or duplicate records at volume (SAP KBA 2675265); cursor-based continuation is planned for Phase 2.
+**Continuation (cursor):** when `hasMore` is true and the service's next link carries a `$skiptoken`, the response includes an opaque `cursor`. To fetch the exact next page, re-issue the **same** call (same `environment`, `entityPath` and options) passing that cursor in the `cursor` argument; the server appends the wrapped `$skiptoken` verbatim. The cursor is a stateless HMAC-SHA256-signed envelope (base64url payload + signature) around the service's own `$skiptoken`, bound to environment + entity path + the canonical query options (`filter`, `orderby`, `select`, `expand`, `top`, `inlinecount`, `output` — not `skip`). There is **no server-side storage and no clock-based TTL**; the HMAC secret is random per process, so **every cursor becomes invalid when the server process restarts** — after a restart, simply run a fresh query. An altered cursor, one reused with different arguments, or one issued by a previous process run is rejected with `CURSOR_INVALID` **before any network dispatch**. `skip` and `cursor` are mutually exclusive (`OPTION_INVALID`). Cursor errors never echo the token or the skiptoken.
 
 ## Limitations & MVP scope
 
-- OData **v2 only**; OData v4 arrives in Phase 2.
-- **No entity allowlist** in the MVP: reads are bounded by the tenant account's permissions.
+- OData **v2 only**; OData v4 is deferred until a tenant with a verified v4 endpoint exists.
+- **No entity allowlist** yet: reads are bounded by the tenant account's permissions.
 - **No function imports / custom service operations** (rejected with `FUNCTION_IMPORT_UNSUPPORTED`).
 - **No writes of any kind**: no POST/PUT/PATCH/DELETE/MERGE, no `$batch`, no method-tunneling headers (there is no input surface for headers at all).
-- **No cursor-based pagination** (Phase 2), no OAuth (Phase 2), no `batch_get` (Phase 2), no JSON/XML output selection (JSON only in the MVP).
-- **Basic Auth only**, over HTTPS only.
+- Cursor-based continuation (`cursor`), `inlinecount` totals and `output: "xml"` are implemented; **no `batch_get`** yet.
+- **Basic Auth or OAuth 2.0** per environment, over HTTPS only.
 - **Linux + STDIO only**; no HTTP listener exists anywhere in the server.
 
 ## Implementation decisions

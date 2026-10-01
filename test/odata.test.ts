@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildQuery, unwrapODataV2, validateEntityPath } from "../src/odata.js";
+import {
+  buildQuery,
+  extractSkiptoken,
+  extractXmlPaging,
+  parseTotalCount,
+  unwrapODataV2,
+  validateEntityPath,
+} from "../src/odata.js";
 import { isSanitizedError } from "../src/errors.js";
 
 function assertValidPath(path: string, expectedFirstSegment: string): void {
@@ -179,3 +186,144 @@ function responseInvalid(): (error: unknown) => boolean {
     return true;
   };
 }
+
+// --- inlinecount / skiptoken query assembly (FR-25 / FR-26) --------------------
+
+test("buildQuery maps inlinecount and skiptoken to their OData options", () => {
+  const built = buildQuery("User", { inlinecount: "allpages", skiptoken: "tok-1000-2000" });
+  const query = new URL(built.pathAndQuery, "https://x.example.com/odata/v2/").searchParams;
+  assert.equal(query.get("$inlinecount"), "allpages");
+  assert.equal(query.get("$skiptoken"), "tok-1000-2000");
+});
+
+test("buildQuery omits inlinecount and skiptoken when absent", () => {
+  const built = buildQuery("User", {});
+  assert.equal(built.pathAndQuery, "User");
+});
+
+test("skiptoken values with reserved characters are URL-encoded, not interpreted", () => {
+  const raw = '{"startRow":1000,"endRow":2000}';
+  const built = buildQuery("User", { skiptoken: raw });
+  const query = new URL(built.pathAndQuery, "https://x.example.com/odata/v2/").searchParams;
+  assert.equal(query.get("$skiptoken"), raw);
+});
+
+// --- __count / totalCount (FR-26) ----------------------------------------------
+
+test("unwrapODataV2 returns totalCount from d.__count as string or number", () => {
+  assert.equal(unwrapODataV2({ d: { results: [], __count: "96577" } }).totalCount, 96577);
+  assert.equal(unwrapODataV2({ d: { results: [], __count: 42 } }).totalCount, 42);
+});
+
+test("unusable __count values yield a null totalCount (omitted by callers)", () => {
+  assert.equal(unwrapODataV2({ d: { results: [], __count: "abc" } }).totalCount, null);
+  assert.equal(unwrapODataV2({ d: { results: [], __count: -1 } }).totalCount, null);
+  assert.equal(unwrapODataV2({ d: { results: [], __count: 1.5 } }).totalCount, null);
+  assert.equal(unwrapODataV2({ d: { results: [] } }).totalCount, null);
+});
+
+test("parseTotalCount accepts only finite integers >= 0", () => {
+  assert.equal(parseTotalCount("0"), 0);
+  assert.equal(parseTotalCount(0), 0);
+  assert.equal(parseTotalCount(null), null);
+  assert.equal(parseTotalCount(undefined), null);
+  assert.equal(parseTotalCount(" 12 "), 12);
+  assert.equal(parseTotalCount("1e3"), null);
+});
+
+// --- __next / nextUrl (FR-25) ---------------------------------------------------
+
+test("unwrapODataV2 exposes the raw __next internally as nextUrl", () => {
+  const next = "https://tenant.example.com/odata/v2/User?$skiptoken=tok-1";
+  const unwrapped = unwrapODataV2({ d: { results: [], __next: next } });
+  assert.equal(unwrapped.hasMore, true);
+  assert.equal(unwrapped.nextUrl, next);
+});
+
+test("feed without __next has nextUrl null", () => {
+  const unwrapped = unwrapODataV2({ d: { results: [] } });
+  assert.equal(unwrapped.nextUrl, null);
+  assert.equal(unwrapped.hasMore, false);
+});
+
+// --- extractSkiptoken ------------------------------------------------------------
+
+test("extractSkiptoken reads $skiptoken from an absolute next URL", () => {
+  assert.equal(
+    extractSkiptoken("https://tenant.example.com/odata/v2/User?$skiptoken=tok-1000-2000"),
+    "tok-1000-2000",
+  );
+});
+
+test("extractSkiptoken decodes URL-encoded tokens", () => {
+  const encoded = encodeURIComponent('{"startRow":1000,"endRow":2000}');
+  assert.equal(
+    extractSkiptoken(`https://tenant.example.com/odata/v2/User?$skiptoken=${encoded}`),
+    '{"startRow":1000,"endRow":2000}',
+  );
+});
+
+test("extractSkiptoken supports root-relative next URLs", () => {
+  assert.equal(extractSkiptoken("/odata/v2/User?$skiptoken=rel-tok"), "rel-tok");
+});
+
+test("extractSkiptoken returns null when no $skiptoken is present", () => {
+  assert.equal(extractSkiptoken("https://tenant.example.com/odata/v2/User?$skip=1000"), null);
+  assert.equal(extractSkiptoken("https://tenant.example.com/odata/v2/User"), null);
+});
+
+test("extractSkiptoken returns null for malformed URLs", () => {
+  assert.equal(extractSkiptoken(":::: not a url"), null);
+  assert.equal(extractSkiptoken(""), null);
+  assert.equal(extractSkiptoken("https://tenant.example.com/odata/v2/User?$skiptoken="), null);
+});
+
+// --- extractXmlPaging (FR-27) ------------------------------------------------------
+
+const ATOM_FEED = `<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata">
+  <title type="text">User</title>
+  <m:count>96577</m:count>
+  <entry><id>https://tenant.example.com/odata/v2/User('u1')</id></entry>
+  <entry><id>https://tenant.example.com/odata/v2/User('u2')</id></entry>
+  <link rel="next" href="https://tenant.example.com/odata/v2/User?$skiptoken=xml-tok-1"/>
+</feed>
+`;
+
+test("extractXmlPaging reads next link, m:count and entry count", () => {
+  const paging = extractXmlPaging(ATOM_FEED);
+  assert.equal(paging.hasMore, true);
+  assert.equal(paging.nextUrl, "https://tenant.example.com/odata/v2/User?$skiptoken=xml-tok-1");
+  assert.equal(paging.totalCount, 96577);
+  assert.equal(paging.entryCount, 2);
+});
+
+test("extractXmlPaging without next link or count reports no continuation", () => {
+  const paging = extractXmlPaging(`<feed><entry><id>x</id></entry></feed>`);
+  assert.equal(paging.hasMore, false);
+  assert.equal(paging.nextUrl, null);
+  assert.equal(paging.totalCount, null);
+  assert.equal(paging.entryCount, 1);
+});
+
+test("extractXmlPaging decodes XML entities in the href", () => {
+  const xml = `<feed><link rel="next" href="https://t.example.com/User?$skiptoken=a&amp;$top=1000"/></feed>`;
+  const paging = extractXmlPaging(xml);
+  assert.equal(paging.nextUrl, "https://t.example.com/User?$skiptoken=a&$top=1000");
+  assert.equal(extractSkiptoken(paging.nextUrl!), "a");
+});
+
+test("extractXmlPaging ignores link elements whose rel is not next", () => {
+  const xml = `<feed><link rel="self" href="https://t.example.com/User"/><link rel="edit" href="https://t.example.com/User('1')"/></feed>`;
+  assert.equal(extractXmlPaging(xml).hasMore, false);
+});
+
+test("extractXmlPaging entry counting uses the <entry element boundary", () => {
+  // <entryish> must not count; <entry> and <entry attr> must.
+  const xml = `<feed><entry></entry><entry xml:base="x"></entry><entryish/></feed>`;
+  assert.equal(extractXmlPaging(xml).entryCount, 2);
+});
+
+test("extractXmlPaging rejects unusable m:count values as null totalCount", () => {
+  assert.equal(extractXmlPaging(`<feed><m:count>abc</m:count></feed>`).totalCount, null);
+});

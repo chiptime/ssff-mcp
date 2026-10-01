@@ -15,11 +15,19 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { loadConfig, type EnvironmentConfig } from "./config.js";
+import { CURSOR_VERSION, defaultCursorCodec } from "./cursor.js";
 import { SanitizedError, toSanitizedError } from "./errors.js";
 import { dispatchGet, envTargetFor, type EnvTarget, type FetchImpl } from "./http.js";
 import { makeLogger, type LogSink, type Logger } from "./logger.js";
 import { MetadataService } from "./metadata.js";
-import { buildQuery, unwrapODataV2, validateEntityPath } from "./odata.js";
+import {
+  buildQuery,
+  extractSkiptoken,
+  extractXmlPaging,
+  RECORD_CEILING,
+  unwrapODataV2,
+  validateEntityPath,
+} from "./odata.js";
 
 const METADATA_TOOL_TIMEOUT_MS = 60_000;
 const QUERY_TOOL_TIMEOUT_MS = 30_000;
@@ -34,12 +42,18 @@ export const QUERY_ENTITY_DESCRIPTION = [
   "Reads entity data from SAP SuccessFactors OData v2 for the selected environment.",
   "entityPath examples: \"User\", \"User('123')\", \"Foobar(key1='a',key2=1)/navProperty\".",
   "Options map 1:1 to OData system query options and their values pass through unmodified:",
-  "filter -> $filter, orderby -> $orderby, select -> $select, expand -> $expand, top -> $top, skip -> $skip.",
+  "filter -> $filter, orderby -> $orderby, select -> $select, expand -> $expand, top -> $top,",
+  "skip -> $skip, inlinecount -> $inlinecount (allpages only).",
   "Ceiling: at most 1000 records and exactly one OData page are returned per call;",
   "next links are never followed automatically (hasMore indicates a next page exists).",
-  "Continuation in this MVP means re-issuing an explicit call with skip;",
-  "note SAP cautions that client-side $top/$skip paging can lose or duplicate records at volume",
-  "(cursor-based continuation is planned for Phase 2).",
+  "Continuation: when hasMore is true the response may carry an opaque cursor;",
+  "to fetch the exact next page, re-issue the SAME call (same environment, entityPath and options)",
+  "passing that cursor as the cursor argument. The cursor is a signed envelope tied to this",
+  "server process: it is rejected (CURSOR_INVALID) when altered, reused with different",
+  "arguments, or after a server restart; skip cannot be combined with cursor.",
+  "inlinecount \"allpages\" returns totalCount when the service provides __count.",
+  "output selects the representation: \"json\" (default, unwrapped records) or",
+  "\"xml\" (raw service XML body, hasMore/totalCount/cursor reported in structuredContent).",
 ].join(" ");
 
 const environmentArg = z.string().optional();
@@ -60,6 +74,23 @@ const queryEntitySchema = z
     expand: z.string().optional(),
     top: z.number().int().optional(),
     skip: z.number().int().optional(),
+    cursor: z
+      .string()
+      .optional()
+      .describe(
+        "Continuation cursor from a previous response. Repeat the SAME environment, entityPath " +
+          "and options of the call that produced it and pass the cursor to fetch the exact next " +
+          "page. Rejected (CURSOR_INVALID) if altered, reused with different arguments, or after " +
+          "a server restart. Cannot be combined with skip.",
+      ),
+    inlinecount: z
+      .enum(["allpages"])
+      .optional()
+      .describe('Adds $inlinecount=allpages; the response includes totalCount when the service provides __count.'),
+    output: z
+      .enum(["json", "xml"])
+      .optional()
+      .describe('Response representation: "json" (default, unwrapped records) or "xml" (raw service XML body).'),
   })
   .strict();
 
@@ -102,6 +133,69 @@ function resolveEnvironment(
     );
   }
   return { alias: requested, env };
+}
+
+interface QueryEntityArgs {
+  environment?: string;
+  entityPath: string;
+  filter?: string;
+  orderby?: string;
+  select?: string;
+  expand?: string;
+  top?: number;
+  skip?: number;
+  cursor?: string;
+  inlinecount?: "allpages";
+  output?: "json" | "xml";
+}
+
+/**
+ * Canonical option subset the cursor binding covers (D-27): the options that
+ * shape the query result. Deliberately excludes `skip` and `cursor` itself.
+ * Only explicitly provided keys are included; callers must repeat the same
+ * arguments for a cursor to validate.
+ */
+function cursorBindingOptions(args: QueryEntityArgs): Record<string, unknown> {
+  const options: Record<string, unknown> = {};
+  if (args.filter !== undefined) {
+    options.filter = args.filter;
+  }
+  if (args.orderby !== undefined) {
+    options.orderby = args.orderby;
+  }
+  if (args.select !== undefined) {
+    options.select = args.select;
+  }
+  if (args.expand !== undefined) {
+    options.expand = args.expand;
+  }
+  if (args.top !== undefined) {
+    options.top = args.top;
+  }
+  if (args.inlinecount !== undefined) {
+    options.inlinecount = args.inlinecount;
+  }
+  // `output` has a default: omitted and explicit "json" are the same binding.
+  options.output = args.output ?? "json";
+  return options;
+}
+
+/**
+ * Build the continuation cursor for a next URL, when a usable $skiptoken can
+ * be extracted. Returns undefined when continuation cannot be established —
+ * it is never invented (FR-25).
+ */
+function encodeContinuationCursor(
+  env: string,
+  entityPath: string,
+  options: Record<string, unknown>,
+  nextUrl: string,
+): string | undefined {
+  const skiptoken = extractSkiptoken(nextUrl);
+  if (skiptoken === null) {
+    return undefined;
+  }
+  return defaultCursorCodec.encode({ v: CURSOR_VERSION, env, path: entityPath, options, skiptoken });
 }
 
 export function createMcpServer(deps: ServerDeps = {}): McpServer {
@@ -214,8 +308,33 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         const environments = await loadFreshConfig();
         const { alias, env } = resolveEnvironment(environments, args.environment);
 
+        const output = args.output ?? "json";
+
+        // Cursor and skip are mutually exclusive: continuation is exclusively
+        // cursor-based (D-27).
+        if (args.cursor !== undefined && args.skip !== undefined) {
+          throw new SanitizedError(
+            "OPTION_INVALID",
+            "skip cannot be combined with cursor; pass the cursor alone to continue",
+          );
+        }
+
         // Validate shape and bounds BEFORE any dispatch.
         const validatedPath = validateEntityPath(args.entityPath);
+
+        // Cursor verification is pre-dispatch by construction: signature plus
+        // binding against the CURRENT call (same env, path, canonical options).
+        const bindingOptions = cursorBindingOptions(args);
+        let skiptoken: string | undefined;
+        if (args.cursor !== undefined) {
+          const payload = defaultCursorCodec.decode(args.cursor, {
+            env: alias,
+            path: args.entityPath,
+            options: bindingOptions,
+          });
+          skiptoken = payload.skiptoken;
+        }
+
         const { pathAndQuery, topClamped } = buildQuery(args.entityPath, {
           filter: args.filter,
           orderby: args.orderby,
@@ -223,6 +342,8 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           expand: args.expand,
           top: args.top,
           skip: args.skip,
+          inlinecount: args.inlinecount,
+          skiptoken,
         });
 
         const target: EnvTarget = envTargetFor(env, alias);
@@ -237,12 +358,40 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           throw new SanitizedError("PATH_INVALID", "unknown entity set");
         }
 
+        // Exactly one fetch per call; next links are never followed.
         const result = await dispatchGet(target, pathAndQuery, {
-          accept: "application/json",
+          // Entity data in XML is Atom: SF answers 406 to `application/xml` there
+          // (that media type is only valid for $metadata).
+          accept: output === "xml" ? "application/atom+xml" : "application/json",
           timeoutMs: QUERY_TOOL_TIMEOUT_MS,
           fetchImpl,
           now: deps.now,
         });
+
+        if (output === "xml") {
+          // Raw service body, native fields, no normalization (D-32). XML
+          // cannot be truncated safely, so the ceiling is a hard rejection.
+          const paging = extractXmlPaging(result.body);
+          if (paging.entryCount > RECORD_CEILING) {
+            throw new SanitizedError("RESPONSE_INVALID", `xml response exceeds the ${RECORD_CEILING}-record ceiling`);
+          }
+          const structured: Record<string, unknown> = {
+            environment: alias,
+            path: args.entityPath,
+            contentType: "xml",
+            hasMore: paging.hasMore,
+          };
+          if (paging.totalCount !== null) {
+            structured.totalCount = paging.totalCount;
+          }
+          if (paging.hasMore && paging.nextUrl !== null) {
+            const cursor = encodeContinuationCursor(alias, args.entityPath, bindingOptions, paging.nextUrl);
+            if (cursor !== undefined) {
+              structured.cursor = cursor;
+            }
+          }
+          return { structured, text: result.body };
+        }
 
         let parsed: unknown;
         try {
@@ -264,6 +413,17 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         }
         if (unwrapped.truncatedToCeiling) {
           structured.truncatedToCeiling = true;
+        }
+        if (unwrapped.totalCount !== null) {
+          structured.totalCount = unwrapped.totalCount;
+        }
+        if (unwrapped.hasMore && unwrapped.nextUrl !== null) {
+          // Cursor only when a real $skiptoken exists; the __next URL itself
+          // never leaves the process.
+          const cursor = encodeContinuationCursor(alias, args.entityPath, bindingOptions, unwrapped.nextUrl);
+          if (cursor !== undefined) {
+            structured.cursor = cursor;
+          }
         }
         return {
           structured,

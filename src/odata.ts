@@ -100,6 +100,10 @@ export interface QueryOptions {
   expand?: string;
   top?: number;
   skip?: number;
+  /** Adds `$inlinecount=allpages` (the only accepted value, D-31). */
+  inlinecount?: "allpages";
+  /** Raw continuation token extracted from a validated cursor (FR-25). Appended verbatim as `$skiptoken`. */
+  skiptoken?: string;
 }
 
 export interface BuiltQuery {
@@ -134,6 +138,12 @@ export function buildQuery(entityPath: string, options: QueryOptions): BuiltQuer
   if (skip !== undefined && skip > 0) {
     params.set("$skip", String(skip));
   }
+  if (options.inlinecount === "allpages") {
+    params.set("$inlinecount", "allpages");
+  }
+  // The skiptoken is opaque: appended raw (URLSearchParams encodes it), never
+  // interpreted or rewritten (D-27 / A-P2-3).
+  addIfPresent(params, "$skiptoken", options.skiptoken);
 
   const queryString = params.toString();
   return {
@@ -152,6 +162,29 @@ export interface UnwrappedFeed {
   records: unknown[];
   hasMore: boolean;
   truncatedToCeiling: boolean;
+  /** Raw `__next` URL when present (internal only; never returned to the model). */
+  nextUrl: string | null;
+  /** Total from `d.__count` when the service provides a usable value, else null. */
+  totalCount: number | null;
+}
+
+/**
+ * Parse `d.__count` into a finite integer >= 0. Accepts number or numeric
+ * string; anything else yields null (totalCount is then omitted).
+ */
+export function parseTotalCount(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!/^\d+$/.test(trimmed)) {
+      return null;
+    }
+    const parsed = Number(trimmed);
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+  }
+  return null;
 }
 
 /**
@@ -159,7 +192,9 @@ export interface UnwrappedFeed {
  * - feed `{ d: { results: [...], __next?: string } }` -> records = d.results
  * - single entity `{ d: { ... } }` -> records = [d]
  * Records are preserved verbatim (no field normalization, `__metadata` kept).
- * The `__next` URL is never returned, only reported via `hasMore`.
+ * The `__next` URL is never meant for the model: it is returned internally as
+ * `nextUrl` so callers can extract the continuation token; `hasMore` merely
+ * reports that a next page exists.
  */
 export function unwrapODataV2(body: unknown): UnwrappedFeed {
   if (typeof body !== "object" || body === null || !("d" in body)) {
@@ -172,13 +207,19 @@ export function unwrapODataV2(body: unknown): UnwrappedFeed {
 
   let records: unknown[];
   let hasMore = false;
+  let nextUrl: string | null = null;
   if (Array.isArray((d as { results?: unknown }).results)) {
     records = (d as { results: unknown[] }).results;
     const next = (d as { __next?: unknown }).__next;
-    hasMore = typeof next === "string" && next.length > 0;
+    if (typeof next === "string" && next.length > 0) {
+      hasMore = true;
+      nextUrl = next;
+    }
   } else {
     records = [d];
   }
+
+  const totalCount = parseTotalCount((d as { __count?: unknown }).__count);
 
   let truncatedToCeiling = false;
   if (records.length > RECORD_CEILING) {
@@ -186,5 +227,72 @@ export function unwrapODataV2(body: unknown): UnwrappedFeed {
     truncatedToCeiling = true;
   }
 
-  return { records, hasMore, truncatedToCeiling };
+  return { records, hasMore, truncatedToCeiling, nextUrl, totalCount };
+}
+
+/**
+ * Extract the raw `$skiptoken` query parameter from a service-provided next
+ * URL. Returns null for malformed URLs or when no usable token is present.
+ * The token is opaque: returned as-is, never interpreted.
+ */
+export function extractSkiptoken(nextUrl: string): string | null {
+  let url: URL | null = null;
+  try {
+    url = new URL(nextUrl);
+  } catch {
+    // Tolerate root-relative next links; anything else is unusable.
+    try {
+      url = new URL(nextUrl, "https://ssff-mcp.invalid/");
+    } catch {
+      return null;
+    }
+  }
+  const token = url.searchParams.get("$skiptoken");
+  if (token === null || token.length === 0) {
+    return null;
+  }
+  return token;
+}
+
+function decodeXmlEntities(value: string): string {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+export interface XmlPaging {
+  /** True when a `<link rel="next" .../>` with an href is present. */
+  hasMore: boolean;
+  /** Decoded href of the next link (internal only; never returned to the model). */
+  nextUrl: string | null;
+  /** Total from `<m:count>` when it parses as a usable integer, else null. */
+  totalCount: number | null;
+  /** Number of `<entry>` elements (used to enforce the response ceiling). */
+  entryCount: number;
+}
+
+/**
+ * Extract paging facts from a raw OData v2 Atom XML body: next link, inline
+ * count and entry count. Pure regex (bodies can be huge; no full parse).
+ */
+export function extractXmlPaging(xml: string): XmlPaging {
+  let nextUrl: string | null = null;
+  for (const match of xml.matchAll(/<link\b[^>]*>/gi)) {
+    const tag = match[0];
+    if (!/\brel="next"/.test(tag)) {
+      continue;
+    }
+    const href = /\bhref="([^"]*)"/.exec(tag);
+    if (href !== null && href[1]!.length > 0) {
+      nextUrl = decodeXmlEntities(href[1]!);
+    }
+    break;
+  }
+  const countMatch = /<m:count[^>]*>([\s\S]*?)<\/m:count>/.exec(xml);
+  const totalCount = countMatch === null ? null : parseTotalCount(countMatch[1]);
+  const entryCount = (xml.match(/<entry[\s>]/g) ?? []).length;
+  return { hasMore: nextUrl !== null, nextUrl, totalCount, entryCount };
 }

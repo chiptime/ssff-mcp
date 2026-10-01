@@ -36,7 +36,7 @@ Convención (heredada de PRD.md):
 | D-29 | **OAuth entra con verificación previa y gate bloqueante**: registro de cliente OAuth en el admin de SuccessFactors (candidato: OAuth 2.0 **SAML 2.0 Bearer Assertion**, A-4), `tokenUrl` fijo por entorno, TLS obligatorio. La revisión de D-24 (clave privada inline en claro, permisos restrictivos, nunca Git) es **obligatoria antes de implementar**. Si el grant no se verifica contra el tenant, la selección queda **bloqueada para decisión del usuario**. | User confirmation (hay colaboración de admin) |
 | D-30 | **`entityAllowlist` entra** con la semántica confirmada de D-15 (PRD.md): claves en inglés `entity`, `protocols`; omisión de `protocols` = ambos protocolos; entidad ausente ⇒ denegada; `$metadata` nunca filtrado. Con v4 fuera (D-26), `protocols` queda como preparación futura. | User confirmation |
 | D-31 | **`$inlinecount=allpages` se añade** como opción de `query_entity`. Verificado en vivo: `200` con `__count=96577` para `User` (2026-10-01). | User confirmation + sonda |
-| D-32 | **Salida seleccionable por llamada**: `output: json (defecto) | xml`. XML = respuesta cruda del servicio (`Accept: application/xml`). Campos nativos siempre, sin normalización (D-19 de PRD.md aplicado a v2). | User confirmation |
+| D-32 | **Salida seleccionable por llamada**: `output: json (defecto) | xml`. XML = respuesta cruda del servicio (Atom, `Accept: application/atom+xml`; verificado en vivo: `application/xml` devuelve 406 en datos de entidad y solo es válido para `$metadata`). Campos nativos siempre, sin normalización (D-19 de PRD.md aplicado a v2). | User confirmation |
 
 ### 0.2 Implicaciones derivadas (obligatorias)
 

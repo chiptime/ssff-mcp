@@ -18,10 +18,13 @@ import {
   type CallResult,
 } from "./helpers.js";
 
-function feed(records: unknown[], next?: string): unknown {
+function feed(records: unknown[], next?: string, count?: string | number): unknown {
   const d: Record<string, unknown> = { results: records };
   if (next !== undefined) {
     d.__next = next;
+  }
+  if (count !== undefined) {
+    d.__count = count;
   }
   return { d };
 }
@@ -376,6 +379,303 @@ test("error outcomes are logged with their sanitized code via the injectable sin
         assert.ok(LOG_FIELD_ALLOWLIST.has(key), `unexpected log key: ${key}`);
       }
     }
+  });
+});
+
+// --- Cursor continuation, inlinecount and XML output (FR-25/26/27) -------------
+
+const NEXT_WITH_TOKEN = "https://tenant-a.example.com/odata/v2/User?$skiptoken=tok-1000-2000";
+
+test("first page returns a cursor when __next carries $skiptoken; the second call replays it", async () => {
+  const configPath = await writeStandardConfig();
+  let dataCalls = 0;
+  const { fetch, requests } = recordingFetch((url) => {
+    if (url.endsWith("/$metadata")) {
+      return xmlResponse(SAMPLE_METADATA_XML);
+    }
+    dataCalls += 1;
+    return dataCalls === 1 ? jsonResponse(feed([{ userId: "u1" }], NEXT_WITH_TOKEN)) : jsonResponse(feed([{ userId: "u2-page2" }]));
+  });
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const baseArgs = { environment: "tenant-a", entityPath: "User", filter: "status eq 'active'", top: 100 };
+    const first = await callTool(client, "query_entity", baseArgs);
+    assert.equal(first.isError, undefined);
+    const firstStructured = first.structuredContent as { hasMore: boolean; cursor?: string };
+    assert.equal(firstStructured.hasMore, true);
+    assert.ok(typeof firstStructured.cursor === "string" && firstStructured.cursor.length > 0);
+    // Opaque envelope: no skiptoken, no __next URL anywhere in the response.
+    const serialized = JSON.stringify(first);
+    assert.ok(!serialized.includes("__next"));
+    assert.ok(!serialized.includes("tok-1000-2000"));
+
+    const second = await callTool(client, "query_entity", { ...baseArgs, cursor: firstStructured.cursor });
+    assert.equal(second.isError, undefined);
+    const secondStructured = second.structuredContent as { records: unknown[]; hasMore: boolean; cursor?: string };
+    assert.deepEqual(secondStructured.records, [{ userId: "u2-page2" }]);
+    assert.equal(secondStructured.hasMore, false);
+    assert.equal(secondStructured.cursor, undefined);
+
+    // Exactly one data GET per call; the second carries the original token raw.
+    const dataRequests = requests.filter((r) => !r.url.includes("$metadata"));
+    assert.equal(dataRequests.length, 2);
+    const secondUrl = new URL(dataRequests[1]!.url);
+    assert.equal(secondUrl.searchParams.get("$skiptoken"), "tok-1000-2000");
+    assert.equal(secondUrl.searchParams.get("$filter"), "status eq 'active'");
+    assert.equal(secondUrl.searchParams.get("$top"), "100");
+    assert.equal(secondUrl.searchParams.get("$skip"), null);
+  });
+});
+
+test("changed filter with the same cursor yields CURSOR_INVALID and no fetch", async () => {
+  const configPath = await writeStandardConfig();
+  const { fetch, requests } = recordingFetch((url) => {
+    if (url.endsWith("/$metadata")) {
+      return xmlResponse(SAMPLE_METADATA_XML);
+    }
+    return jsonResponse(feed([{ userId: "u1" }], NEXT_WITH_TOKEN));
+  });
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const first = await callTool(client, "query_entity", {
+      environment: "tenant-a",
+      entityPath: "User",
+      top: 100,
+    });
+    const cursor = (first.structuredContent as { cursor: string }).cursor;
+    const requestsBefore = requests.length; // metadata + first page
+
+    const result = await callTool(client, "query_entity", {
+      environment: "tenant-a",
+      entityPath: "User",
+      top: 100,
+      filter: "userId eq 'changed'",
+      cursor,
+    });
+    const payload = errorPayload(result);
+    assert.equal(payload.code, "CURSOR_INVALID");
+    assert.ok(!payload.message.includes(cursor));
+    assert.ok(!payload.message.includes("tok-1000-2000"));
+    // Rejected pre-dispatch: not even the (cached) metadata lookup ran.
+    assert.equal(requests.length, requestsBefore);
+  });
+});
+
+test("skip combined with cursor yields OPTION_INVALID and no fetch", async () => {
+  const configPath = await writeStandardConfig();
+  const { fetch, requests } = recordingFetch((url) => {
+    if (url.endsWith("/$metadata")) {
+      return xmlResponse(SAMPLE_METADATA_XML);
+    }
+    return jsonResponse(feed([{ userId: "u1" }], NEXT_WITH_TOKEN));
+  });
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const first = await callTool(client, "query_entity", {
+      environment: "tenant-a",
+      entityPath: "User",
+      top: 100,
+    });
+    const cursor = (first.structuredContent as { cursor: string }).cursor;
+    const requestsBefore = requests.length;
+
+    const result = await callTool(client, "query_entity", {
+      environment: "tenant-a",
+      entityPath: "User",
+      top: 100,
+      skip: 10,
+      cursor,
+    });
+    assert.equal(errorPayload(result).code, "OPTION_INVALID");
+    assert.equal(requests.length, requestsBefore);
+  });
+});
+
+test("hasMore without an extractable skiptoken returns no cursor (never invented)", async () => {
+  const configPath = await writeStandardConfig();
+  const { fetch } = recordingFetch(
+    standardSfResponder(feed([{ userId: "u1" }], "https://tenant-a.example.com/odata/v2/User?$skip=1000")),
+  );
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const result = await callTool(client, "query_entity", { environment: "tenant-a", entityPath: "User" });
+    assert.equal(result.isError, undefined);
+    const structured = result.structuredContent as { hasMore: boolean; cursor?: string };
+    assert.equal(structured.hasMore, true);
+    assert.equal(structured.cursor, undefined);
+    const serialized = JSON.stringify(result);
+    assert.ok(!serialized.includes("__next"));
+    assert.ok(!serialized.includes("$skip=1000"));
+  });
+});
+
+test("inlinecount=allpages sends $inlinecount and returns totalCount from __count", async () => {
+  const configPath = await writeStandardConfig();
+  const { fetch, requests } = recordingFetch(standardSfResponder(feed([{ userId: "u1" }], undefined, "96577")));
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const result = await callTool(client, "query_entity", {
+      environment: "tenant-a",
+      entityPath: "User",
+      top: 1,
+      inlinecount: "allpages",
+    });
+    assert.equal(result.isError, undefined);
+    const structured = result.structuredContent as { totalCount?: number };
+    assert.equal(structured.totalCount, 96577);
+    const entityUrl = new URL(requests.filter((r) => !r.url.includes("$metadata"))[0]!.url);
+    assert.equal(entityUrl.searchParams.get("$inlinecount"), "allpages");
+    assert.equal(entityUrl.searchParams.get("$top"), "1");
+  });
+});
+
+test("without inlinecount no $inlinecount is sent and totalCount is omitted", async () => {
+  const configPath = await writeStandardConfig();
+  // Realistic body: the service only returns __count when $inlinecount was requested.
+  const { fetch, requests } = recordingFetch(standardSfResponder(feed([{ userId: "u1" }])));
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const result = await callTool(client, "query_entity", { environment: "tenant-a", entityPath: "User" });
+    assert.equal(result.isError, undefined);
+    const structured = result.structuredContent as { totalCount?: number };
+    assert.equal(structured.totalCount, undefined);
+    const entityUrl = new URL(requests.filter((r) => !r.url.includes("$metadata"))[0]!.url);
+    assert.equal(entityUrl.searchParams.get("$inlinecount"), null);
+  });
+});
+
+const XML_FEED = `<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata">
+  <title type="text">User</title>
+  <m:count>96577</m:count>
+  <entry><id>https://tenant-a.example.com/odata/v2/User('u1')</id></entry>
+  <link rel="next" href="https://tenant-a.example.com/odata/v2/User?$skiptoken=xml-tok-1"/>
+</feed>
+`;
+
+test("output xml sends Accept application/atom+xml and returns the raw body with paging flags", async () => {
+  const configPath = await writeStandardConfig();
+  const { fetch, requests } = recordingFetch((url) => {
+    if (url.endsWith("/$metadata")) {
+      return xmlResponse(SAMPLE_METADATA_XML);
+    }
+    return xmlResponse(XML_FEED, 200, { "content-type": "application/xml" });
+  });
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const args = { environment: "tenant-a", entityPath: "User", output: "xml" as const };
+    const result = await callTool(client, "query_entity", args);
+    assert.equal(result.isError, undefined);
+    assert.equal((result.content[0] as { text: string }).text, XML_FEED);
+
+    const structured = result.structuredContent as {
+      environment: string;
+      path: string;
+      contentType: string;
+      hasMore: boolean;
+      totalCount: number;
+      cursor: string;
+    };
+    assert.deepEqual(
+      { ...structured, cursor: "<present>" },
+      {
+        environment: "tenant-a",
+        path: "User",
+        contentType: "xml",
+        hasMore: true,
+        totalCount: 96577,
+        cursor: "<present>",
+      },
+    );
+    const dataRequest = requests.filter((r) => !r.url.includes("$metadata"))[0]!;
+    assert.equal(dataRequest.headers.Accept, "application/atom+xml");
+
+    // The xml cursor replays exactly like the json one.
+    const second = await callTool(client, "query_entity", { ...args, cursor: structured.cursor });
+    assert.equal(second.isError, undefined);
+    const dataRequests = requests.filter((r) => !r.url.includes("$metadata"));
+    assert.equal(dataRequests.length, 2);
+    assert.equal(new URL(dataRequests[1]!.url).searchParams.get("$skiptoken"), "xml-tok-1");
+  });
+});
+
+test("output xml without a next link reports hasMore false and no cursor", async () => {
+  const configPath = await writeStandardConfig();
+  const body = `<feed xmlns="http://www.w3.org/2005/Atom"><entry><id>x</id></entry></feed>`;
+  const { fetch } = recordingFetch((url) => {
+    if (url.endsWith("/$metadata")) {
+      return xmlResponse(SAMPLE_METADATA_XML);
+    }
+    return xmlResponse(body);
+  });
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const result = await callTool(client, "query_entity", {
+      environment: "tenant-a",
+      entityPath: "User",
+      output: "xml",
+    });
+    assert.equal(result.isError, undefined);
+    const structured = result.structuredContent as { hasMore: boolean; cursor?: string; totalCount?: number };
+    assert.equal(structured.hasMore, false);
+    assert.equal(structured.cursor, undefined);
+    assert.equal(structured.totalCount, undefined);
+  });
+});
+
+test("output xml rejects responses with more than 1000 entries", async () => {
+  const configPath = await writeStandardConfig();
+  const entries = Array.from({ length: 1001 }, (_, i) => `<entry><id>e${i}</id></entry>`).join("");
+  const body = `<feed xmlns="http://www.w3.org/2005/Atom">${entries}</feed>`;
+  const { fetch } = recordingFetch((url) => {
+    if (url.endsWith("/$metadata")) {
+      return xmlResponse(SAMPLE_METADATA_XML);
+    }
+    return xmlResponse(body);
+  });
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const result = await callTool(client, "query_entity", {
+      environment: "tenant-a",
+      entityPath: "User",
+      output: "xml",
+    });
+    const payload = errorPayload(result);
+    assert.equal(payload.code, "RESPONSE_INVALID");
+    assert.match(payload.message, /xml response exceeds the 1000-record ceiling/);
+  });
+});
+
+test("output xml at exactly 1000 entries is accepted", async () => {
+  const configPath = await writeStandardConfig();
+  const entries = Array.from({ length: 1000 }, (_, i) => `<entry><id>e${i}</id></entry>`).join("");
+  const body = `<feed xmlns="http://www.w3.org/2005/Atom">${entries}</feed>`;
+  const { fetch } = recordingFetch((url) => {
+    if (url.endsWith("/$metadata")) {
+      return xmlResponse(SAMPLE_METADATA_XML);
+    }
+    return xmlResponse(body);
+  });
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const result = await callTool(client, "query_entity", {
+      environment: "tenant-a",
+      entityPath: "User",
+      output: "xml",
+    });
+    assert.equal(result.isError, undefined);
+    assert.equal((result.content[0] as { text: string }).text, body);
+  });
+});
+
+test("a cursor from a json call is rejected on an otherwise identical xml call", async () => {
+  const configPath = await writeStandardConfig();
+  const { fetch } = recordingFetch((url) => {
+    if (url.endsWith("/$metadata")) {
+      return xmlResponse(SAMPLE_METADATA_XML);
+    }
+    return jsonResponse(feed([{ userId: "u1" }], NEXT_WITH_TOKEN));
+  });
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const first = await callTool(client, "query_entity", { environment: "tenant-a", entityPath: "User" });
+    const cursor = (first.structuredContent as { cursor: string }).cursor;
+    const result = await callTool(client, "query_entity", {
+      environment: "tenant-a",
+      entityPath: "User",
+      output: "xml",
+      cursor,
+    });
+    assert.equal(errorPayload(result).code, "CURSOR_INVALID");
   });
 });
 
