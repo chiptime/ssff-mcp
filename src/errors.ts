@@ -20,6 +20,8 @@ export type SanitizedErrorCode =
   | "NETWORK_ERROR"
   | "HTTP_ERROR"
   | "RESPONSE_INVALID"
+  | "OAUTH_ASSERTION_ERROR"
+  | "OAUTH_TOKEN_ERROR"
   | "INTERNAL_ERROR";
 
 export class SanitizedError extends Error {

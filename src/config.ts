@@ -28,23 +28,61 @@ export interface BasicAuthConfig {
   password: string;
 }
 
+export interface OAuthAuthConfig {
+  type: "oauth";
+  /** OAuth2 client API key from the SF Admin Center registration. */
+  clientId: string;
+  /** Tenant company id (sent to the token endpoint as company_id). */
+  companyId: string;
+  /** Technical user id WITHOUT the @companyId suffix. */
+  userId: string;
+  /** RSA private key exported from SF Admin (inline plaintext; D-24 tradeoff). */
+  privateKey: string;
+  /** Fixed token endpoint (https). */
+  tokenUrl: string;
+  /** SAP IdP helper endpoint; derived from tokenUrl origin when absent. */
+  idpUrl: string;
+}
+
+export type AuthConfig = BasicAuthConfig | OAuthAuthConfig;
+
 export interface EnvironmentConfig {
   /** Normalized base URL: https origin + optional path prefix, no trailing slash. */
   baseUrl: string;
-  auth: BasicAuthConfig;
+  auth: AuthConfig;
 }
 
 export interface SsffConfig {
   environments: Record<string, EnvironmentConfig>;
 }
 
-const authSchema = z
+const basicAuthSchema = z
   .object({
     type: z.literal("basic"),
     username: z.string().min(1),
     password: z.string().min(1),
   })
   .strict();
+
+const oauthAuthSchema = z
+  .object({
+    type: z.literal("oauth"),
+    clientId: z.string().min(1),
+    companyId: z.string().min(1),
+    // The Basic-Auth habit is user@companyId; the IdP helper wants the bare user id.
+    userId: z
+      .string()
+      .min(1)
+      .refine((value) => !value.includes("@"), {
+        message: "oauth userId is the technical user id WITHOUT the @companyId suffix",
+      }),
+    privateKey: z.string().min(1),
+    tokenUrl: z.string().min(1),
+    idpUrl: z.string().min(1).optional(),
+  })
+  .strict();
+
+const authSchema = z.discriminatedUnion("type", [basicAuthSchema, oauthAuthSchema]);
 
 const environmentSchema = z
   .object({
@@ -70,27 +108,54 @@ export function defaultConfigPath(): string {
 }
 
 /**
- * Validate and normalize a configured baseUrl.
- * Rules: absolute https URL, hostname present, no userinfo, no query, no
- * fragment; a path prefix is allowed; trailing slashes are trimmed.
+ * Validate and normalize a configured https endpoint URL (baseUrl, tokenUrl, idpUrl).
+ * Rules: absolute https URL, hostname present, no userinfo, no query, no fragment.
  */
-export function normalizeBaseUrl(raw: string): string {
+function validateHttpsUrl(raw: string, fieldLabel: string): URL {
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    throw new SanitizedError("CONFIG_INVALID", "environment baseUrl must be a valid absolute URL");
+    throw new SanitizedError("CONFIG_INVALID", `environment ${fieldLabel} must be a valid absolute URL`);
   }
   if (url.protocol !== "https:") {
-    throw new SanitizedError("CONFIG_INVALID", "environment baseUrl must use the https scheme");
+    throw new SanitizedError("CONFIG_INVALID", `environment ${fieldLabel} must use the https scheme`);
   }
   if (url.username !== "" || url.password !== "") {
-    throw new SanitizedError("CONFIG_INVALID", "environment baseUrl must not contain credentials (userinfo)");
+    throw new SanitizedError("CONFIG_INVALID", `environment ${fieldLabel} must not contain credentials (userinfo)`);
   }
   if (url.search !== "" || url.hash !== "") {
-    throw new SanitizedError("CONFIG_INVALID", "environment baseUrl must not contain a query string or fragment");
+    throw new SanitizedError("CONFIG_INVALID", `environment ${fieldLabel} must not contain a query string or fragment`);
   }
-  return url.toString().replace(/\/+$/, "");
+  return url;
+}
+
+/**
+ * Validate and normalize a configured baseUrl.
+ * A path prefix is allowed; trailing slashes are trimmed.
+ */
+export function normalizeBaseUrl(raw: string): string {
+  return validateHttpsUrl(raw, "baseUrl").toString().replace(/\/+$/, "");
+}
+
+/** Validate oauth endpoint fields and derive idpUrl from the tokenUrl origin when absent. */
+function materializeOAuthAuth(
+  auth: z.infer<typeof oauthAuthSchema>,
+): OAuthAuthConfig {
+  const tokenUrl = validateHttpsUrl(auth.tokenUrl, "tokenUrl").toString().replace(/\/+$/, "");
+  const idpUrl =
+    auth.idpUrl !== undefined
+      ? validateHttpsUrl(auth.idpUrl, "idpUrl").toString().replace(/\/+$/, "")
+      : `${new URL(tokenUrl).origin}/oauth/idp`;
+  return {
+    type: "oauth",
+    clientId: auth.clientId,
+    companyId: auth.companyId,
+    userId: auth.userId,
+    privateKey: auth.privateKey,
+    tokenUrl,
+    idpUrl,
+  };
 }
 
 function formatIssues(error: z.ZodError): string {
@@ -172,7 +237,10 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<SsffC
   for (const [alias, env] of Object.entries(result.data.environments)) {
     environments[alias] = {
       baseUrl: normalizeBaseUrl(env.baseUrl),
-      auth: { type: "basic", username: env.auth.username, password: env.auth.password },
+      auth:
+        env.auth.type === "basic"
+          ? { type: "basic", username: env.auth.username, password: env.auth.password }
+          : materializeOAuthAuth(env.auth),
     };
   }
   return { environments };

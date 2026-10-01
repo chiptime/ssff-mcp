@@ -7,6 +7,17 @@
         "username": "<api-username>",
         "password": "<api-password>"
       }
+    },
+    "<environment-alias-oauth>": {
+      "baseUrl": "https://<tenant-api-host>",
+      "auth": {
+        "type": "oauth",
+        "clientId": "<oauth-client-api-key>",
+        "companyId": "<tenant-company-id>",
+        "userId": "<technical-user-id-without-company>",
+        "privateKey": "<rsa-private-key-exported-from-sf-admin>",
+        "tokenUrl": "https://<token-endpoint-host>/oauth/token"
+      }
     }
   }
 }

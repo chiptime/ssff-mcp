@@ -378,3 +378,62 @@ test("error outcomes are logged with their sanitized code via the injectable sin
     }
   });
 });
+
+// --- OAuth environments (FR-32/FR-33) ----------------------------------------
+
+const OAUTH_ASSERTION = "PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0idXRmLTgiPz48IZZTIW9u";
+
+function oauthConfigJson(alias: string): string {
+  return JSON.stringify({
+    environments: {
+      [alias]: {
+        baseUrl: "https://tenant-oauth.example.com",
+        auth: {
+          type: "oauth",
+          clientId: "api-key-1",
+          companyId: "co",
+          userId: "SFAPI",
+          privateKey: "KEYMAT",
+          tokenUrl: "https://auth.example.com/oauth/token",
+        },
+      },
+    },
+  });
+}
+
+function oauthSfResponder(queryBody: unknown): ReturnType<typeof standardSfResponder> {
+  return (url) => {
+    if (url.endsWith("/oauth/idp")) return xmlResponse(OAUTH_ASSERTION, 200, { "content-type": "text/plain" });
+    if (url.endsWith("/oauth/token")) return jsonResponse({ access_token: "TT", expires_in: 3600 });
+    if (url.endsWith("/$metadata")) return xmlResponse(SAMPLE_METADATA_XML, 200, { "content-type": "application/xml" });
+    return jsonResponse(queryBody);
+  };
+}
+
+test("list_environments reports the oauth auth type", async () => {
+  const configPath = await writeConfigFile(oauthConfigJson("oa-list"), { mode: 0o600 });
+  const { fetch } = recordingFetch(() => jsonResponse({}));
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const result = await callTool(client, "list_environments", {});
+    assert.equal(result.isError, undefined);
+    const environments = (result.structuredContent as { environments: Array<{ alias: string; authType: string }> })
+      .environments;
+    assert.deepEqual(environments, [{ alias: "oa-list", authType: "oauth" }]);
+  });
+});
+
+test("query_entity works end to end for an oauth environment", async () => {
+  const configPath = await writeConfigFile(oauthConfigJson("oa-query"), { mode: 0o600 });
+  const { fetch, requests } = recordingFetch(oauthSfResponder(feed([{ userId: "1001" }])));
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const result = await callTool(client, "query_entity", { environment: "oa-query", entityPath: "User", top: 5 });
+    assert.equal(result.isError, undefined);
+    const structured = result.structuredContent as { recordCount: number; records: unknown[] };
+    assert.equal(structured.recordCount, 1);
+  });
+  const posts = requests.filter((r) => r.method === "POST");
+  assert.equal(posts.length, 2); // idp + token, exactly once
+  const dataGets = requests.filter((r) => r.method === "GET");
+  assert.equal(dataGets.length, 2); // $metadata (validation) + data page
+  assert.equal(dataGets[1]!.headers.Authorization, "Bearer TT");
+});

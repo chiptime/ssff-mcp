@@ -189,10 +189,11 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         const environments = await loadFreshConfig();
         const { alias, env } = resolveEnvironment(environments, args.environment);
         // Always fresh from the source; the metadata cache is never used here.
-        const result = await dispatchGet(envTargetFor(env), "$metadata", {
+        const result = await dispatchGet(envTargetFor(env, alias), "$metadata", {
           accept: "application/xml",
           timeoutMs: METADATA_TOOL_TIMEOUT_MS,
           fetchImpl,
+          now: deps.now,
         });
         return {
           structured: { environment: alias, contentType: "xml" },
@@ -224,7 +225,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           skip: args.skip,
         });
 
-        const target: EnvTarget = envTargetFor(env);
+        const target: EnvTarget = envTargetFor(env, alias);
         const verdict = await metadataService.classifyFirstSegment(target, alias, validatedPath.firstSegmentName);
         if (verdict.kind === "function-import") {
           throw new SanitizedError(
@@ -240,6 +241,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           accept: "application/json",
           timeoutMs: QUERY_TOOL_TIMEOUT_MS,
           fetchImpl,
+          now: deps.now,
         });
 
         let parsed: unknown;

@@ -13,7 +13,9 @@
  */
 
 import { SanitizedError, redactUrls, sanitizeMessage } from "./errors.js";
-import type { EnvironmentConfig } from "./config.js";
+import type { EnvironmentConfig, OAuthAuthConfig } from "./config.js";
+import { getAuthorizationHeader, invalidateOAuthToken } from "./oauth.js";
+import type { OAuthFetch, OAuthPostInit } from "./oauth.js";
 
 export const USER_AGENT = "ssff-mcp/0.1.0 (+mcp; linux)";
 export const MAX_REDIRECT_HOPS = 5;
@@ -28,12 +30,15 @@ export function buildHeaders(accept: string, authorization: string): Record<stri
 }
 
 export interface EnvTarget {
+  /** Environment alias (OAuth token cache key; "" only in basic-auth unit tests). */
+  alias: string;
   /** Absolute service root, always ending with `/` (e.g. https://host/odata/v2/). */
   serviceRoot: string;
   /** hostname(+port) every request/redirect must match. */
   expectedHost: string;
-  username: string;
-  password: string;
+  auth:
+    | { kind: "basic"; username: string; password: string }
+    | { kind: "oauth"; config: OAuthAuthConfig };
 }
 
 /** Normalize a URL's host to hostname(:port) with default ports collapsed. */
@@ -45,14 +50,17 @@ function hostOf(url: URL): string {
   return port === "" ? url.hostname : `${url.hostname}:${port}`;
 }
 
-export function envTargetFor(env: EnvironmentConfig): EnvTarget {
+export function envTargetFor(env: EnvironmentConfig, alias = ""): EnvTarget {
   const rootUrl = new URL(env.baseUrl);
   const serviceRoot = env.baseUrl.replace(/\/+$/, "") + "/odata/v2/";
   return {
+    alias,
     serviceRoot,
     expectedHost: hostOf(rootUrl),
-    username: env.auth.username,
-    password: env.auth.password,
+    auth:
+      env.auth.type === "basic"
+        ? { kind: "basic", username: env.auth.username, password: env.auth.password }
+        : { kind: "oauth", config: env.auth },
   };
 }
 
@@ -69,7 +77,14 @@ export interface FetchInitLike {
   signal: AbortSignal;
 }
 
-export type FetchImpl = (url: string, init: FetchInitLike) => Promise<MinimalResponse>;
+/**
+ * Injectable fetch union: data reads are always GET (dispatchGet); the only
+ * POSTs in this codebase are the two fixed OAuth endpoints (src/oauth.ts,
+ * DS-P2-05). No other method shape exists.
+ */
+export type AnyFetchInit = FetchInitLike | OAuthPostInit;
+
+export type FetchImpl = (url: string, init: AnyFetchInit) => Promise<MinimalResponse>;
 
 const defaultFetch: FetchImpl = (url, init) => fetch(url, init);
 
@@ -77,6 +92,9 @@ export interface DispatchOptions {
   accept: string;
   timeoutMs: number;
   fetchImpl?: FetchImpl;
+  /** Injectable clock/sleep forwarded to the OAuth token manager (tests). */
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export interface DispatchResult {
@@ -86,21 +104,32 @@ export interface DispatchResult {
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
+/** Resolve the Authorization header: Basic (sync) or Bearer via the OAuth token manager. */
+async function buildAuthorization(env: EnvTarget, options: DispatchOptions): Promise<string> {
+  if (env.auth.kind === "basic") {
+    return "Basic " + Buffer.from(`${env.auth.username}:${env.auth.password}`, "utf-8").toString("base64");
+  }
+  return await getAuthorizationHeader(env.alias, env.auth.config, {
+    fetchImpl: options.fetchImpl,
+    now: options.now,
+    sleep: options.sleep,
+  });
+}
+
 export async function dispatchGet(
   env: EnvTarget,
   pathAndQuery: string,
   options: DispatchOptions,
 ): Promise<DispatchResult> {
   const fetchImpl = options.fetchImpl ?? defaultFetch;
-  const authorization =
-    "Basic " + Buffer.from(`${env.username}:${env.password}`, "utf-8").toString("base64");
-  const headers = buildHeaders(options.accept, authorization);
 
   // The URL is built exclusively from the configured service root; tool
   // inputs never touch scheme, host or base URL.
   let current = new URL(pathAndQuery, env.serviceRoot);
+  let hops = 0;
+  let authRetried = false;
 
-  for (let hop = 0; hop <= MAX_REDIRECT_HOPS; hop++) {
+  for (;;) {
     // Defense in depth: every request must stay on the configured https host.
     if (current.protocol !== "https:" || hostOf(current) !== env.expectedHost) {
       throw new SanitizedError(
@@ -108,6 +137,9 @@ export async function dispatchGet(
         "redirect to a host different from the configured environment host was blocked",
       );
     }
+
+    const authorization = await buildAuthorization(env, options);
+    const headers = buildHeaders(options.accept, authorization);
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), options.timeoutMs);
@@ -134,7 +166,7 @@ export async function dispatchGet(
       if (location === null || location.length === 0) {
         throw await httpError(response, "missing redirect location");
       }
-      if (hop === MAX_REDIRECT_HOPS) {
+      if (hops >= MAX_REDIRECT_HOPS) {
         throw new SanitizedError("REDIRECT_BLOCKED", `too many redirects (limit ${MAX_REDIRECT_HOPS})`);
       }
       let next: URL;
@@ -153,6 +185,16 @@ export async function dispatchGet(
         throw new SanitizedError("REDIRECT_BLOCKED", "redirect to a non-https target was blocked");
       }
       current = next;
+      hops += 1;
+      continue;
+    }
+
+    // OAuth 401 recovery (FR-33): drop the cached token and retry the GET
+    // exactly once with a freshly acquired header. Basic environments never
+    // retry (no error amplification).
+    if (response.status === 401 && env.auth.kind === "oauth" && !authRetried) {
+      invalidateOAuthToken(env.alias);
+      authRetried = true;
       continue;
     }
 
@@ -162,9 +204,6 @@ export async function dispatchGet(
 
     return { status: response.status, body: await response.text() };
   }
-
-  // Unreachable: the loop either returns or throws.
-  throw new SanitizedError("INTERNAL_ERROR", "an unexpected internal error occurred");
 }
 
 const STATUS_PHRASES: Record<number, string> = {

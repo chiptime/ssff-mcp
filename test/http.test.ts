@@ -260,3 +260,98 @@ test("long service error messages are clamped", async () => {
     },
   );
 });
+
+// --- OAuth (FR-32/FR-33) ----------------------------------------------------
+
+const OAUTH_ASSERTION = "PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0idXRmLTgiPz48IZZTIW9u";
+
+const OAUTH_ENV = {
+  baseUrl: "https://tenant-oauth.example.com",
+  auth: {
+    type: "oauth" as const,
+    clientId: "api-key-1",
+    companyId: "co",
+    userId: "SFAPI",
+    privateKey: "KEYMAT",
+    tokenUrl: "https://auth.example.com/oauth/token",
+    idpUrl: "https://auth.example.com/oauth/idp",
+  },
+};
+
+test("oauth environments attach a Bearer header acquired via the two POSTs", async () => {
+  const { fetch, requests } = recordingFetch((url) => {
+    if (url.endsWith("/oauth/idp")) return xmlResponse(OAUTH_ASSERTION, 200, { "content-type": "text/plain" });
+    if (url.endsWith("/oauth/token")) return jsonResponse({ access_token: "T1", expires_in: 3600 });
+    return jsonResponse({ d: { results: [] } });
+  });
+  await dispatchGet(envTargetFor(OAUTH_ENV, "oa-http-1"), "User", {
+    accept: "application/json",
+    timeoutMs: 1000,
+    fetchImpl: fetch,
+  });
+
+  assert.equal(requests.length, 3);
+  assert.equal(requests[0]!.method, "POST");
+  assert.equal(requests[0]!.headers.Authorization, undefined);
+  assert.equal(requests[1]!.method, "POST");
+  assert.equal(requests[1]!.headers.Authorization, undefined);
+  assert.equal(requests[2]!.method, "GET");
+  assert.equal(requests[2]!.headers.Authorization, "Bearer T1");
+});
+
+test("a 401 on a data read invalidates the token and retries exactly once", async () => {
+  let dataCalls = 0;
+  const { fetch, requests } = recordingFetch((url) => {
+    if (url.endsWith("/oauth/idp")) return xmlResponse(OAUTH_ASSERTION, 200, { "content-type": "text/plain" });
+    if (url.endsWith("/oauth/token")) return jsonResponse({ access_token: "T2", expires_in: 3600 });
+    dataCalls += 1;
+    if (dataCalls === 1) return jsonResponse({ error: { code: "Unauthorized" } }, 401);
+    return jsonResponse({ d: { results: [] } });
+  });
+  const result = await dispatchGet(envTargetFor(OAUTH_ENV, "oa-http-2"), "User", {
+    accept: "application/json",
+    timeoutMs: 1000,
+    fetchImpl: fetch,
+  });
+  assert.equal(result.status, 200);
+
+  const dataGets = requests.filter((r) => r.method === "GET");
+  assert.equal(dataGets.length, 2);
+  assert.equal(dataGets[1]!.headers.Authorization, "Bearer T2");
+  assert.equal(requests.filter((r) => r.method === "POST").length, 4); // 2 acquisitions
+});
+
+test("a second 401 surfaces as a sanitized HTTP_ERROR", async () => {
+  const { fetch } = recordingFetch((url) => {
+    if (url.endsWith("/oauth/idp")) return xmlResponse(OAUTH_ASSERTION, 200, { "content-type": "text/plain" });
+    if (url.endsWith("/oauth/token")) return jsonResponse({ access_token: "T3", expires_in: 3600 });
+    return jsonResponse({ error: { code: "Unauthorized" } }, 401);
+  });
+  await assert.rejects(
+    () =>
+      dispatchGet(envTargetFor(OAUTH_ENV, "oa-http-3"), "User", {
+        accept: "application/json",
+        timeoutMs: 1000,
+        fetchImpl: fetch,
+      }),
+    (error: unknown) => {
+      assert.ok(isSanitizedError(error));
+      assert.equal(error.code, "HTTP_ERROR");
+      assert.equal(error.httpStatus, 401);
+      return true;
+    },
+  );
+});
+
+test("basic environments do not retry on 401", async () => {
+  const { fetch, requests } = recordingFetch(() => jsonResponse({ error: { code: "Unauthorized" } }, 401));
+  await assert.rejects(
+    () => dispatchGet(envTargetFor(ENV), "User", { accept: "application/json", timeoutMs: 1000, fetchImpl: fetch }),
+    (error: unknown) => {
+      assert.ok(isSanitizedError(error));
+      assert.equal(error.code, "HTTP_ERROR");
+      return true;
+    },
+  );
+  assert.equal(requests.length, 1);
+});

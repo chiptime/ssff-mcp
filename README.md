@@ -40,10 +40,37 @@ The file is re-read and re-validated on **every tool call** (stateless). It is n
 |---|---|
 | `environments` | Required object; may be empty. Keys are environment aliases you choose (for example `prod`, `staging`). |
 | `environments.<alias>.baseUrl` | Tenant API origin, for example `https://api4.successfactors.com`. Must be `https`, no credentials/userinfo, no query string or fragment. A path prefix is allowed. The server appends `/odata/v2` — do not include it yourself. |
-| `environments.<alias>.auth.type` | Must be `"basic"` (the only auth type in the MVP; anything else is a configuration error). |
-| `environments.<alias>.auth.username` | API username. SuccessFactors API users are often of the form `user@companyId`. |
-| `environments.<alias>.auth.password` | API password. Stored in plain text — see security disclosures below. |
+| `environments.<alias>.auth.type` | `"basic"` or `"oauth"` (see the OAuth section below). |
+| `environments.<alias>.auth.username` | Basic auth API username. SuccessFactors API users are often of the form `user@companyId`. |
+| `environments.<alias>.auth.password` | Basic auth API password. Stored in plain text — see security disclosures below. |
 | `defaultEnvironment` | Optional. If present it MUST be `null`. Any non-null value is rejected: implicit environment selection is forbidden. |
+
+### OAuth 2.0 (alternative to Basic, per environment)
+
+Set `auth.type` to `"oauth"` to use the SAP SuccessFactors OAuth 2.0 flow
+(grant `urn:ietf:params:oauth:grant-type:saml2-bearer` via SAP's IdP helper — no local
+SAML signing, no extra dependencies):
+
+| Field | Meaning |
+|---|---|
+| `auth.clientId` | OAuth2 client **API key** generated when the client was registered in SF Admin Center (Manage OAuth2 Client Applications). |
+| `auth.companyId` | Tenant company id; sent as `company_id` to the token endpoint. |
+| `auth.userId` | Technical user id **WITHOUT** the `@companyId` suffix (configurations containing `@` are rejected with a hint). |
+| `auth.privateKey` | RSA private key exported from SF Admin, inline in plain text — see security disclosures. |
+| `auth.tokenUrl` | Fixed token endpoint, e.g. `https://<host>/oauth/token`. Must be `https`. Must match exactly what SAP expects (SAP embeds it in the assertion audience). |
+| `auth.idpUrl` | Optional. SAP IdP helper endpoint; defaults to the `tokenUrl` origin + `/oauth/idp`. |
+
+Flow (automatic, per tool call when needed): `POST {idpUrl}` with
+`{client_id, user_id, token_url, private_key}` returns a signed SAML assertion;
+`POST {tokenUrl}` with `{client_id, grant_type, company_id, assertion}` returns the
+bearer token (`expires_in` ≈ 24h). Tokens are cached **in memory per environment
+only** (until the process restarts), refreshed with a 60s/10% safety margin, and a
+401 on a data read triggers exactly one invalidation + retry. These two POSTs are the
+only non-GET requests the server can ever issue.
+
+**Prerequisite:** the client machine's IP must be whitelisted in SF Admin Center
+(Password & Login Policy Settings → API login exceptions) or the token endpoints will
+reject the connection.
 
 ### Multiple environments example
 
@@ -67,6 +94,8 @@ Every tool call names its environment explicitly. Unknown or missing environment
 ## Security disclosures (read before using)
 
 - **The configuration file contains secrets in PLAIN TEXT.** Git-ignoring it is NOT encryption. Restrict it with `chmod 600 ~/.config/ssff-mcp/config.json`. Never copy the real file into the repository (`config.json` is gitignored defensively for this reason).
+- **OAuth private keys are also plain text**, and with SAP's IdP-helper flow the key additionally transits HTTPS to the configured `idpUrl` on each assertion acquisition (endpoints are fixed per environment in your config). Local signing (key never leaves the process) is a possible future improvement; today's behavior matches the standard SAP helper flow.
+- **OAuth tokens never touch disk, logs, or error messages.** They live in process memory only and die with the process.
 - **The tenant account MUST be least-privileged and read-only.** This MCP enforces read-only behavior client-side, but source-side permissions are an acceptance condition: verify the account's roles in the tenant. What the account can read, this server can read.
 - **All traffic to the tenant uses HTTPS.** Basic Auth credentials are only ever sent over TLS, and redirects are followed only to the same https host configured for the environment.
 - **Errors are sanitized.** Errors returned to the model are `{ code, message }` (plus optional `httpStatus`) with URLs redacted from service messages and generic wording for network failures (no hostnames).

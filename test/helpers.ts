@@ -9,7 +9,7 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import type { FetchImpl, FetchInitLike, MinimalResponse } from "../src/http.js";
+import type { AnyFetchInit, FetchImpl, MinimalResponse } from "../src/http.js";
 import { createMcpServer, type ServerDeps } from "../src/tools.js";
 
 export class FakeResponse implements MinimalResponse {
@@ -54,7 +54,7 @@ export interface CapturedRequest {
 
 export type Responder = (
   url: string,
-  init: FetchInitLike,
+  init: AnyFetchInit,
   callIndex: number,
 ) => MinimalResponse | Promise<MinimalResponse>;
 

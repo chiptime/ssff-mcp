@@ -102,15 +102,14 @@ test("baseUrl with userinfo is rejected", async () => {
   );
 });
 
-test("non-basic auth type is rejected in the MVP", async () => {
+test("unknown auth type is rejected", async () => {
   const filePath = await writeConfigRaw(JSON.stringify({
-    environments: { a: { baseUrl: "https://a.example.com", auth: { type: "oauth", username: "u", password: "p" } } },
+    environments: { a: { baseUrl: "https://a.example.com", auth: { type: "api-key", token: "x" } } },
   }));
   await assert.rejects(
     () => loadConfig({ configPath: filePath }),
     (error: unknown) => {
       const err = expectSanitized(error, "CONFIG_INVALID");
-      assert.match(err.message, /basic/);
       return true;
     },
   );
@@ -179,3 +178,69 @@ async function writeConfigRaw(contents: string): Promise<string> {
   await fs.chmod(filePath, 0o600);
   return filePath;
 }
+
+function oauthEnv(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    baseUrl: "https://tenant.example.com",
+    auth: {
+      type: "oauth",
+      clientId: "api-key",
+      companyId: "company",
+      userId: "SFAPI",
+      privateKey: "key-material",
+      tokenUrl: "https://auth.example.com/oauth/token",
+      ...overrides,
+    },
+  };
+}
+
+test("oauth auth parses and idpUrl is derived from the tokenUrl origin", async () => {
+  const filePath = await writeConfigRaw(JSON.stringify({ environments: { oa: oauthEnv() } }));
+  const config = await loadConfig({ configPath: filePath });
+  const auth = config.environments.oa!.auth;
+  assert.equal(auth.type, "oauth");
+  if (auth.type === "oauth") {
+    assert.equal(auth.idpUrl, "https://auth.example.com/oauth/idp");
+    assert.equal(auth.tokenUrl, "https://auth.example.com/oauth/token");
+  }
+});
+
+test("an explicit idpUrl is honored", async () => {
+  const filePath = await writeConfigRaw(
+    JSON.stringify({
+      environments: { oa: oauthEnv({ idpUrl: "https://idp.example.com/oauth/idp" }) },
+    }),
+  );
+  const config = await loadConfig({ configPath: filePath });
+  if (config.environments.oa!.auth.type === "oauth") {
+    assert.equal(config.environments.oa!.auth.idpUrl, "https://idp.example.com/oauth/idp");
+  }
+});
+
+test("http tokenUrl is rejected", async () => {
+  const filePath = await writeConfigRaw(
+    JSON.stringify({ environments: { oa: oauthEnv({ tokenUrl: "http://auth.example.com/oauth/token" }) } }),
+  );
+  await rejectsCode(() => loadConfig({ configPath: filePath }), "CONFIG_INVALID");
+});
+
+test("oauth userId containing @ is rejected with a guiding message", async () => {
+  const filePath = await writeConfigRaw(
+    JSON.stringify({ environments: { oa: oauthEnv({ userId: "SFAPI@company" }) } }),
+  );
+  await assert.rejects(
+    () => loadConfig({ configPath: filePath }),
+    (error: unknown) => {
+      expectSanitized(error, "CONFIG_INVALID");
+      assert.match((error as { message: string }).message, /WITHOUT the @companyId/);
+      return true;
+    },
+  );
+});
+
+test("missing oauth fields are rejected", async () => {
+  const filePath = await writeConfigRaw(
+    JSON.stringify({ environments: { oa: oauthEnv({ privateKey: undefined }) } }),
+  );
+  await rejectsCode(() => loadConfig({ configPath: filePath }), "CONFIG_INVALID");
+});
