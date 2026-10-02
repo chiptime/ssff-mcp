@@ -547,7 +547,7 @@ const XML_FEED = `<?xml version="1.0" encoding="utf-8"?>
 </feed>
 `;
 
-test("output xml sends Accept application/atom+xml and returns the raw body with paging flags", async () => {
+test("output xml sends Accept application/atom+xml and returns the sanitized body with paging flags", async () => {
   const configPath = await writeStandardConfig();
   const { fetch, requests } = recordingFetch((url) => {
     if (url.endsWith("/$metadata")) {
@@ -559,7 +559,15 @@ test("output xml sends Accept application/atom+xml and returns the raw body with
     const args = { environment: "tenant-a", entityPath: "User", output: "xml" as const };
     const result = await callTool(client, "query_entity", args);
     assert.equal(result.isError, undefined);
-    assert.equal((result.content[0] as { text: string }).text, XML_FEED);
+    // DS-P2-06: the raw body minus the next-link href. The <entry> payload
+    // survives verbatim, but neither the next URL nor the skiptoken leaves
+    // the process — continuation is the opaque cursor only.
+    const text = (result.content[0] as { text: string }).text;
+    assert.ok(text.includes(`<entry><id>https://tenant-a.example.com/odata/v2/User('u1')</id></entry>`));
+    assert.ok(text.includes('<link rel="next"/>'));
+    assert.ok(!text.includes("xml-tok-1"));
+    assert.ok(!text.includes("$skiptoken"));
+    assert.ok(!text.includes('href="https://tenant-a.example.com/odata/v2/User'));
 
     const structured = result.structuredContent as {
       environment: string;

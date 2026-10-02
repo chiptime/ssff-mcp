@@ -1,0 +1,2 @@
+minimumReleaseAgeExclude:
+  - odata-batch@2.1.0

@@ -42,7 +42,7 @@ export interface EnvTarget {
 }
 
 /** Normalize a URL's host to hostname(:port) with default ports collapsed. */
-function hostOf(url: URL): string {
+export function hostOf(url: URL): string {
   let port = url.port;
   if ((url.protocol === "https:" && port === "443") || (url.protocol === "http:" && port === "80")) {
     port = "";
@@ -78,15 +78,29 @@ export interface FetchInitLike {
 }
 
 /**
+ * The single fixed `$batch` POST of batch_get (DS-P2-04): body is the
+ * GET-only multipart envelope built by odata-batch's retrieve mode; the
+ * transport validates it before dispatch (src/batch.ts).
+ */
+export interface BatchPostInit {
+  method: "POST";
+  headers: Record<string, string>;
+  body: string;
+  redirect: "manual";
+  signal: AbortSignal;
+}
+
+/**
  * Injectable fetch union: data reads are always GET (dispatchGet); the only
  * POSTs in this codebase are the two fixed OAuth endpoints (src/oauth.ts,
- * DS-P2-05). No other method shape exists.
+ * DS-P2-05) and the single fixed `$batch` POST of batch_get (src/batch.ts,
+ * DS-P2-04 — GET-only multipart envelope). No other method shape exists.
  */
-export type AnyFetchInit = FetchInitLike | OAuthPostInit;
+export type AnyFetchInit = FetchInitLike | OAuthPostInit | BatchPostInit;
 
 export type FetchImpl = (url: string, init: AnyFetchInit) => Promise<MinimalResponse>;
 
-const defaultFetch: FetchImpl = (url, init) => fetch(url, init);
+export const defaultFetch: FetchImpl = (url, init) => fetch(url, init);
 
 export interface DispatchOptions {
   accept: string;

@@ -20,6 +20,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.18.0",
     "fast-xml-parser": "^5.0.0",
+    "odata-batch": "2.1.0",
     "zod": "^3.25.0"
   },
   "devDependencies": {

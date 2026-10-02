@@ -12,6 +12,7 @@
 |---|---|
 | v0.1 | Cierre de Q-4 (v4 descartado con evidencia 404), Q-5-cursor (stateless sin TTL), Q-8 (batch_get vía odata-batch, techo 180 docu SAP), apertura de Q-6 (verificación OAuth con admin). Nuevas D-26..D-32, DS-P2-01..04, FR-25..FR-35. |
 | v0.2 | Evidencia E2: flujo OAuth verificado contra la implementación de producción del maintainer (grant SAML 2.0 Bearer vía helper `/oauth/idp` de SAP, sin firma XML local; dos endpoints fijos por entorno). DS-P2-05 nuevo; FR-32 y FR-33 enmendados; A-P2-4 pasa de supuesto a evidencia; revisión D-24 realizada y documentada. |
+| v0.3 | DS-P2-06 nuevo: la salida XML (`query_entity` y `batch_get`) suprime el `href` del `<link rel="next">` del cuerpo Atom devuelto (el resto del XML crudo se preserva); reconcilia la opacidad del cursor (D-27) con el XML crudo/nativo (D-32). FR-27 y criterio E.1-3 enmendados en consecuencia (se documenta además el `Accept: application/atom+xml` real de D-32). |
 
 Este documento consolida decisiones ya confirmadas. Ninguna parte autoriza a escribir código, publicar o cambiar licencia (D-10/D-11 de PRD.md siguen vigentes). **MUST / MUST NOT / SHOULD / MAY** según RFC 2119.
 
@@ -47,6 +48,7 @@ Convención (heredada de PRD.md):
 | DS-P2-03 | Entradas allowlist con `protocols: ["v4"]` (o que excluyan v2) ⇒ **denegadas en esta fase**: sin v4 no hay protocolo disponible para esa entidad. | D-26, D-30 |
 | DS-P2-04 | El sobre `$batch` GET-only es **la única** clase de POST a recursos de datos del producto; el POST al `tokenUrl` fijo es la única otra excepción POST (autenticación). No existe ninguna más. | D-07/D-08/DS-08 (PRD.md), D-28, D-29 |
 | DS-P2-05 | OAuth usa **dos endpoints fijos por entorno**, ambos TLS y solo desde config, nunca input del modelo: `tokenUrl` (`POST /oauth/token`) y `idpUrl` (`POST /oauth/idp`, derivado por defecto del origen de `tokenUrl` + `/oauth/idp`, sobreescribible). La clave privada solo se transmite al `idpUrl` sobre HTTPS (comportamiento del helper IdP de SAP, E2). | D-29, E2 |
+| DS-P2-06 | La salida XML de `query_entity` y `batch_get` DEBE suprimir el `href` del `<link rel="next">` del cuerpo Atom devuelto (el elemento y el resto del XML crudo —campos nativos, `entry`, `m:count`— se preservan; un cuerpo sin enlace next se devuelve byte a byte). La continuación se expone **exclusivamente** como cursor opaco enlazado en el contenido estructurado, generado a partir del `href` original **antes** de sanitizar. Ningún cuerpo devuelto MUST NOT contener la URL del servicio ni el `$skiptoken` crudo del enlace next. | D-27, D-32, FR-25, FR-27 |
 
 ---
 
@@ -196,7 +198,7 @@ Métricas (resultado, no actividad):
 
 1. `query_entity` con continuación real devuelve cursor válido; la llamada explícita siguiente con ese cursor devuelve la página siguiente del servicio (ventana skiptoken). [FR-25]
 2. `inlinecount` devuelve el total real (`User` = 96.577 en `clecesa`). [FR-26]
-3. `output: "xml"` devuelve el cuerpo crudo del servicio con `Accept: application/xml`. [FR-27]
+3. `output: "xml"` devuelve el cuerpo crudo del servicio con `Accept: application/atom+xml`, preservando campos nativos y XML de datos, pero **sin** el `href` del `<link rel="next">` (DS-P2-06); la continuación va solo en el cursor opaco del contenido estructurado. [FR-27]
 4. Con allowlist configurada: entidad listada permitida, ausente denegada, `$metadata` sin filtrar; entrada solo-v4 denegada en esta fase. [FR-28, DS-P2-03]
 5. `batch_get` con N items GET válidos ejecuta **un** POST al `$batch` fijo y responde por elemento en orden. [FR-29]
 6. OAuth (condicional): grant verificado contra el tenant ⇒ flujo funcional con `tokenUrl` fijo y caché transitoria; grant NO verificado ⇒ bloqueado con informe, sin implementación a ciegas. [FR-32]
@@ -221,7 +223,7 @@ V1 automatizada (suite negativa/positiva extendida) es la base, misma condición
 
 - **FR-25** — `query_entity` DEBE (MUST) devolver un cursor de continuación opaco cuando el servicio entregue `__next`, y DEBE (MUST) aceptarlo en una llamada explícita posterior para devolver exactamente la siguiente página del servicio. El cursor DEBE (MUST) ser un sobre firmado HMAC con secreto efímero de proceso, ligado a entorno+entityPath+opciones, sin TTL de reloj y sin almacenamiento servidor. Cursor manipulado, cruzado o previo a reinicio ⇒ rechazo saneado pre-despacho. Nunca MUST NOT inventarse continuación inexistente. Fuente: D-27; sustituye FR-23.
 - **FR-26** — `query_entity` DEBE (MUST) aceptar la opción `inlinecount` (`allpages`) y devolver `totalCount` cuando el servicio provea `__count`; valor crudo sin reescritura. Fuente: D-31, sonda 2026-10-01.
-- **FR-27** — `query_entity` DEBE (MUST) aceptar `output: "json" (defecto) | "xml"`; xml = cuerpo crudo del servicio con `Accept: application/xml`; campos nativos siempre, sin normalización. Fuente: D-32; sustituye FR-24 (ámbito v2).
+- **FR-27** — `query_entity` DEBE (MUST) aceptar `output: "json" (defecto) | "xml"`; xml = cuerpo Atom crudo del servicio con `Accept: application/atom+xml`; campos nativos y XML de datos siempre, sin normalización, **con la única excepción del `href` del `<link rel="next">`**: ese `href` NO DEBE (MUST NOT) aparecer en el cuerpo devuelto (DS-P2-06); la continuación se expone únicamente como cursor opaco enlazado en el contenido estructurado, derivado del `href` original antes de sanitizar. Un cuerpo sin enlace next DEBE (MUST) devolverse byte a byte. Fuente: D-32 + D-27/DS-P2-06; sustituye FR-24 (ámbito v2).
 - **FR-28** — El servidor DEBE (MUST) aplicar `entityAllowlist` cuando exista en config: entidad ausente ⇒ denegada; `protocols` opcional por entrada (omisión = ambos; entradas sin v2 disponible ⇒ denegadas en esta fase); `$metadata` NO MUST NOT filtrarse jamás. Fuente: D-30, DS-P2-03; sustituye FR-19 (ámbito v2).
 - **FR-29** — `batch_get` DEBE (MUST) aceptar exclusivamente items conformes a la gramática GET de `query_entity` (mismo validador), construir un sobre multipart **sin ChangeSets** y despacharlo como **único POST al `$batch` fijo** del entorno. Cualquier item no conforme ⇒ lote completo rechazado antes del despacho. Máximo **180 items** por lote. Fuente: D-28, R9; sustituye FR-17.
 - **FR-30** — La respuesta de `batch_get` DEBE (MUST) ser por elemento, en el orden de envío, con estado por elemento; el total agregado de registros devueltos NO DEBE (MUST NOT) exceder 1.000, con independencia del número de items. Fuente: DS-P2-01, D-18.

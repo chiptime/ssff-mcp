@@ -22,6 +22,7 @@ export type SanitizedErrorCode =
   | "NETWORK_ERROR"
   | "HTTP_ERROR"
   | "RESPONSE_INVALID"
+  | "BATCH_INVALID"
   | "OAUTH_ASSERTION_ERROR"
   | "OAUTH_TOKEN_ERROR"
   | "INTERNAL_ERROR";

@@ -296,3 +296,31 @@ export function extractXmlPaging(xml: string): XmlPaging {
   const entryCount = (xml.match(/<entry[\s>]/g) ?? []).length;
   return { hasMore: nextUrl !== null, nextUrl, totalCount, entryCount };
 }
+
+// rel="next" (double or single quotes) inside a link tag. Non-global: no
+// lastIndex state, safe for repeated .test() calls.
+const REL_IS_NEXT = /\brel\s*=\s*(?:"next"|'next')/;
+// The href attribute of a link tag, including its leading whitespace, so
+// removing it never leaves a double space inside the tag.
+const HREF_ATTRIBUTE = /\s+href\s*=\s*(?:"[^"]*"|'[^']*')/;
+
+/**
+ * Return `xml` with the `href` attribute removed from every Atom `<link>`
+ * element whose `rel` is exactly `next` — tolerating single or double quotes,
+ * any attribute order and an optional element namespace prefix. Everything
+ * else (non-next links, all other elements and whitespace) is preserved
+ * byte-for-byte, and a body with no next link is returned unchanged.
+ *
+ * This applies the D-27 cursor-opacity contract to the D-32 raw XML output
+ * (DS-P2-06): paging facts (`hasMore`/cursor) are extracted from the ORIGINAL
+ * body by `extractXmlPaging` BEFORE this runs, so the returned body must
+ * never carry the service next URL or the raw `$skiptoken`.
+ */
+export function sanitizeXmlNextLinks(xml: string): string {
+  return xml.replace(/<(?:[A-Za-z_][A-Za-z0-9_.-]*:)?link\b[^>]*>/g, (tag) => {
+    if (!REL_IS_NEXT.test(tag)) {
+      return tag;
+    }
+    return tag.replace(HREF_ATTRIBUTE, "");
+  });
+}

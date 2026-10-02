@@ -5,6 +5,7 @@ import {
   extractSkiptoken,
   extractXmlPaging,
   parseTotalCount,
+  sanitizeXmlNextLinks,
   unwrapODataV2,
   validateEntityPath,
 } from "../src/odata.js";
@@ -326,4 +327,63 @@ test("extractXmlPaging entry counting uses the <entry element boundary", () => {
 
 test("extractXmlPaging rejects unusable m:count values as null totalCount", () => {
   assert.equal(extractXmlPaging(`<feed><m:count>abc</m:count></feed>`).totalCount, null);
+});
+
+// --- sanitizeXmlNextLinks (DS-P2-06) ----------------------------------------------
+
+test("sanitizeXmlNextLinks strips the href of rel=next links regardless of quotes, prefix or order", () => {
+  // Double quotes, rel first.
+  assert.equal(
+    sanitizeXmlNextLinks(`<feed><link rel="next" href="https://t.example.com/User?$skiptoken=tok1"/></feed>`),
+    `<feed><link rel="next"/></feed>`,
+  );
+  // Single quotes.
+  assert.equal(
+    sanitizeXmlNextLinks(`<feed><link rel='next' href='https://t.example.com/User?$skiptoken=tok2'></feed>`),
+    `<feed><link rel='next'></feed>`,
+  );
+  // Optional element namespace prefix plus reversed attribute order.
+  assert.equal(
+    sanitizeXmlNextLinks(`<feed><atom:link href="https://t.example.com/User?$skiptoken=tok3" rel="next"/></feed>`),
+    `<feed><atom:link rel="next"/></feed>`,
+  );
+  // Neighbouring attributes and spacing survive untouched.
+  assert.equal(
+    sanitizeXmlNextLinks(
+      `<feed><link title="Page 2" href="https://t.example.com/User?$skiptoken=tok4" rel="next" type="application/atom+xml"/></feed>`,
+    ),
+    `<feed><link title="Page 2" rel="next" type="application/atom+xml"/></feed>`,
+  );
+});
+
+test("sanitizeXmlNextLinks leaves non-next link hrefs intact", () => {
+  const xml =
+    `<feed><link rel="self" href="https://t.example.com/User"/>` +
+    `<link rel="edit" href="https://t.example.com/User('1')"/>` +
+    `<link rel="next" href="https://t.example.com/User?$skiptoken=tok"/>` +
+    `<link href="https://t.example.com/User?$skiptoken=tok2" rel="NEXT"/></feed>`;
+  // self/edit keep their href; rel="NEXT" (case-sensitive) is not a next link.
+  assert.equal(
+    sanitizeXmlNextLinks(xml),
+    `<feed><link rel="self" href="https://t.example.com/User"/>` +
+      `<link rel="edit" href="https://t.example.com/User('1')"/>` +
+      `<link rel="next"/>` +
+      `<link href="https://t.example.com/User?$skiptoken=tok2" rel="NEXT"/></feed>`,
+  );
+});
+
+test("sanitizeXmlNextLinks returns XML with no next link byte-identical", () => {
+  const xml = `<?xml version="1.0" encoding="utf-8"?>\r\n<feed xmlns="http://www.w3.org/2005/Atom">\r\n` +
+    `<link rel="self" href="https://t.example.com/User"/>\r\n` +
+    `<entry><id>https://t.example.com/User('u1')</id></entry>\r\n</feed>\r\n`;
+  assert.equal(sanitizeXmlNextLinks(xml), xml);
+});
+
+test("sanitizeXmlNextLinks composes with extractXmlPaging: cursor facts come from the original body", () => {
+  const raw = `<feed><entry><id>e1</id></entry><link rel="next" href="https://t.example.com/User?$skiptoken=orig"/></feed>`;
+  const paging = extractXmlPaging(raw);
+  assert.equal(paging.nextUrl, "https://t.example.com/User?$skiptoken=orig");
+  const sanitized = sanitizeXmlNextLinks(raw);
+  assert.ok(!sanitized.includes("$skiptoken"));
+  assert.ok(sanitized.includes("<entry><id>e1</id></entry>"));
 });

@@ -1,12 +1,15 @@
 /**
- * MCP tool registrations: list_environments, get_metadata, query_entity.
+ * MCP tool registrations: list_environments, get_metadata, query_entity,
+ * batch_get.
  *
  * Contract enforced here:
  * - Explicit environment per request, fail-closed (ENVIRONMENT_REQUIRED /
  *   ENVIRONMENT_UNKNOWN; never an implicit pick, never a retry elsewhere).
  * - Configuration is re-read and re-validated on EVERY tool call.
  * - Only GET is ever dispatched; entity paths are validated against the
- *   tenant metadata before dispatch (function imports rejected).
+ *   tenant metadata before dispatch (function imports rejected). The single
+ *   exception POST is batch_get's fixed GET-only $batch envelope (DS-P2-04),
+ *   dispatched only after every item passed the full preflight.
  * - Errors are returned as sanitized `{ code, message }` isError results.
  * - Every call produces one stderr JSON log line with metadata only.
  */
@@ -14,6 +17,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { executeBatchGet, sanitizeEmbeddedFailure } from "./batch.js";
 import { isEntityAllowed, type AllowlistEntry } from "./allowlist.js";
 import { loadConfig, type EnvironmentConfig } from "./config.js";
 import { CURSOR_VERSION, defaultCursorCodec } from "./cursor.js";
@@ -26,12 +30,16 @@ import {
   extractSkiptoken,
   extractXmlPaging,
   RECORD_CEILING,
+  sanitizeXmlNextLinks,
   unwrapODataV2,
   validateEntityPath,
 } from "./odata.js";
 
 const METADATA_TOOL_TIMEOUT_MS = 60_000;
 const QUERY_TOOL_TIMEOUT_MS = 30_000;
+const BATCH_TOOL_TIMEOUT_MS = 120_000;
+/** SAP $batch hard limit: max embedded requests per batch (D-28/R9). */
+export const MAX_BATCH_REQUESTS = 180;
 
 export const GET_METADATA_DESCRIPTION = [
   "Retrieves the raw OData v2 $metadata XML document for the selected environment.",
@@ -55,6 +63,25 @@ export const QUERY_ENTITY_DESCRIPTION = [
   "inlinecount \"allpages\" returns totalCount when the service provides __count.",
   "output selects the representation: \"json\" (default, unwrapped records) or",
   "\"xml\" (raw service XML body, hasMore/totalCount/cursor reported in structuredContent).",
+].join(" ");
+
+export const BATCH_GET_DESCRIPTION = [
+  "Executes multiple read-only OData v2 GETs against the selected environment in ONE $batch POST.",
+  "Each item uses exactly the query_entity GET grammar (entityPath plus optional filter, orderby,",
+  "select, expand, top, skip, cursor, inlinecount); there is no field for HTTP method, URL, host,",
+  "headers, body or changesets, and unknown keys are rejected before dispatch.",
+  "Hard limits: 1 to 180 items per call (SAP $batch limit) and at most 1000 records returned in",
+  "TOTAL across all items; items are processed in input order and truncated records are flagged",
+  "(truncatedToCeiling) when the aggregate ceiling is hit.",
+  "Every item is fully validated BEFORE the batch is dispatched (path grammar, entity allowlist,",
+  "option bounds, cursor binding, $metadata classification): one invalid item rejects the whole",
+  "batch with no $batch POST issued (a metadata GET for classification is the only allowed call).",
+  "The response contains one entry per item in input order with per-item status:",
+  "{ index, path, success, httpStatus, recordCount, records|body, hasMore, cursor?, totalCount?,",
+  "truncatedToCeiling? }; per-item failures carry a sanitized error, never the raw service body.",
+  "output selects the representation for the whole call: \"json\" (default, unwrapped records) or",
+  "\"xml\" (raw Atom item bodies, Accept: application/atom+xml). Continuation cursors work exactly",
+  "like query_entity cursors and must be replayed with the same environment, entityPath and options.",
 ].join(" ");
 
 const environmentArg = z.string().optional();
@@ -96,6 +123,34 @@ const queryEntitySchema = z
   .strict();
 
 const listEnvironmentsSchema = z.object({}).strict();
+
+/** One batch_get item: exactly the query_entity GET grammar, nothing else. */
+const batchRequestItemSchema = z
+  .object({
+    entityPath: z.string().min(1),
+    filter: z.string().optional(),
+    orderby: z.string().optional(),
+    select: z.string().optional(),
+    expand: z.string().optional(),
+    top: z.number().int().optional(),
+    skip: z.number().int().optional(),
+    cursor: z.string().optional(),
+    inlinecount: z.enum(["allpages"]).optional(),
+  })
+  .strict();
+
+const batchGetSchema = z
+  .object({
+    environment: environmentArg,
+    // Hard SAP limit of 180 embedded requests per $batch (D-28/R9): enforced
+    // by the schema, so 0 or >180 is rejected before any work or network call.
+    requests: z.array(batchRequestItemSchema).min(1).max(MAX_BATCH_REQUESTS),
+    output: z
+      .enum(["json", "xml"])
+      .optional()
+      .describe('Response representation for the whole call: "json" (default) or "xml" (raw Atom item bodies).'),
+  })
+  .strict();
 
 export interface ServerDeps {
   /** Injectable fetch (tests capture requests / fake responses). */
@@ -150,13 +205,19 @@ interface QueryEntityArgs {
   output?: "json" | "xml";
 }
 
+/** Option fields the cursor binding covers (shared by query_entity and batch_get items). */
+type CursorOptionsSource = Pick<
+  QueryEntityArgs,
+  "filter" | "orderby" | "select" | "expand" | "top" | "inlinecount" | "output"
+>;
+
 /**
  * Canonical option subset the cursor binding covers (D-27): the options that
  * shape the query result. Deliberately excludes `skip` and `cursor` itself.
  * Only explicitly provided keys are included; callers must repeat the same
  * arguments for a cursor to validate.
  */
-function cursorBindingOptions(args: QueryEntityArgs): Record<string, unknown> {
+function cursorBindingOptions(args: CursorOptionsSource): Record<string, unknown> {
   const options: Record<string, unknown> = {};
   if (args.filter !== undefined) {
     options.filter = args.filter;
@@ -413,7 +474,10 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
               structured.cursor = cursor;
             }
           }
-          return { structured, text: result.body };
+          // DS-P2-06: raw body minus the next-link href. Paging/cursor were
+          // derived from the ORIGINAL href above; the returned text must never
+          // expose the service URL or the raw $skiptoken.
+          return { structured, text: sanitizeXmlNextLinks(result.body) };
         }
 
         let parsed: unknown;
@@ -452,6 +516,222 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           structured,
           text: JSON.stringify(structured),
           recordCount: unwrapped.records.length,
+        };
+      }),
+  );
+
+  server.registerTool(
+    "batch_get",
+    {
+      title: "Batch multiple OData v2 GETs (read-only $batch)",
+      description: BATCH_GET_DESCRIPTION,
+      inputSchema: batchGetSchema,
+    },
+    async (args) =>
+      await executeTool("batch_get", args.environment, async () => {
+        const { environments, entityAllowlist } = await loadFreshConfig();
+        const { alias, env } = resolveEnvironment(environments, args.environment);
+
+        const output = args.output ?? "json";
+        const target: EnvTarget = envTargetFor(env, alias);
+
+        // Pass 1 — pure preflight for EVERY item (no network at all):
+        // path grammar, allowlist, cursor+skip exclusivity, cursor binding
+        // decode and option bounds/query build (FR-29).
+        interface PlannedItem {
+          entityPath: string;
+          firstSegmentName: string;
+          pathAndQuery: string;
+          bindingOptions: Record<string, unknown>;
+          topClamped: boolean;
+        }
+        const planned: PlannedItem[] = [];
+        for (const item of args.requests) {
+          if (item.cursor !== undefined && item.skip !== undefined) {
+            throw new SanitizedError(
+              "OPTION_INVALID",
+              "skip cannot be combined with cursor; pass the cursor alone to continue",
+            );
+          }
+          const validatedPath = validateEntityPath(item.entityPath);
+          if (!isEntityAllowed(entityAllowlist, validatedPath.firstSegmentName)) {
+            throw new SanitizedError(
+              "ENTITY_NOT_ALLOWED",
+              "the entity is not permitted by the configured entityAllowlist",
+            );
+          }
+          const bindingOptions = cursorBindingOptions({ ...item, output });
+          let skiptoken: string | undefined;
+          if (item.cursor !== undefined) {
+            const payload = defaultCursorCodec.decode(item.cursor, {
+              env: alias,
+              path: item.entityPath,
+              options: bindingOptions,
+            });
+            skiptoken = payload.skiptoken;
+          }
+          const { pathAndQuery, topClamped } = buildQuery(item.entityPath, {
+            filter: item.filter,
+            orderby: item.orderby,
+            select: item.select,
+            expand: item.expand,
+            top: item.top,
+            skip: item.skip,
+            inlinecount: item.inlinecount,
+            skiptoken,
+          });
+          planned.push({
+            entityPath: item.entityPath,
+            firstSegmentName: validatedPath.firstSegmentName,
+            pathAndQuery,
+            bindingOptions,
+            topClamped,
+          });
+        }
+
+        // Pass 2 — metadata classification (the only allowed pre-batch GET):
+        // function imports and unknown entity sets reject the whole batch.
+        // Deduplicated; cached by the metadata service's TTL cache.
+        const classified = new Set<string>();
+        for (const item of planned) {
+          if (classified.has(item.firstSegmentName)) {
+            continue;
+          }
+          classified.add(item.firstSegmentName);
+          const verdict = await metadataService.classifyFirstSegment(target, alias, item.firstSegmentName);
+          if (verdict.kind === "function-import") {
+            throw new SanitizedError(
+              "FUNCTION_IMPORT_UNSUPPORTED",
+              "custom service operations / function imports are not supported in the MVP",
+            );
+          }
+          if (verdict.kind === "unknown") {
+            throw new SanitizedError("PATH_INVALID", "unknown entity set");
+          }
+        }
+
+        // One fixed $batch POST, GET-only envelope (D-28/DS-P2-04).
+        const responses = await executeBatchGet({
+          env: target,
+          output,
+          timeoutMs: BATCH_TOOL_TIMEOUT_MS,
+          requests: planned.map((item) => ({ url: item.pathAndQuery })),
+          fetchImpl,
+          now: deps.now,
+        });
+
+        // Per-item results in input order (FR-30). Embedded non-2xx parts
+        // become sanitized per-item errors; raw error bodies never leave.
+        const results: Array<Record<string, unknown>> = [];
+        let recordsReturned = 0;
+        for (const [index, response] of responses.entries()) {
+          const item = planned[index]!;
+          const entry: Record<string, unknown> = { index, path: item.entityPath };
+          const httpStatus = Number(response.code);
+          const ok = response.success && Number.isInteger(httpStatus) && httpStatus >= 200 && httpStatus <= 299;
+
+          if (!ok) {
+            entry.success = false;
+            if (Number.isInteger(httpStatus)) {
+              entry.httpStatus = httpStatus;
+            }
+            entry.error = sanitizeEmbeddedFailure(response.data, Number.isInteger(httpStatus) ? httpStatus : undefined);
+            results.push(entry);
+            continue;
+          }
+
+          entry.success = true;
+          entry.httpStatus = httpStatus;
+
+          if (output === "xml") {
+            if (typeof response.data !== "string") {
+              entry.success = false;
+              entry.error = {
+                code: "RESPONSE_INVALID",
+                message: "the service response body is not readable",
+              };
+              results.push(entry);
+              continue;
+            }
+            const paging = extractXmlPaging(response.data);
+            recordsReturned += paging.entryCount;
+            // XML cannot be truncated safely: an aggregate above the ceiling
+            // rejects the whole response sanitized (DS-P2-01).
+            if (recordsReturned > RECORD_CEILING) {
+              throw new SanitizedError(
+                "RESPONSE_INVALID",
+                `batch xml response exceeds the ${RECORD_CEILING}-record ceiling`,
+              );
+            }
+            entry.contentType = "xml";
+            entry.recordCount = paging.entryCount;
+            // DS-P2-06: raw body minus the next-link href. The per-item
+            // paging/cursor above were derived from the ORIGINAL body.
+            entry.body = sanitizeXmlNextLinks(response.data);
+            entry.hasMore = paging.hasMore;
+            if (paging.totalCount !== null) {
+              entry.totalCount = paging.totalCount;
+            }
+            if (paging.hasMore && paging.nextUrl !== null) {
+              const cursor = encodeContinuationCursor(alias, item.entityPath, item.bindingOptions, paging.nextUrl);
+              if (cursor !== undefined) {
+                entry.cursor = cursor;
+              }
+            }
+            results.push(entry);
+            continue;
+          }
+
+          let unwrapped;
+          try {
+            unwrapped = unwrapODataV2(response.data);
+          } catch {
+            entry.success = false;
+            entry.error = {
+              code: "RESPONSE_INVALID",
+              message: "the service response is not an OData v2 JSON document",
+            };
+            results.push(entry);
+            continue;
+          }
+          let records = unwrapped.records;
+          let truncatedToCeiling = unwrapped.truncatedToCeiling;
+          const remaining = RECORD_CEILING - recordsReturned;
+          if (records.length > remaining) {
+            records = records.slice(0, Math.max(remaining, 0));
+            truncatedToCeiling = true;
+          }
+          recordsReturned += records.length;
+          entry.recordCount = records.length;
+          entry.records = records;
+          entry.hasMore = unwrapped.hasMore;
+          if (item.topClamped) {
+            entry.topClamped = true;
+          }
+          if (truncatedToCeiling) {
+            entry.truncatedToCeiling = true;
+          }
+          if (unwrapped.totalCount !== null) {
+            entry.totalCount = unwrapped.totalCount;
+          }
+          if (unwrapped.hasMore && unwrapped.nextUrl !== null) {
+            const cursor = encodeContinuationCursor(alias, item.entityPath, item.bindingOptions, unwrapped.nextUrl);
+            if (cursor !== undefined) {
+              entry.cursor = cursor;
+            }
+          }
+          results.push(entry);
+        }
+
+        const structured: Record<string, unknown> = {
+          environment: alias,
+          output,
+          results,
+        };
+        return {
+          structured,
+          text: JSON.stringify(structured),
+          recordCount: recordsReturned,
         };
       }),
   );
