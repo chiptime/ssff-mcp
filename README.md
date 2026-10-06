@@ -2,15 +2,17 @@
 
 A local, **read-only** MCP (Model Context Protocol) server for **SAP SuccessFactors OData v2**, communicating with the MCP host exclusively over **STDIO**. It exposes four tools (`list_environments`, `get_metadata`, `query_entity`, `batch_get`); data reads dispatch exactly one HTTPS GET per call, and `batch_get` dispatches exactly one HTTPS POST to the fixed `$batch` endpoint with a GET-only multipart envelope — with the read-only frontier enforced in server code, never in prompts.
 
-**Status:** private, NOT published, `"license": "UNLICENSED"` (license decision pending). Linux-only MVP; OpenCode is the first target client.
+**Status:** MIT licensed and **prepared for npm publication — NOT yet published**. `ssff-mcp@0.1.0` is not on the public npm registry yet; registry availability is pending (see [Install](#install)). Linux-only MVP; OpenCode is the first target client.
 
 ## Requirements
 
 - Linux
 - Node.js >= 20
-- pnpm
+- pnpm — **only for developing from source**; the installed CLI needs nothing beyond Node
 
 ## Install
+
+### From source (development)
 
 ```bash
 pnpm install
@@ -23,12 +25,30 @@ Run manually (it speaks MCP on stdin/stdout):
 pnpm start
 ```
 
+### Installed CLI (after publication — pending)
+
+The package is prepared for npm but **not published yet**; the commands below
+will only work once publication happens. When it is available:
+
+```bash
+npx -y ssff-mcp@0.1.0
+```
+
+or install globally (`npm install -g ssff-mcp`) and run `ssff-mcp`. The
+installed CLI requires only Node >= 20; the configuration below is still
+required.
+
 ## Configuration
 
 The configuration lives at the exact path **`~/.config/ssff-mcp/config.json`** (per-user, outside this repository). `XDG_CONFIG_HOME` is deliberately not honored.
 
 1. Create the directory: `mkdir -p ~/.config/ssff-mcp`
 2. Copy the template: `cp config.template.json ~/.config/ssff-mcp/config.json`
+   (for a packaged install, copy it from the installed package instead:
+   `cp "$(npm root -g)/ssff-mcp/config.template.json" ~/.config/ssff-mcp/config.json`
+   for a global install — `node_modules/ssff-mcp/config.template.json` relative
+   to the install for anything else — or fetch it from the repository). The
+   template ships inside the npm package with safe placeholders.
 3. Fill in the placeholders.
 4. Restrict permissions: `chmod 600 ~/.config/ssff-mcp/config.json`
 
@@ -242,4 +262,6 @@ Builds the project and runs the suite (`node --test dist/test/`). The negative s
 
 ## License
 
-None granted yet (`"license": "UNLICENSED"`, `private: true`). Publication is not authorized; the license decision is pending.
+[MIT](LICENSE) — Copyright (c) 2026 ChipTime. The package is prepared for
+publication under MIT, but it has **not been published** to npm yet; the
+public registry release remains pending.

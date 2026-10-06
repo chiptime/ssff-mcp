@@ -1,18 +1,39 @@
 {
   "name": "ssff-mcp",
   "version": "0.1.0",
-  "private": true,
-  "license": "UNLICENSED",
-  "type": "module",
   "description": "Local read-only MCP server for SAP SuccessFactors OData v2 (STDIO transport)",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chiptime/ssff-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/chiptime/ssff-mcp/issues"
+  },
+  "homepage": "https://github.com/chiptime/ssff-mcp#readme",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "sap",
+    "successfactors",
+    "odata",
+    "odata-v2",
+    "read-only"
+  ],
   "engines": {
     "node": ">=20"
   },
   "bin": {
     "ssff-mcp": "dist/src/index.js"
   },
+  "files": [
+    "dist/src",
+    "config.template.json"
+  ],
   "scripts": {
     "build": "tsc",
+    "prepack": "npm run build",
     "test": "pnpm build && node --test dist/test/",
     "typecheck": "tsc --noEmit",
     "start": "node dist/src/index.js"
