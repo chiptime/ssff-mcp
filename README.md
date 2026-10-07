@@ -2,7 +2,7 @@
 
 A local, **read-only** MCP (Model Context Protocol) server for **SAP SuccessFactors OData v2**, communicating with the MCP host exclusively over **STDIO**. It exposes four tools (`list_environments`, `get_metadata`, `query_entity`, `batch_get`); data reads dispatch exactly one HTTPS GET per call, and `batch_get` dispatches exactly one HTTPS POST to the fixed `$batch` endpoint with a GET-only multipart envelope — with the read-only frontier enforced in server code, never in prompts.
 
-**Status:** MIT licensed and **prepared for npm publication — NOT yet published**. `ssff-mcp@0.1.0` is not on the public npm registry yet; registry availability is pending (see [Install](#install)). Linux-only MVP; OpenCode is the first target client.
+**Status:** MIT licensed and **published on npm** ([ssff-mcp](https://www.npmjs.com/package/ssff-mcp)). Linux-only MVP; OpenCode is the first target client.
 
 ## Requirements
 
@@ -25,13 +25,10 @@ Run manually (it speaks MCP on stdin/stdout):
 pnpm start
 ```
 
-### Installed CLI (after publication — pending)
-
-The package is prepared for npm but **not published yet**; the commands below
-will only work once publication happens. When it is available:
+### Installed CLI (npm)
 
 ```bash
-npx -y ssff-mcp@0.1.0
+npx -y ssff-mcp
 ```
 
 or install globally (`npm install -g ssff-mcp`) and run `ssff-mcp`. The
@@ -262,6 +259,5 @@ Builds the project and runs the suite (`node --test dist/test/`). The negative s
 
 ## License
 
-[MIT](LICENSE) — Copyright (c) 2026 ChipTime. The package is prepared for
-publication under MIT, but it has **not been published** to npm yet; the
-public registry release remains pending.
+[MIT](LICENSE) — Copyright (c) 2026 ChipTime. Published on npm as
+[`ssff-mcp`](https://www.npmjs.com/package/ssff-mcp).
