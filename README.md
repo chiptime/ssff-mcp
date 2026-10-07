@@ -161,18 +161,23 @@ Every tool call names its environment explicitly. Unknown or missing environment
 
 ## OpenCode wiring
 
-In `opencode.json`:
+In `opencode.json`, run the published npm package directly:
 
 ```json
 {
   "mcp": {
     "ssff": {
       "type": "local",
-      "command": ["node", "/absolute/path/to/ssff-mcp/dist/src/index.js"]
+      "command": ["npx", "-y", "ssff-mcp"],
+      "enabled": true
     }
   }
 }
 ```
+
+`npx` resolves the CLI from the registry (pin it with `ssff-mcp@0.1.1` if you
+prefer reproducible versions). If you develop from source, point the command at
+your local build instead: `["node", "/absolute/path/to/ssff-mcp/dist/src/index.js"]`.
 
 ## Tools reference
 
