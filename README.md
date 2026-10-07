@@ -28,7 +28,7 @@ pnpm start
 ### Installed CLI (npm)
 
 ```bash
-npx -y ssff-mcp
+npx -y ssff-mcp@latest
 ```
 
 or install globally (`npm install -g ssff-mcp`) and run `ssff-mcp`. The
@@ -168,7 +168,7 @@ In `opencode.json`, run the published npm package directly:
   "mcp": {
     "ssff": {
       "type": "local",
-      "command": ["npx", "-y", "ssff-mcp"],
+      "command": ["npx", "-y", "ssff-mcp@latest"],
       "enabled": true
     }
   }

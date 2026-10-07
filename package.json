@@ -1,6 +1,6 @@
 {
   "name": "ssff-mcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Local read-only MCP server for SAP SuccessFactors OData v2 (STDIO transport)",
   "license": "MIT",
   "type": "module",
