@@ -6,7 +6,7 @@
 | Fecha | 2026-10-14 |
 | Fuente de decisiones | Requerimiento de integración para consulta de entidades personalizadas de SAP SuccessFactors MDF sobre OData v2 sin desbordar la ventana de contexto del LLM ni alucinar rutas de navegación inexistentes |
 | Idioma | Documento en español neutro profesional; identificadores y términos de código en inglés. Los textos de guía dirigidos al LLM (`warnings`) son **multilingües** en tiempo de ejecución (D-70/FR-75) |
-| Relación con PRD anteriores | **Extiende** `PRD.md` (MVP), `PRD-phase2.md` (Fase 2), `PRD-phase3.md` (Fase 3) y `PRD-phase4.md` (Fase 4), incorporando los requisitos funcionales **FR-67..FR-75**, las decisiones **D-62..D-70** y las implicaciones derivadas **DS-MDF-01..DS-MDF-06**. El bloque **D-53..D-61 / FR-56..FR-66** pertenece a `PRD-feature-picklists.md`, por lo que este documento arranca en **D-62 / FR-67** |
+| Relación con PRD anteriores | **Extiende** `PRD.md` (MVP), `PRD-phase2.md` (Fase 2), `PRD-phase3.md` (Fase 3) y `PRD-phase4.md` (Fase 4), incorporando los requisitos funcionales **FR-67..FR-76**, las decisiones **D-62..D-70** y las implicaciones derivadas **DS-MDF-01..DS-MDF-06**. El bloque **D-53..D-61 / FR-56..FR-66** pertenece a `PRD-feature-picklists.md`, por lo que este documento arranca en **D-62 / FR-67** |
 
 ---
 
@@ -24,7 +24,7 @@
 | **D-67** | **Generación de `queryGuidance` semántico para el LLM**: Cada objeto Custom MDF expuesto incluye un bloque `queryGuidance` que indica: la plantilla recomendada de `$filter`, el campo de enlace, si requiere ordenamiento por fecha (`$orderby=effectiveStartDate desc`), advertencias sobre que la navegación inversa desde `User` **existe y es expandible pero devuelve la colección hija completa sin poder acotarse** (medido: 224 registros / 1,75 MB; OData v2 no admite `$select` ni `$top` anidados en `$expand`), y un ejemplo listo para ejecutar con `query_entity`. | Protege la ventana de contexto (DS-MDF-05) y evita las consultas singleton sin clave compuesta. |
 | **D-68** | **Cumplimiento estricto fail-closed de `entityAllowlist`**: Toda entidad `cust_*` excluida por `entityAllowlist` (o si esta es vacía `[]`) es filtrada en los listados y genera un error sanitizado `ENTITY_NOT_ALLOWED` en `inspect_custom_mdf`, en `sf://{env}/mdf/custom` y en el recurso de detalle `sf://{env}/entities/{entitySet}` (que ya lo hace hoy, `src/tools.ts:879-884`). | Principio inmutable de seguridad fail-closed (D-15, D-30, D-35). |
 | **D-69** | **Mapeo explícito de objetos dependientes de fecha (Effective Dating)**: Si la clave primaria contiene `effectiveStartDate` **o `mdfSystemEffectiveStartDate`**, el sistema lo marca como `isEffectiveDated: true`, documenta la necesidad de clave compuesta en singleton y recomienda consultar la colección con `$filter` y `$orderby` en lugar de una ruta de clave única. | Evita errores OData 400/404 al intentar acceder a registros sin fecha efectiva. La segunda variante de campo se detectó empíricamente (2026-10-14). |
-| **D-70** | **`queryGuidance` multilingüe**: el texto de `warnings` (y cualquier prosa de guía) se resuelve en **un único idioma activo**, nunca en todos a la vez, mediante la precedencia: parámetro `locale` de `inspect_custom_mdf` > `defaultLocale` de `config.json` > variable `SF_DEFAULT_LOCALE` > `"en_US"`. El locale efectivo se expone en `guidance.locale`. Las plantillas de `$filter`, el `exampleQuery` y los identificadores OData **no** se traducen. Los recursos MCP, al no admitir parámetros de consulta, usan solo la cadena de configuración/entorno. | Alineado con el criterio de localización de `PRD-feature-picklists.md` (D-60). Emitir todos los idiomas a la vez violaría DS-MDF-05 (< 5 KB por entidad). |
+| **D-70** | **`queryGuidance` multilingüe**: el texto de `warnings` (y cualquier prosa de guía) se resuelve en **un único idioma activo**, nunca en todos a la vez. **Manda la elección del usuario**, resuelta por esta precedencia: (1) parámetro `locale` de `inspect_custom_mdf`, que refleja el idioma en que el usuario está hablando; (2) `defaultLocale` de `config.json`, la preferencia declarada por el usuario (FR-76); (3) variable `SF_DEFAULT_LOCALE`; (4) `"en_US"`. El locale efectivo se expone en `guidance.locale`. Las plantillas de `$filter`, el `exampleQuery` y los identificadores OData **no** se traducen. Los recursos MCP, al no admitir parámetros de consulta, usan solo los niveles 2-4. | Alineado con el criterio de localización de `PRD-feature-picklists.md` (D-60). Emitir todos los idiomas a la vez violaría DS-MDF-05 (< 5 KB por entidad). |
 
 ---
 
@@ -49,7 +49,7 @@
 * **A-MDF-01** — ✅ **VERIFICADA**: 79/79 (PROD), 87/87 (DEV) y 91/91 (TEST) usan el prefijo `cust_`. **Cero** entidades con `Cust_` en los tres tenants: la alternativa `[cC]` de D-63 se mantiene pero está inactiva.
 * **A-MDF-02** — ⚠️ **PARCIALMENTE FALSA**: `externalCodeNav` **no** es universal; existe en 22/79 (PROD), 24/87 (DEV) y 26/91 (TEST). Además, **toda** entidad custom tiene `createdByNav` y `lastModifiedByNav` apuntando a `User`, que no son vínculo de negocio. La heurística no puede basarse en el nombre `externalCodeNav`.
 * **A-MDF-03** — ✅ **VERIFICADA**: el patrón `cust_<Padre>_<campo>` se cumple, con el padre como entidad custom existente. 15 (PROD), 18 (DEV) y 19 (TEST) hijos compuestos.
-* **A-MDF-04** — ⏳ **SIN VERIFICAR**: requiere una consulta de datos reales con el usuario de API; hasta ahora solo se han inspeccionado metadatos.
+* **A-MDF-04** — ✅ **VERIFICADA en DEV**: los sondeos del 2026-10-14 consultaron datos reales (`cust_centro` y `User`) con la cuenta de API y devolvieron registros, lo que prueba que el usuario dispone de permisos RBP de lectura sobre entidades custom. Pendiente confirmar en PROD, donde la allowlist y los roles pueden diferir.
 * **A-MDF-05** — ✅ **VERIFICADA**: 658 / 665 / 671 entidades totales, con 12,0% / 13,1% / 13,6% de `cust_*`. Dentro del rango estimado.
 
 ---
@@ -280,7 +280,7 @@ const inspectCustomMdfSchema = z.object({
   environment: z.string().optional().describe("Environment alias. May be omitted in inline mode."),
   entitySet: z.string().optional().describe("Specific Custom MDF entity set name (e.g. 'cust_EmployeeEquipment'). If omitted, lists all Custom MDF entities."),
   employeeLinkedOnly: z.boolean().optional().describe("When listing entities, filter only those linked to User or EmpEmployment. Default: false."),
-  locale: z.string().optional().describe("BCP-47 locale for guidance text (e.g. 'es_ES'). Falls back to config defaultLocale, then SF_DEFAULT_LOCALE, then 'en_US'."),
+  locale: z.string().optional().describe("BCP-47 locale for guidance text, normally the user's own language (e.g. 'es_ES'). It takes precedence over config defaultLocale, SF_DEFAULT_LOCALE and the 'en_US' fallback."),
 }).strict();
 ```
 
@@ -364,9 +364,22 @@ export interface CustomMdfDetails {
 3. Enriquecimiento de `sf://{environment}/entities` con `isEmployeeLinked` y `isEffectiveDated`.
 4. Sustituir la comprobación inline `name.startsWith("cust_") || name.startsWith("Cust_")` de `src/tools.ts:848` por el helper canónico `isCustomMdfEntity` (D-63), para que exista una única definición de «entidad Custom MDF».
 
+### 6.3 Modificaciones en `src/config.ts`
+
+`configSchema` es `.strict()` (`src/config.ts:159-167`): una clave desconocida hace fallar la validación. Por tanto, referenciar `defaultLocale` **exige añadirlo al esquema** antes de que la cadena de D-70/FR-75 pueda funcionar. Sin este cambio, cualquier `config.json` que use el campo será rechazado.
+
+```typescript
+defaultLocale: z.string().regex(/^[A-Za-z]{2}(-[A-Za-z]{2})?$/).optional(),
+```
+
+* **Opcional y sin valor por defecto en el esquema**: su ausencia no es error; activa el siguiente nivel de la cadena (`SF_DEFAULT_LOCALE`, luego `en_US`).
+* **Formato BCP-47 laxo** (`es`, `es_ES`). El validador comprueba el formato, **no** que el idioma exista en el catálogo: un locale sin traducciones cae a `en_US`.
+* **Catálogo de mensajes en el repositorio** (`.ts`, sin dependencias externas — DS-MDF-06). Cobertura inicial: `en_US` y `es_ES`.
+* **Dependencia cruzada**: el mismo campo lo necesita `PRD-feature-picklists.md` (su D-60). Implementarlo una sola vez en `src/config.ts` sirve a ambos; hacerlo por separado es el camino a la divergencia.
+
 ---
 
-## 7. Requisitos Funcionales (FR-67..FR-75)
+## 7. Requisitos Funcionales (FR-67..FR-76)
 
 * **FR-67 (Detección Automática de Custom MDF)**: El sistema DEBE clasificar automáticamente como Custom MDF cualquier entidad cuyo nombre coincida con el patrón `/^[cC]ust_/`.
 * **FR-68 (Clasificación de Vinculación de Empleado)**: El sistema DEBE analizar las claves y `NavigationProperties` de cada entidad Custom MDF para asignar uno de los 6 tipos de `MdfEmployeeLinkType`.
@@ -376,7 +389,8 @@ export interface CustomMdfDetails {
 * **FR-72 (Detalle sin superficie nueva)**: El servidor MCP **NO DEBE** crear un recurso `sf://{env}/mdf/custom/{entitySet}`. El recurso existente `sf://{env}/entities/{entitySet}` DEBE devolver, para entidades Custom MDF, los campos aditivos `isCustom`, `isEffectiveDated`, `employeeLink` y `guidance`, preservando su contrato actual.
 * **FR-73 (Enriquecimiento de Catálogo Base)**: El recurso `sf://{env}/entities` DEBE enriquecer cada elemento con los campos `isEmployeeLinked` (boolean) y `isEffectiveDated` (boolean).
 * **FR-74 (Aislamiento de Allowlist)**: Si `entityAllowlist` está configurada, ninguna entidad excluida DEBE ser listada ni inspeccionada a través de las nuevas herramientas o recursos, respondiendo con `ENTITY_NOT_ALLOWED`.
-* **FR-75 (Guía multilingüe)**: El texto de `warnings` DEBE resolverse en **un único idioma activo** mediante la precedencia `locale` > `defaultLocale` > `SF_DEFAULT_LOCALE` > `"en_US"`, exponiendo el locale resuelto en `guidance.locale`. El sistema **NUNCA DEBE** emitir simultáneamente los textos de todos los idiomas. Las plantillas de `$filter`, el `exampleQuery` y los identificadores OData NO se traducen.
+* **FR-75 (Guía multilingüe)**: El texto de `warnings` DEBE resolverse en **un único idioma activo**, dando prioridad a la elección del usuario, mediante la precedencia `locale` (tool) > `defaultLocale` (`config.json`) > `SF_DEFAULT_LOCALE` > `"en_US"`, exponiendo el locale resuelto en `guidance.locale`. El sistema **NUNCA DEBE** emitir simultáneamente los textos de todos los idiomas. Las plantillas de `$filter`, el `exampleQuery` y los identificadores OData NO se traducen.
+* **FR-76 (Campo `defaultLocale` en la configuración)**: `configSchema` DEBE admitir la clave opcional `defaultLocale` en formato BCP-47 laxo. Sin ella, la validación `.strict()` rechazaría cualquier configuración que la use. Su ausencia DEBE hacer caer la resolución al nivel siguiente de la cadena de FR-75.
 
 ---
 
@@ -390,7 +404,8 @@ export interface CustomMdfDetails {
 | **T2: Exposición de Recursos MCP en `src/tools.ts`** | 1.0 día | Baja |
 | **T3: Registro de herramienta `inspect_custom_mdf`** | 1.0 día | Baja |
 | **T4: Suite de pruebas y validación** | 1.5 días | Media |
-| **Total estimado** | **5 - 6 días laborables** | **Media** |
+| **T5: `defaultLocale` en `src/config.ts` y catálogo de mensajes i18n** | 0.5 día | Baja |
+| **Total estimado** | **5.5 - 6.5 días laborables** | **Media** |
 
 ### 8.2 Matriz de Riesgos y Mitigaciones
 
