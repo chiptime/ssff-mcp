@@ -12,3 +12,7 @@ config.json
 
 # Internal AI tooling artifacts (skill registry cache).
 .atl/
+
+# Local code-intelligence index and agent diagnostics (never shared).
+.codegraph/
+.agy-diagnostics/
