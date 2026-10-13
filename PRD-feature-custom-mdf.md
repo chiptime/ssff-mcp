@@ -5,14 +5,14 @@
 | Estado | **CONFIRMED v1.0** — Especificación técnica completa de arquitectura, viabilidad y diseño |
 | Fecha | 2026-10-14 |
 | Fuente de decisiones | Requerimiento de integración para consulta de entidades personalizadas de SAP SuccessFactors MDF sobre OData v2 sin desbordar la ventana de contexto del LLM ni alucinar rutas de navegación inexistentes |
-| Idioma | Español neutro profesional; identificadores y términos de código en inglés |
-| Relación con PRD anteriores | **Extiende** `PRD.md` (MVP), `PRD-phase2.md` (Fase 2), `PRD-phase3.md` (Fase 3) y `PRD-phase4.md` (Fase 4), incorporando los requisitos funcionales **FR-67..FR-74**, las decisiones **D-62..D-69** y las implicaciones derivadas **DS-MDF-01..DS-MDF-06**. El bloque **D-53..D-61 / FR-56..FR-66** pertenece a `PRD-feature-picklists.md`, por lo que este documento arranca en **D-62 / FR-67** |
+| Idioma | Documento en español neutro profesional; identificadores y términos de código en inglés. Los textos de guía dirigidos al LLM (`warnings`) son **multilingües** en tiempo de ejecución (D-70/FR-75) |
+| Relación con PRD anteriores | **Extiende** `PRD.md` (MVP), `PRD-phase2.md` (Fase 2), `PRD-phase3.md` (Fase 3) y `PRD-phase4.md` (Fase 4), incorporando los requisitos funcionales **FR-67..FR-75**, las decisiones **D-62..D-70** y las implicaciones derivadas **DS-MDF-01..DS-MDF-06**. El bloque **D-53..D-61 / FR-56..FR-66** pertenece a `PRD-feature-picklists.md`, por lo que este documento arranca en **D-62 / FR-67** |
 
 ---
 
 ## 0. Registro de Decisiones (Ledger)
 
-### 0.1 Decisiones confirmadas (D-62..D-69)
+### 0.1 Decisiones confirmadas (D-62..D-70)
 
 | ID | Decisión | Origen / Justificación |
 |---|---|---|
@@ -24,6 +24,7 @@
 | **D-67** | **Generación de `queryGuidance` semántico para el LLM**: Cada objeto Custom MDF expuesto incluye un bloque `queryGuidance` que indica: la plantilla recomendada de `$filter`, el campo de enlace, si requiere ordenamiento por fecha (`$orderby=effectiveStartDate desc`), advertencias sobre que la navegación inversa desde `User` **existe y es expandible pero devuelve la colección hija completa sin poder acotarse** (medido: 224 registros / 1,75 MB; OData v2 no admite `$select` ni `$top` anidados en `$expand`), y un ejemplo listo para ejecutar con `query_entity`. | Protege la ventana de contexto (DS-MDF-05) y evita las consultas singleton sin clave compuesta. |
 | **D-68** | **Cumplimiento estricto fail-closed de `entityAllowlist`**: Toda entidad `cust_*` excluida por `entityAllowlist` (o si esta es vacía `[]`) es filtrada en los listados y genera un error sanitizado `ENTITY_NOT_ALLOWED` en `inspect_custom_mdf`, en `sf://{env}/mdf/custom` y en el recurso de detalle `sf://{env}/entities/{entitySet}` (que ya lo hace hoy, `src/tools.ts:879-884`). | Principio inmutable de seguridad fail-closed (D-15, D-30, D-35). |
 | **D-69** | **Mapeo explícito de objetos dependientes de fecha (Effective Dating)**: Si la clave primaria contiene `effectiveStartDate` **o `mdfSystemEffectiveStartDate`**, el sistema lo marca como `isEffectiveDated: true`, documenta la necesidad de clave compuesta en singleton y recomienda consultar la colección con `$filter` y `$orderby` en lugar de una ruta de clave única. | Evita errores OData 400/404 al intentar acceder a registros sin fecha efectiva. La segunda variante de campo se detectó empíricamente (2026-10-14). |
+| **D-70** | **`queryGuidance` multilingüe**: el texto de `warnings` (y cualquier prosa de guía) se resuelve en **un único idioma activo**, nunca en todos a la vez, mediante la precedencia: parámetro `locale` de `inspect_custom_mdf` > `defaultLocale` de `config.json` > variable `SF_DEFAULT_LOCALE` > `"en_US"`. El locale efectivo se expone en `guidance.locale`. Las plantillas de `$filter`, el `exampleQuery` y los identificadores OData **no** se traducen. Los recursos MCP, al no admitir parámetros de consulta, usan solo la cadena de configuración/entorno. | Alineado con el criterio de localización de `PRD-feature-picklists.md` (D-60). Emitir todos los idiomas a la vez violaría DS-MDF-05 (< 5 KB por entidad). |
 
 ---
 
@@ -80,7 +81,7 @@ SAP SuccessFactors cuenta con el **Metadata Framework (MDF)**, un motor extensib
 
 1. **Auto-Discovery instantáneo sin sobrecarga de red**: Clasificar y exponer todos los Custom MDF del tenant a partir del `$metadata` ya parseado y cacheado.
 2. **Detección inteligente del vínculo con empleados**: Categorizar automáticamente si un Custom MDF está asociado a un empleado, mediante qué campo (`externalCode`, `userId`, etc.) y qué entidad objetivo (`User` o `EmpEmployment`).
-3. **Mapeo asistido con `queryGuidance`**: Proporcionar al LLM las instrucciones exactas de cómo formular consultas sobre el objeto custom mediante `query_entity`, incluyendo plantillas de `$filter` y advertencias de no usar `$expand` en `User`.
+3. **Mapeo asistido con `queryGuidance`**: Proporcionar al LLM las instrucciones exactas de cómo formular consultas sobre el objeto custom mediante `query_entity`, incluyendo plantillas de `$filter` y advertencias sobre que la navegación inversa desde `User` devuelve una colección hija inacotable. Las advertencias son **multilingües** (D-70/FR-75).
 4. **Respeto total de `entityAllowlist`**: Mantener la seguridad fail-closed sin fugas de metadatos no permitidos.
 5. **Doble modalidad de consumo**: Disponible vía Recursos MCP (`sf://{env}/mdf/custom` para el catálogo y el detalle enriquecido de `sf://{env}/entities/{entitySet}`) y vía Herramienta MCP interactiva (`inspect_custom_mdf`).
 
@@ -96,7 +97,7 @@ SAP SuccessFactors cuenta con el **Metadata Framework (MDF)**, un motor extensib
 ## 3. Naturaleza de los Objetos Custom MDF en SuccessFactors
 
 ### 3.1 Convenciones de Nomenclatura
-* Toda entidad MDF personalizada se registra con un código que comienza por `cust_` (o `Cust_` en ciertos módulos antiguos o configuraciones mixtas).
+* Toda entidad MDF personalizada se registra con un código que comienza por `cust_`. D-63 mantiene además la alternativa `Cust_`, pero **no se ha observado ni una sola en los tres tenants medidos** (79 / 87 / 91 entidades): en la práctica es una rama inactiva que se conserva por coste cero.
 * En el documento OData `$metadata` (`EDMX`), el `EntityType` y el `EntitySet` reflejan este nombre (ej. `<EntitySet Name="cust_EmployeeEquipment" EntityType="SFOData.cust_EmployeeEquipment"/>`).
 
 ### 3.2 Anatomía de Claves y Campos del Sistema
@@ -104,7 +105,7 @@ Un objeto MDF típico generado por SuccessFactors contiene campos estandarizados
 * **`externalCode`** (`Edm.String`): Clave primaria obligatoria.
   * *Modo User*: Si en *Configure Object Definitions* el campo tiene Data Type `User`, almacena directamente el `userId` del empleado.
   * *Modo Auto-Number / String*: Almacena un identificador alfanumérico único del registro.
-* **`effectiveStartDate`** (`Edm.DateTime`): Presente en objetos con *Effective Dating*. Forma una clave primaria compuesta junto con `externalCode`.
+* **`effectiveStartDate`** (`Edm.DateTime`): Presente en objetos con *Effective Dating*. Forma una clave primaria compuesta junto con `externalCode`. **Variante medida**: hay entidades que usan `mdfSystemEffectiveStartDate` como campo de fecha efectiva en la clave (p. ej. `cust_AccionSocial`); ambas variantes cuentan para `isEffectiveDated` (D-69).
 * **`mdfSystemStatus`** (`Edm.String`): Estado del registro ('A' = Activo, 'I' = Inactivo).
 * **`mdfSystemRecordStatus`** (`Edm.String`): Utilizado en objetos con *Multiple Changes Per Day*.
 * **`lastModifiedDateTime`** (`Edm.DateTimeOffset`): Timestamp de auditoría.
@@ -112,7 +113,7 @@ Un objeto MDF típico generado por SuccessFactors contiene campos estandarizados
 ### 3.3 Tipos de Effective Dating en MDF
 1. **None**: La clave primaria es únicamente `externalCode`.
 2. **Basic**: La clave primaria es compuesta: `(externalCode, effectiveStartDate)`. SuccessFactors por defecto en consultas de colección devuelve los registros vigentes, o permite navegar el histórico.
-3. **Multiple Changes Per Day**: Clave compuesta: `(externalCode, effectiveStartDate, mdfSystemRecordStatus)` o secuencia de transacción.
+3. **Multiple Changes Per Day**: Clave compuesta: `(externalCode, effectiveStartDate, mdfSystemRecordStatus)` o secuencia de transacción. **No ejercitado**: `mdfSystemRecordStatus` no aparece en la clave de ninguna entidad de los tres tenants medidos.
 4. **From Parent**: La entidad es un hijo compuesto (*Composite Association*) y hereda la temporalidad de su padre.
 
 ### 3.4 Relación con Empleados y Navegación en OData v2
@@ -192,7 +193,10 @@ Para cada entidad en `entitySets`:
      * Si `isEffectiveDated`: se añade recomendación de `$orderby="effectiveStartDate desc"` y
        advertencia sobre el uso de claves compuestas en singleton.
    * La advertencia sobre `$expand` en `User` se redacta según el resultado verificado de §3.4:
-     la navegación existe y es expandible, pero su nombre generado no es adivinable.
+     la navegación existe y es expandible, pero devuelve la colección hija completa e inacotable
+     (224 registros / 1,75 MB medidos).
+   * El texto de las advertencias se resuelve en el **idioma activo** (D-70/FR-75). Las plantillas
+     de `$filter`, el `exampleQuery` y los identificadores OData **no** se traducen.
 
 ---
 
@@ -247,11 +251,12 @@ Devuelve el esquema completo, propiedades y el bloque de guía semántica:
     "navigationProperty": "externalCodeNav"
   },
   "guidance": {
+    "locale": "es_ES",
     "suggestedFilter": "externalCode eq '<userId>'",
     "recommendedOrderBy": "effectiveStartDate desc",
     "warnings": [
-      "Inverse navigation from User exists and is expandable, but it returns the unbounded full child collection (measured: 224 records / 1.75 MB) and cannot be projected or limited; query cust_EmployeeEquipment directly as the root with $filter and $top.",
-      "Entity is effective-dated. To fetch current record, filter by externalCode and sort by effectiveStartDate desc."
+      "La navegación inversa desde User existe y es expandible, pero devuelve la colección hija completa sin poder acotarse (medido: 224 registros / 1,75 MB); consulta cust_EmployeeEquipment como raíz con $filter y $top.",
+      "La entidad está fechada efectivamente. Para obtener el registro vigente, filtra por externalCode y ordena por effectiveStartDate desc."
     ],
     "exampleQuery": {
       "tool": "query_entity",
@@ -275,6 +280,7 @@ const inspectCustomMdfSchema = z.object({
   environment: z.string().optional().describe("Environment alias. May be omitted in inline mode."),
   entitySet: z.string().optional().describe("Specific Custom MDF entity set name (e.g. 'cust_EmployeeEquipment'). If omitted, lists all Custom MDF entities."),
   employeeLinkedOnly: z.boolean().optional().describe("When listing entities, filter only those linked to User or EmpEmployment. Default: false."),
+  locale: z.string().optional().describe("BCP-47 locale for guidance text (e.g. 'es_ES'). Falls back to config defaultLocale, then SF_DEFAULT_LOCALE, then 'en_US'."),
 }).strict();
 ```
 
@@ -295,9 +301,12 @@ export type MdfEmployeeLinkType =
 
 /** Bloque de guía semántica (§5.1.3). */
 export interface MdfQueryGuidance {
+  /** Locale BCP-47 con el que se resolvieron los `warnings` (D-70). */
+  locale: string;
   /** Plantilla de `$filter`. Opcional: `UNLINKED_STANDALONE` no tiene campo de enlace. */
   suggestedFilter?: string;
   recommendedOrderBy?: string;
+  /** Textos en el idioma activo; nunca en varios idiomas a la vez (D-70). */
   warnings: string[];
   exampleQuery: {
     tool: "query_entity";
@@ -357,16 +366,17 @@ export interface CustomMdfDetails {
 
 ---
 
-## 7. Requisitos Funcionales (FR-67..FR-74)
+## 7. Requisitos Funcionales (FR-67..FR-75)
 
 * **FR-67 (Detección Automática de Custom MDF)**: El sistema DEBE clasificar automáticamente como Custom MDF cualquier entidad cuyo nombre coincida con el patrón `/^[cC]ust_/`.
 * **FR-68 (Clasificación de Vinculación de Empleado)**: El sistema DEBE analizar las claves y `NavigationProperties` de cada entidad Custom MDF para asignar uno de los 6 tipos de `MdfEmployeeLinkType`.
-* **FR-69 (Generación de `queryGuidance`)**: Para cada Custom MDF clasificado, el sistema DEBE generar un bloque semántico con instrucciones de consulta seguras, identificando el campo sobre el cual aplicar `$filter` y advirtiendo sobre la imposibilidad de usar `$expand` en `User`.
+* **FR-69 (Generación de `queryGuidance`)**: Para cada Custom MDF clasificado, el sistema DEBE generar un bloque semántico con instrucciones de consulta seguras, identificando el campo sobre el cual aplicar `$filter` y advirtiendo de que la navegación inversa desde `User` devuelve la colección hija completa e inacotable.
 * **FR-70 (Herramienta `inspect_custom_mdf`)**: El servidor MCP DEBE exponer la herramienta `inspect_custom_mdf` permitiendo tanto el listado general como la inspección profunda de un Custom MDF específico.
 * **FR-71 (Recurso `sf://{env}/mdf/custom`)**: El servidor MCP DEBE exponer un recurso URI que enumere las entidades Custom MDF del entorno especificado.
 * **FR-72 (Detalle sin superficie nueva)**: El servidor MCP **NO DEBE** crear un recurso `sf://{env}/mdf/custom/{entitySet}`. El recurso existente `sf://{env}/entities/{entitySet}` DEBE devolver, para entidades Custom MDF, los campos aditivos `isCustom`, `isEffectiveDated`, `employeeLink` y `guidance`, preservando su contrato actual.
 * **FR-73 (Enriquecimiento de Catálogo Base)**: El recurso `sf://{env}/entities` DEBE enriquecer cada elemento con los campos `isEmployeeLinked` (boolean) y `isEffectiveDated` (boolean).
 * **FR-74 (Aislamiento de Allowlist)**: Si `entityAllowlist` está configurada, ninguna entidad excluida DEBE ser listada ni inspeccionada a través de las nuevas herramientas o recursos, respondiendo con `ENTITY_NOT_ALLOWED`.
+* **FR-75 (Guía multilingüe)**: El texto de `warnings` DEBE resolverse en **un único idioma activo** mediante la precedencia `locale` > `defaultLocale` > `SF_DEFAULT_LOCALE` > `"en_US"`, exponiendo el locale resuelto en `guidance.locale`. El sistema **NUNCA DEBE** emitir simultáneamente los textos de todos los idiomas. Las plantillas de `$filter`, el `exampleQuery` y los identificadores OData NO se traducen.
 
 ---
 
