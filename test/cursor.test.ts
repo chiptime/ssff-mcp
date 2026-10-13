@@ -216,3 +216,12 @@ test("the module default codec exists and round trips (per-process secret)", () 
     return true;
   });
 });
+
+test("FR-44: cursor token survives CRLF line endings when trimmed from STDIO input", () => {
+  const token = defaultCursorCodec.encode(samplePayload());
+  // Windows STDIO line endings or JSON input with trailing \r\n:
+  const withCrlf = `${token}\r\n`;
+  const trimmed = withCrlf.trim();
+  assert.deepEqual(defaultCursorCodec.decode(trimmed, sampleBinding()), samplePayload());
+});
+

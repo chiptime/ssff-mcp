@@ -325,3 +325,330 @@ test("unknown keys inside an allowlist entry are rejected", async () => {
   const filePath = await writeConfigRaw(withAllowlist([{ entity: "User", protocol: "v2" }]));
   await rejectsCode(() => loadConfig({ configPath: filePath }), "CONFIG_INVALID");
 });
+
+// --- Multi-platform permissions & Secret Providers (FR-41..FR-47) ------------
+
+test("windows platform emits Windows ACL warning instead of chmod 600", async () => {
+  const filePath = await writeConfigRaw(
+    JSON.stringify({
+      environments: {
+        prod: { baseUrl: "https://a.example.com", auth: { type: "basic", username: "u", password: "p" } },
+      },
+    }),
+  );
+  const warnings: string[] = [];
+  await loadConfig({
+    configPath: filePath,
+    platform: "win32",
+    statFile: async () => ({ mode: 0o666 }),
+    onWarning: (msg) => warnings.push(msg),
+  });
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /running on Windows; ensure access to .* is restricted using Windows ACLs/);
+});
+
+test("posix platform emits chmod 600 warning for loose permissions", async () => {
+  const filePath = await writeConfigRaw(
+    JSON.stringify({
+      environments: {
+        prod: { baseUrl: "https://a.example.com", auth: { type: "basic", username: "u", password: "p" } },
+      },
+    }),
+  );
+  const warnings: string[] = [];
+  await loadConfig({
+    configPath: filePath,
+    platform: "linux",
+    statFile: async () => ({ mode: 0o644 }),
+    onWarning: (msg) => warnings.push(msg),
+  });
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /recommend chmod 600/);
+});
+
+test("secret resolution via fromEnv succeeds when variable is present", async () => {
+  const filePath = await writeConfigRaw(
+    JSON.stringify({
+      environments: {
+        prod: {
+          baseUrl: "https://a.example.com",
+          auth: { type: "basic", username: "u", password: { fromEnv: "MY_SF_PASS" } },
+        },
+      },
+    }),
+  );
+  const config = await loadConfig({
+    configPath: filePath,
+    secretOptions: { env: { MY_SF_PASS: "resolved-password-123" } },
+  });
+  const env = config.environments.prod;
+  assert.equal(env.auth.type, "basic");
+  if (env.auth.type === "basic") {
+    assert.equal(env.auth.password, "resolved-password-123");
+  }
+});
+
+test("secret resolution via fromEnv fails with CONFIG_SECRET_MISSING when unset or empty", async () => {
+  const filePath = await writeConfigRaw(
+    JSON.stringify({
+      environments: {
+        prod: {
+          baseUrl: "https://a.example.com",
+          auth: { type: "basic", username: "u", password: { fromEnv: "NON_EXISTENT_VAR" } },
+        },
+      },
+    }),
+  );
+  await assert.rejects(
+    () => loadConfig({ configPath: filePath, secretOptions: { env: {} } }),
+    (error: unknown) => {
+      const err = expectSanitized(error, "CONFIG_SECRET_MISSING");
+      assert.match(err.message, /NON_EXISTENT_VAR/);
+      return true;
+    },
+  );
+});
+
+test("secret resolution via fromCommand succeeds and strips trailing newline", async () => {
+  const filePath = await writeConfigRaw(
+    JSON.stringify({
+      environments: {
+        prod: {
+          baseUrl: "https://a.example.com",
+          auth: { type: "basic", username: "u", password: { fromCommand: ["op", "read", "vault/item"] } },
+        },
+      },
+    }),
+  );
+  const config = await loadConfig({
+    configPath: filePath,
+    secretOptions: {
+      execCommand: async (file, args) => {
+        assert.equal(file, "op");
+        assert.deepEqual(args, ["read", "vault/item"]);
+        return { stdout: "super-secret-from-cli\n" };
+      },
+    },
+  });
+  const env = config.environments.prod;
+  assert.equal(env.auth.type, "basic");
+  if (env.auth.type === "basic") {
+    assert.equal(env.auth.password, "super-secret-from-cli");
+  }
+});
+
+test("secret resolution via fromCommand fails on error or empty output", async () => {
+  const filePath = await writeConfigRaw(
+    JSON.stringify({
+      environments: {
+        prod: {
+          baseUrl: "https://a.example.com",
+          auth: { type: "basic", username: "u", password: { fromCommand: ["failing-cli"] } },
+        },
+      },
+    }),
+  );
+  await assert.rejects(
+    () =>
+      loadConfig({
+        configPath: filePath,
+        secretOptions: {
+          execCommand: async () => {
+            throw new Error("Command failed with exit code 1");
+          },
+        },
+      }),
+    (error: unknown) => {
+      expectSanitized(error, "CONFIG_SECRET_COMMAND_FAILED");
+      return true;
+    },
+  );
+
+  await assert.rejects(
+    () =>
+      loadConfig({
+        configPath: filePath,
+        secretOptions: {
+          execCommand: async () => ({ stdout: "   \n" }),
+        },
+      }),
+    (error: unknown) => {
+      expectSanitized(error, "CONFIG_SECRET_COMMAND_FAILED");
+      return true;
+    },
+  );
+});
+
+test("secret resolution via fromCommand fails with CONFIG_SECRET_TIMEOUT on timeout", async () => {
+  const filePath = await writeConfigRaw(
+    JSON.stringify({
+      environments: {
+        prod: {
+          baseUrl: "https://a.example.com",
+          auth: { type: "basic", username: "u", password: { fromCommand: ["slow-cli"] } },
+        },
+      },
+    }),
+  );
+  await assert.rejects(
+    () =>
+      loadConfig({
+        configPath: filePath,
+        secretOptions: {
+          execCommand: async () => {
+            const err = new Error("Command timed out");
+            (err as unknown as { killed: boolean }).killed = true;
+            throw err;
+          },
+        },
+      }),
+    (error: unknown) => {
+      expectSanitized(error, "CONFIG_SECRET_TIMEOUT");
+      return true;
+    },
+  );
+});
+
+test("oauth privateKey supports secret providers", async () => {
+  const filePath = await writeConfigRaw(
+    JSON.stringify({
+      environments: {
+        oa: {
+          baseUrl: "https://api2.successfactors.eu",
+          auth: {
+            type: "oauth",
+            clientId: "cid",
+            companyId: "cmp",
+            userId: "uid",
+            privateKey: { fromEnv: "SF_RSA_KEY" },
+            tokenUrl: "https://api2.successfactors.eu/oauth/token",
+          },
+        },
+      },
+    }),
+  );
+  const config = await loadConfig({
+    configPath: filePath,
+    secretOptions: { env: { SF_RSA_KEY: "MIIEowIBAAKCAQEA..." } },
+  });
+  const env = config.environments.oa;
+  assert.equal(env.auth.type, "oauth");
+  if (env.auth.type === "oauth") {
+    assert.equal(env.auth.privateKey, "MIIEowIBAAKCAQEA...");
+  }
+});
+
+test("FR-47: secret resolution failures never echo secret values in errors or messages", async () => {
+  const filePath = await writeConfigRaw(
+    JSON.stringify({
+      environments: {
+        prod: {
+          baseUrl: "https://a.example.com",
+          auth: {
+            type: "basic",
+            username: "u",
+            password: { fromCommand: ["echo", "secret-never-leaked"] },
+          },
+        },
+      },
+    }),
+  );
+  await assert.rejects(
+    () =>
+      loadConfig({
+        configPath: filePath,
+        secretOptions: {
+          execCommand: async () => {
+            throw new Error("Command failed: secret-never-leaked");
+          },
+        },
+      }),
+    (error: unknown) => {
+      const err = expectSanitized(error, "CONFIG_SECRET_COMMAND_FAILED");
+      assert.ok(!err.message.includes("secret-never-leaked"));
+      return true;
+    },
+  );
+});
+
+test("fromCommand executes via execFile with shell: false and does not run shell metacharacters", async () => {
+  // Pass shell metacharacters in an argument. With execFile (no shell),
+  // they are passed literally as arguments rather than interpreted.
+  const filePath = await writeConfigRaw(
+    JSON.stringify({
+      environments: {
+        prod: {
+          baseUrl: "https://a.example.com",
+          auth: {
+            type: "basic",
+            username: "u",
+            password: { fromCommand: ["node", "-e", "process.stdout.write(process.argv[1]);", "hello;world"] },
+          },
+        },
+      },
+    }),
+  );
+  const config = await loadConfig({ configPath: filePath });
+  const env = config.environments.prod;
+  assert.equal(env.auth.type, "basic");
+  if (env.auth.type === "basic") {
+    assert.equal(env.auth.password, "hello;world");
+  }
+});
+
+test("lazy secret resolution (D-42 / A3) resolves only requested environment", async () => {
+  let prodExecCount = 0;
+  let devExecCount = 0;
+  const filePath = await writeConfigRaw(
+    JSON.stringify({
+      environments: {
+        prod: {
+          baseUrl: "https://prod.example.com",
+          auth: { type: "basic", username: "u1", password: { fromCommand: ["get-prod-pass"] } },
+        },
+        dev: {
+          baseUrl: "https://dev.example.com",
+          auth: { type: "basic", username: "u2", password: { fromCommand: ["get-dev-pass"] } },
+        },
+      },
+    }),
+  );
+
+  const secretOptions = {
+    execCommand: async (file: string) => {
+      if (file === "get-prod-pass") {
+        prodExecCount++;
+        return { stdout: "prod-secret\n" };
+      }
+      if (file === "get-dev-pass") {
+        devExecCount++;
+        return { stdout: "dev-secret\n" };
+      }
+      throw new Error("unexpected command");
+    },
+  };
+
+  // 1. Resolve prod only
+  const prodOnly = await loadConfig({
+    configPath: filePath,
+    resolveSecretsFor: "prod",
+    secretOptions,
+  });
+  assert.equal(prodExecCount, 1);
+  assert.equal(devExecCount, 0);
+  assert.equal(prodOnly.environments.prod.auth.type === "basic" ? prodOnly.environments.prod.auth.password : "", "prod-secret");
+  assert.equal(prodOnly.environments.dev.auth.type === "basic" ? prodOnly.environments.dev.auth.password : "", "");
+
+  // 2. Resolve none (null)
+  const none = await loadConfig({
+    configPath: filePath,
+    resolveSecretsFor: null,
+    secretOptions,
+  });
+  assert.equal(prodExecCount, 1);
+  assert.equal(devExecCount, 0);
+  assert.equal(none.environments.prod.auth.type === "basic" ? none.environments.prod.auth.password : "", "");
+  assert.equal(none.environments.dev.auth.type === "basic" ? none.environments.dev.auth.password : "", "");
+});
+
+

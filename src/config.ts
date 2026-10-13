@@ -11,12 +11,16 @@
  *   literal tilde form is used instead.
  */
 
+import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { z } from "zod";
 import type { AllowlistEntry } from "./allowlist.js";
 import { SanitizedError } from "./errors.js";
+
+const execFileAsync = promisify(execFile);
 
 export type { AllowlistEntry, AllowlistProtocol } from "./allowlist.js";
 
@@ -63,13 +67,27 @@ export interface SsffConfig {
    * and means deny-all (fail-closed).
    */
   entityAllowlist?: AllowlistEntry[];
+  /**
+   * True when the config was synthesized from inline SF_* environment
+   * variables (no config.json). Only in this mode may a tool call omit
+   * `environment` (FR-49/D-49); a config.json always keeps D-02/FR-02.
+   */
+  inline?: boolean;
 }
+
+export const secretProviderSchema = z.union([
+  z.string().min(1),
+  z.object({ fromEnv: z.string().min(1) }).strict(),
+  z.object({ fromCommand: z.array(z.string().min(1)).min(1) }).strict(),
+]);
+
+export type SecretProvider = z.infer<typeof secretProviderSchema>;
 
 const basicAuthSchema = z
   .object({
     type: z.literal("basic"),
     username: z.string().min(1),
-    password: z.string().min(1),
+    password: secretProviderSchema,
   })
   .strict();
 
@@ -85,7 +103,7 @@ const oauthAuthSchema = z
       .refine((value) => !value.includes("@"), {
         message: "oauth userId is the technical user id WITHOUT the @companyId suffix",
       }),
-    privateKey: z.string().min(1),
+    privateKey: secretProviderSchema,
     tokenUrl: z.string().min(1),
     idpUrl: z.string().min(1).optional(),
   })
@@ -186,6 +204,7 @@ export function normalizeBaseUrl(raw: string): string {
 /** Validate oauth endpoint fields and derive idpUrl from the tokenUrl origin when absent. */
 function materializeOAuthAuth(
   auth: z.infer<typeof oauthAuthSchema>,
+  resolvedPrivateKey: string,
 ): OAuthAuthConfig {
   const tokenUrl = validateHttpsUrl(auth.tokenUrl, "tokenUrl").toString().replace(/\/+$/, "");
   const idpUrl =
@@ -197,10 +216,80 @@ function materializeOAuthAuth(
     clientId: auth.clientId,
     companyId: auth.companyId,
     userId: auth.userId,
-    privateKey: auth.privateKey,
+    privateKey: resolvedPrivateKey,
     tokenUrl,
     idpUrl,
   };
+}
+
+export const SECRET_COMMAND_TIMEOUT_MS = 5000;
+
+export interface SecretResolverOptions {
+  env?: NodeJS.ProcessEnv;
+  execCommand?: (file: string, args: string[], options: { timeout: number }) => Promise<{ stdout: string }>;
+}
+
+export async function resolveSecret(
+  secret: SecretProvider,
+  options: SecretResolverOptions = {},
+): Promise<string> {
+  if (typeof secret === "string") {
+    return secret;
+  }
+
+  if ("fromEnv" in secret) {
+    const envObj = options.env ?? process.env;
+    const value = envObj[secret.fromEnv];
+    if (value === undefined || value.length === 0) {
+      throw new SanitizedError(
+        "CONFIG_SECRET_MISSING",
+        `environment variable "${secret.fromEnv}" for secret is not defined or is empty`,
+      );
+    }
+    return value;
+  }
+
+  if ("fromCommand" in secret) {
+    const [file, ...args] = secret.fromCommand;
+    const execFn =
+      options.execCommand ??
+      (async (cmdFile, cmdArgs, cmdOpts) => {
+        return await execFileAsync(cmdFile, cmdArgs, {
+          timeout: cmdOpts.timeout,
+          shell: false,
+          windowsHide: true,
+        });
+      });
+
+    let stdout: string;
+    try {
+      const res = await execFn(file, args, { timeout: SECRET_COMMAND_TIMEOUT_MS });
+      stdout = res.stdout;
+    } catch (err: unknown) {
+      const error = err as { killed?: boolean; code?: string | number } | undefined;
+      if (error?.killed || error?.code === "ETIMEDOUT") {
+        throw new SanitizedError(
+          "CONFIG_SECRET_TIMEOUT",
+          `command for resolving secret timed out after ${SECRET_COMMAND_TIMEOUT_MS}ms`,
+        );
+      }
+      throw new SanitizedError(
+        "CONFIG_SECRET_COMMAND_FAILED",
+        "command for resolving secret failed",
+      );
+    }
+
+    const trimmed = stdout.replace(/\r?\n$/, "");
+    if (trimmed.trim().length === 0) {
+      throw new SanitizedError(
+        "CONFIG_SECRET_COMMAND_FAILED",
+        "command for resolving secret produced empty output",
+      );
+    }
+    return trimmed;
+  }
+
+  throw new SanitizedError("CONFIG_INVALID", "unrecognized secret provider shape");
 }
 
 function formatIssues(error: z.ZodError): string {
@@ -221,6 +310,18 @@ export interface LoadConfigOptions {
   statFile?: (filePath: string) => Promise<{ mode: number }>;
   /** Receives the loose-permissions warning (defaults to stderr). */
   onWarning?: (message: string) => void;
+  /** Platform override for permission checking (used by tests). */
+  platform?: NodeJS.Platform;
+  /** Environment source for inline mode (defaults to process.env). */
+  env?: NodeJS.ProcessEnv;
+  /** Options for secret resolution (used by tests). */
+  secretOptions?: SecretResolverOptions;
+  /**
+   * Lazy secret resolution (D-42): undefined => resolve every environment
+   * (default), null => resolve none, string => resolve only that alias.
+   * Skipped environments carry an empty secret and must never be used.
+   */
+  resolveSecretsFor?: string | null;
 }
 
 interface StatLike {
@@ -231,11 +332,148 @@ async function defaultStat(filePath: string): Promise<StatLike> {
   return await fs.stat(filePath);
 }
 
+/** Trimmed non-empty value, or undefined. */
+function nonEmpty(value: string | undefined): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/** Raw non-empty secret value (never trimmed: leading/trailing chars may be significant). */
+function present(value: string | undefined): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/** Normalize an inline PEM: unescape literal `\n`, or decode a base64-wrapped PEM. */
+function normalizeInlinePem(raw: string): string {
+  if (raw.includes("-----BEGIN")) {
+    return raw.replace(/\\n/g, "\n");
+  }
+  const decoded = Buffer.from(raw, "base64").toString("utf-8");
+  if (decoded.includes("-----BEGIN")) {
+    return decoded;
+  }
+  return raw.replace(/\\n/g, "\n");
+}
+
+/** Parse SF_ENTITY_ALLOWLIST into allowlist entries (no protocols; trim, drop empties, reject duplicates). */
+function parseInlineAllowlist(raw: string | undefined): AllowlistEntry[] | undefined {
+  const value = nonEmpty(raw);
+  if (value === undefined) {
+    return undefined;
+  }
+  const entities = value
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+  if (entities.length === 0) {
+    return undefined;
+  }
+  const seen = new Set<string>();
+  const entries: AllowlistEntry[] = [];
+  for (const entity of entities) {
+    if (!ENTITY_NAME_PATTERN.test(entity)) {
+      throw new SanitizedError(
+        "CONFIG_INVALID",
+        `SF_ENTITY_ALLOWLIST entity "${entity}" must be an OData entity set name matching ^[A-Za-z_][A-Za-z0-9_]*$`,
+      );
+    }
+    if (seen.has(entity)) {
+      throw new SanitizedError(
+        "CONFIG_INVALID",
+        `SF_ENTITY_ALLOWLIST contains a duplicate entity entry for "${entity}"`,
+      );
+    }
+    seen.add(entity);
+    entries.push({ entity });
+  }
+  return entries;
+}
+
+/** True when inline mode is being requested (SF_BASE_URL present). */
+function inlineRequested(env: NodeJS.ProcessEnv): boolean {
+  return nonEmpty(env.SF_BASE_URL) !== undefined;
+}
+
+/**
+ * Synthesize a single environment from SF_* process env vars (FR-48/D-45).
+ * Used only when no config.json exists; a present file always wins.
+ */
+function synthesizeInlineConfig(env: NodeJS.ProcessEnv): SsffConfig {
+  const baseUrl = nonEmpty(env.SF_BASE_URL);
+  const password = present(env.SF_PASSWORD);
+  const privateKey = present(env.SF_PRIVATE_KEY);
+
+  if (baseUrl === undefined || (password === undefined && privateKey === undefined)) {
+    throw new SanitizedError(
+      "CONFIG_MISSING",
+      `configuration file not found at ${CONFIG_TILDE_PATH}; inline mode requires SF_BASE_URL plus SF_PASSWORD or SF_PRIVATE_KEY, or copy ${CONFIG_TEMPLATE_NAME} from the ssff-mcp repository to that exact path and fill in the placeholders`,
+    );
+  }
+
+  const alias = nonEmpty(env.SF_ENVIRONMENT) ?? "default";
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+
+  let auth: AuthConfig;
+  if (privateKey !== undefined) {
+    const clientId = nonEmpty(env.SF_CLIENT_ID);
+    const companyId = nonEmpty(env.SF_COMPANY_ID);
+    const userId = nonEmpty(env.SF_USER_ID);
+    const tokenUrl = nonEmpty(env.SF_TOKEN_URL);
+    if (clientId === undefined || companyId === undefined || userId === undefined || tokenUrl === undefined) {
+      throw new SanitizedError(
+        "CONFIG_INVALID",
+        "inline OAuth requires SF_CLIENT_ID, SF_COMPANY_ID, SF_USER_ID and SF_TOKEN_URL alongside SF_PRIVATE_KEY",
+      );
+    }
+    if (userId.includes("@")) {
+      throw new SanitizedError(
+        "CONFIG_INVALID",
+        "SF_USER_ID must be the technical user id WITHOUT the @companyId suffix",
+      );
+    }
+    const normalizedKey = normalizeInlinePem(privateKey);
+    auth = materializeOAuthAuth(
+      {
+        type: "oauth",
+        clientId,
+        companyId,
+        userId,
+        privateKey: normalizedKey,
+        tokenUrl,
+        idpUrl: nonEmpty(env.SF_IDP_URL),
+      },
+      normalizedKey,
+    );
+  } else {
+    const username = nonEmpty(env.SF_USERNAME);
+    if (username === undefined) {
+      throw new SanitizedError(
+        "CONFIG_INVALID",
+        "inline basic auth requires SF_USERNAME alongside SF_BASE_URL and SF_PASSWORD",
+      );
+    }
+    auth = { type: "basic", username, password: password! };
+  }
+
+  const entityAllowlist = parseInlineAllowlist(env.SF_ENTITY_ALLOWLIST);
+  const environments: Record<string, EnvironmentConfig> = {
+    [alias]: { baseUrl: normalizedBaseUrl, auth },
+  };
+  return entityAllowlist === undefined
+    ? { environments, inline: true }
+    : { environments, entityAllowlist, inline: true };
+}
+
 export async function loadConfig(options: LoadConfigOptions = {}): Promise<SsffConfig> {
   const filePath = options.configPath ?? defaultConfigPath();
   const readFile = options.readFile ?? ((p: string) => fs.readFile(p, "utf-8"));
   const statFile = options.statFile ?? defaultStat;
   const onWarning = options.onWarning ?? ((message: string) => process.stderr.write(`${message}\n`));
+  const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
 
   let raw: string;
   try {
@@ -243,10 +481,7 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<SsffC
   } catch (error) {
     const code = (error as NodeJS.ErrnoException | undefined)?.code;
     if (code === "ENOENT") {
-      throw new SanitizedError(
-        "CONFIG_MISSING",
-        `configuration file not found at ${CONFIG_TILDE_PATH}; copy ${CONFIG_TEMPLATE_NAME} from the ssff-mcp repository to that exact path and fill in the placeholders`,
-      );
+      return synthesizeInlineConfig(env);
     }
     throw new SanitizedError("CONFIG_INVALID", `configuration file at ${CONFIG_TILDE_PATH} could not be read`);
   }
@@ -254,7 +489,11 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<SsffC
   // Permission check: warning only, never a failure.
   try {
     const stats = await statFile(filePath);
-    if ((stats.mode & 0o077) !== 0) {
+    if (platform === "win32") {
+      onWarning(
+        `ssff-mcp warning: running on Windows; ensure access to ${CONFIG_TILDE_PATH} is restricted using Windows ACLs`,
+      );
+    } else if ((stats.mode & 0o077) !== 0) {
       onWarning(
         `ssff-mcp warning: permissions of ${CONFIG_TILDE_PATH} are broader than owner-only; recommend chmod 600 ${CONFIG_TILDE_PATH}`,
       );
@@ -279,21 +518,44 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<SsffC
   }
 
   const environments: Record<string, EnvironmentConfig> = {};
+  const shouldResolve = (alias: string) =>
+    options.resolveSecretsFor === undefined || options.resolveSecretsFor === alias;
+
   for (const [alias, env] of Object.entries(result.data.environments)) {
-    environments[alias] = {
-      baseUrl: normalizeBaseUrl(env.baseUrl),
-      auth:
-        env.auth.type === "basic"
-          ? { type: "basic", username: env.auth.username, password: env.auth.password }
-          : materializeOAuthAuth(env.auth),
-    };
+    const resolve = shouldResolve(alias);
+    if (env.auth.type === "basic") {
+      const password = resolve
+        ? await resolveSecret(env.auth.password, options.secretOptions)
+        : "";
+      environments[alias] = {
+        baseUrl: normalizeBaseUrl(env.baseUrl),
+        auth: { type: "basic", username: env.auth.username, password },
+      };
+    } else {
+      const privateKey = resolve
+        ? await resolveSecret(env.auth.privateKey, options.secretOptions)
+        : "";
+      environments[alias] = {
+        baseUrl: normalizeBaseUrl(env.baseUrl),
+        auth: materializeOAuthAuth(env.auth, privateKey),
+      };
+    }
   }
   // entityAllowlist stays absent (key not set) when not configured; an empty
   // array is a configured deny-all allowlist and is preserved as-is.
-  if (result.data.entityAllowlist === undefined) {
-    return { environments };
+  const config: SsffConfig =
+    result.data.entityAllowlist === undefined
+      ? { environments }
+      : { environments, entityAllowlist: result.data.entityAllowlist };
+
+  // A present config.json always wins; make a silently-ignored inline mode explicit.
+  if (inlineRequested(env)) {
+    onWarning(
+      `ssff-mcp warning: inline SF_* environment variables are set but ${CONFIG_TILDE_PATH} exists and takes precedence; inline mode is ignored`,
+    );
   }
-  return { environments, entityAllowlist: result.data.entityAllowlist };
+
+  return config;
 }
 
 /** Collapse whitespace and clamp length of zod issue text (bounded, no body echo). */

@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
 import type { Writable } from "node:stream";
 import { promises as fs } from "node:fs";
 import { LOG_FIELD_ALLOWLIST } from "../src/logger.js";
@@ -893,3 +895,180 @@ test("query_entity works end to end for an oauth environment", async () => {
   assert.equal(dataGets.length, 2); // $metadata (validation) + data page
   assert.equal(dataGets[1]!.headers.Authorization, "Bearer TT");
 });
+
+// --- MCP Resources tests (FR-36..FR-40, D-33..D-35, D-40) -------------------
+
+test("MCP resource templates and listResources expose overview and entities for configured environments", async () => {
+  const configPath = await writeStandardConfig({
+    "tenant-a": {},
+    "tenant-b": { baseUrl: "https://b.example.com" },
+  });
+  const { fetch } = recordingFetch(standardSfResponder(feed([])));
+
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const templates = await client.listResourceTemplates();
+    const templateUris = templates.resourceTemplates.map((t) => t.uriTemplate).sort();
+    assert.deepEqual(templateUris, [
+      "sf://{environment}/entities",
+      "sf://{environment}/entities/{entitySet}",
+      "sf://{environment}/overview",
+    ]);
+
+    const resources = await client.listResources();
+    const uris = resources.resources.map((r) => r.uri).sort();
+    assert.deepEqual(uris, [
+      "sf://tenant-a/entities",
+      "sf://tenant-a/overview",
+      "sf://tenant-b/entities",
+      "sf://tenant-b/overview",
+    ]);
+  });
+});
+
+test("sf://{env}/overview returns parsed environment and metadata summary", async () => {
+  const configPath = await writeStandardConfig({ "tenant-a": {} });
+  const { fetch } = recordingFetch(standardSfResponder(feed([])));
+
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const res = await client.readResource({ uri: "sf://tenant-a/overview" });
+    assert.equal(res.contents.length, 1);
+    const content = res.contents[0];
+    assert.equal(content.uri, "sf://tenant-a/overview");
+    assert.equal(content.mimeType, "application/json");
+    assert.ok("text" in content);
+
+    const overview = JSON.parse(content.text) as {
+      environment: string;
+      baseUrl: string;
+      authType: string;
+      totalEntitySets: number;
+      functionImportsCount: number;
+      allowlistConfigured: boolean;
+    };
+    assert.equal(overview.environment, "tenant-a");
+    assert.equal(overview.baseUrl, "https://tenant-a.example.com");
+    assert.equal(overview.authType, "basic");
+    assert.equal(overview.totalEntitySets, 2); // User, FOOBar
+    assert.equal(overview.functionImportsCount, 1); // doThing
+    assert.equal(overview.allowlistConfigured, false);
+  });
+});
+
+test("sf://{env}/entities returns lightweight catalog and respects entityAllowlist", async () => {
+  const configContent = JSON.stringify({
+    environments: {
+      "tenant-a": {
+        baseUrl: "https://tenant-a.example.com",
+        auth: { type: "basic", username: "u", password: "p" },
+      },
+    },
+    entityAllowlist: [{ entity: "User" }],
+  });
+  const configPath = await writeConfigFile(configContent, { mode: 0o600 });
+  const { fetch } = recordingFetch(standardSfResponder(feed([])));
+
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const res = await client.readResource({ uri: "sf://tenant-a/entities" });
+    const content = res.contents[0];
+    assert.ok("text" in content);
+    const catalog = JSON.parse(content.text) as {
+      environment: string;
+      totalCount: number;
+      entities: Array<{ name: string; entityType: string; keyProperties: string[] }>;
+    };
+
+    assert.equal(catalog.environment, "tenant-a");
+    // Only "User" is allowed; "FOOBar" is omitted
+    assert.equal(catalog.totalCount, 1);
+    assert.equal(catalog.entities[0].name, "User");
+    assert.deepEqual(catalog.entities[0].keyProperties, ["userId"]);
+  });
+});
+
+test("sf://{env}/entities/{entitySet} returns exhaustive entity schema", async () => {
+  const configPath = await writeStandardConfig({ "tenant-a": {} });
+  const { fetch } = recordingFetch(standardSfResponder(feed([])));
+
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const res = await client.readResource({ uri: "sf://tenant-a/entities/User" });
+    assert.equal(res.contents.length, 1);
+    const content = res.contents[0];
+    assert.ok("text" in content);
+    const schema = JSON.parse(content.text) as {
+      entitySet: string;
+      entityType: string;
+      keys: string[];
+      properties: Array<{ name: string; type: string; nullable: boolean }>;
+    };
+
+    assert.equal(schema.entitySet, "User");
+    assert.equal(schema.entityType, "SFOData.User");
+    assert.deepEqual(schema.keys, ["userId"]);
+    assert.deepEqual(schema.properties, [{ name: "userId", type: "Edm.String", nullable: false }]);
+  });
+});
+
+test("sf://{env}/entities/{entitySet} rejects denied or non-existent entities", async () => {
+  const configContent = JSON.stringify({
+    environments: {
+      "tenant-a": {
+        baseUrl: "https://tenant-a.example.com",
+        auth: { type: "basic", username: "u", password: "p" },
+      },
+    },
+    entityAllowlist: [{ entity: "User" }],
+  });
+  const configPath = await writeConfigFile(configContent, { mode: 0o600 });
+  const { fetch } = recordingFetch(standardSfResponder(feed([])));
+
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    // Entity in metadata but excluded by allowlist
+    await assert.rejects(
+      () => client.readResource({ uri: "sf://tenant-a/entities/FOOBar" }),
+      (err: Error) => {
+        assert.match(err.message, /ENTITY_NOT_ALLOWED/);
+        return true;
+      },
+    );
+
+    // Entity not in metadata at all
+    await assert.rejects(
+      () => client.readResource({ uri: "sf://tenant-a/entities/NoSuchEntity" }),
+      (err: Error) => {
+        assert.match(err.message, /ENTITY_NOT_ALLOWED|RESOURCE_NOT_FOUND/);
+        return true;
+      },
+    );
+  });
+});
+
+test("sf://{env}/entities uses disk cache when configured via createMcpServer", async () => {
+  const configPath = await writeStandardConfig({ "tenant-a": {} });
+  const { fetch, requests } = recordingFetch(standardSfResponder(feed([])));
+
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ssff-mcp-tools-cache-"));
+  try {
+    await withTestServer(
+      { configPath, fetchImpl: fetch, cacheDir: dir, disableDiskCache: false },
+      async (client) => {
+        // First read fetches metadata and writes to cacheDir
+        const res1 = await client.readResource({ uri: "sf://tenant-a/entities" });
+        assert.equal(res1.contents.length, 1);
+        const initialRequests = requests.length;
+        assert.ok(initialRequests >= 1);
+
+        // Verify disk cache file exists
+        const files = await fs.readdir(dir);
+        assert.ok(files.some((f) => f.startsWith("metadata-tenant-a")));
+
+        // Second read hits disk cache and avoids network fetch
+        const res2 = await client.readResource({ uri: "sf://tenant-a/entities" });
+        assert.equal(res2.contents.length, 1);
+        assert.equal(requests.length, initialRequests);
+      },
+    );
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+

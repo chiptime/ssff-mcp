@@ -1,21 +1,23 @@
 /**
- * $metadata validation support.
+ * $metadata validation and MCP Resources support with disk/memory caching.
  *
- * Fetches and parses the EDMX `$metadata` document to extract EntitySet and
- * FunctionImport NAMES ONLY. Used exclusively to validate the first segment
- * of `entityPath` (function imports are excluded per PRD DS-04/FR-08).
- *
- * The cache is process-memory only, keyed by environment alias, with a 10
- * minute TTL. No XML documents and no response bodies are ever cached or
- * persisted. `get_metadata` (the tool) always hits the source fresh and never
- * uses this cache.
+ * - Fetches and parses the EDMX `$metadata` document to extract EntitySet and
+ *   FunctionImport names, and detailed schemas (keys, properties, navigation
+ *   properties with cardinality).
+ * - Caches parsed metadata in memory (10 min TTL) and on local disk with TTL
+ *   (24 hours default) under the OS cache directory (~/.cache/ssff-mcp on Linux).
+ * - `get_metadata` (the tool) always hits the source fresh and never uses this cache.
  */
 
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { XMLParser } from "fast-xml-parser";
 import { SanitizedError } from "./errors.js";
 import { dispatchGet, type EnvTarget, type FetchImpl } from "./http.js";
 
 export const METADATA_TTL_MS = 10 * 60 * 1000;
+export const METADATA_DISK_TTL_MS = 24 * 60 * 60 * 1000;
 const METADATA_TIMEOUT_MS = 60_000;
 
 export interface MetadataNameSets {
@@ -23,8 +25,37 @@ export interface MetadataNameSets {
   functionImports: Set<string>;
 }
 
+export interface EntityProperty {
+  name: string;
+  type: string;
+  nullable: boolean;
+  maxLength?: number;
+}
+
+export interface NavigationProperty {
+  name: string;
+  targetEntitySet: string;
+  relationship: string;
+  multiplicity: "0..1" | "1" | "*";
+}
+
+export interface EntitySchema {
+  entitySet: string;
+  entityType: string;
+  keys: string[];
+  properties: EntityProperty[];
+  navigationProperties: NavigationProperty[];
+}
+
+export interface ParsedMetadata {
+  entitySets: string[];
+  functionImports: string[];
+  entitySchemas: Record<string, EntitySchema>;
+}
+
 interface CacheEntry {
-  sets: MetadataNameSets;
+  data: ParsedMetadata;
+  nameSets: MetadataNameSets;
   fetchedAt: number;
 }
 
@@ -33,57 +64,255 @@ export type FirstSegmentVerdict =
   | { kind: "function-import" }
   | { kind: "unknown" };
 
-/** Extract EntitySet / FunctionImport names from a parsed EDMX document. */
-function collectNames(node: unknown, sets: MetadataNameSets): void {
-  if (Array.isArray(node)) {
-    for (const item of node) {
-      collectNames(item, sets);
-    }
-    return;
+const parser = new XMLParser({
+  ignoreAttributes: false,
+  removeNSPrefix: true,
+  isArray: (name) =>
+    name === "EntitySet" ||
+    name === "FunctionImport" ||
+    name === "EntityType" ||
+    name === "Association" ||
+    name === "AssociationSet" ||
+    name === "Property" ||
+    name === "NavigationProperty" ||
+    name === "PropertyRef" ||
+    name === "End" ||
+    name === "Schema",
+});
+
+export function defaultCacheDir(): string {
+  if (process.platform === "win32") {
+    const localAppData = process.env.LOCALAPPDATA ?? path.join(os.homedir(), "AppData", "Local");
+    return path.join(localAppData, "ssff-mcp", "cache");
   }
-  if (typeof node !== "object" || node === null) {
-    return;
+  if (process.platform === "darwin") {
+    return path.join(os.homedir(), "Library", "Caches", "ssff-mcp");
   }
-  for (const [key, value] of Object.entries(node)) {
-    if (key === "EntitySet" || key === "FunctionImport") {
-      const items = Array.isArray(value) ? value : [value];
-      for (const item of items) {
-        if (typeof item === "object" && item !== null) {
-          // With attributes enabled, fast-xml-parser keys them as `@_Name`.
-          const name = (item as Record<string, unknown>)["@_Name"];
-          if (typeof name === "string" && name.length > 0) {
-            if (key === "EntitySet") {
-              sets.entitySets.add(name);
-            } else {
-              sets.functionImports.add(name);
-            }
+  const xdgCache = process.env.XDG_CACHE_HOME ?? path.join(os.homedir(), ".cache");
+  return path.join(xdgCache, "ssff-mcp");
+}
+
+export function parseMetadata(xml: string): ParsedMetadata {
+  let doc: Record<string, unknown>;
+  try {
+    doc = parser.parse(xml) as Record<string, unknown>;
+  } catch {
+    throw new SanitizedError("METADATA_UNAVAILABLE", "metadata for the configured environment could not be parsed");
+  }
+
+  const edmx = (doc.Edmx ?? doc) as Record<string, unknown> | undefined;
+  const dataServices = (edmx?.DataServices ?? doc.DataServices) as Record<string, unknown> | undefined;
+  const rawSchemas = dataServices?.Schema;
+  const schemas: Array<Record<string, unknown>> = Array.isArray(rawSchemas)
+    ? rawSchemas
+    : rawSchemas && typeof rawSchemas === "object"
+      ? [rawSchemas as Record<string, unknown>]
+      : [];
+
+  const entitySetsList: Array<{ name: string; entityType: string }> = [];
+  const functionImportsSet = new Set<string>();
+  const entityTypes = new Map<string, Record<string, unknown>>();
+  const associations = new Map<string, Record<string, unknown>>();
+  const associationSets: Array<Record<string, unknown>> = [];
+
+  for (const schema of schemas) {
+    const namespace = typeof schema["@_Namespace"] === "string" ? schema["@_Namespace"] : "";
+
+    const rawEntityTypes = schema.EntityType;
+    const typeList = Array.isArray(rawEntityTypes) ? rawEntityTypes : [];
+    for (const et of typeList) {
+      if (typeof et === "object" && et !== null) {
+        const name = (et as Record<string, unknown>)["@_Name"];
+        if (typeof name === "string" && name.length > 0) {
+          entityTypes.set(name, et as Record<string, unknown>);
+          if (namespace.length > 0) {
+            entityTypes.set(`${namespace}.${name}`, et as Record<string, unknown>);
           }
         }
       }
-    } else {
-      collectNames(value, sets);
+    }
+
+    const rawAssocs = schema.Association;
+    const assocList = Array.isArray(rawAssocs) ? rawAssocs : [];
+    for (const assoc of assocList) {
+      if (typeof assoc === "object" && assoc !== null) {
+        const name = (assoc as Record<string, unknown>)["@_Name"];
+        if (typeof name === "string" && name.length > 0) {
+          associations.set(name, assoc as Record<string, unknown>);
+          if (namespace.length > 0) {
+            associations.set(`${namespace}.${name}`, assoc as Record<string, unknown>);
+          }
+        }
+      }
+    }
+
+    const rawContainers = schema.EntityContainer;
+    const containers = Array.isArray(rawContainers)
+      ? rawContainers
+      : rawContainers && typeof rawContainers === "object"
+        ? [rawContainers]
+        : [];
+
+    for (const container of containers) {
+      if (typeof container === "object" && container !== null) {
+        const c = container as Record<string, unknown>;
+        const rawSets = c.EntitySet;
+        const setList = Array.isArray(rawSets) ? rawSets : [];
+        for (const es of setList) {
+          if (typeof es === "object" && es !== null) {
+            const esObj = es as Record<string, unknown>;
+            const name = esObj["@_Name"];
+            const entityType = esObj["@_EntityType"];
+            if (typeof name === "string" && name.length > 0) {
+              entitySetsList.push({
+                name,
+                entityType: typeof entityType === "string" ? entityType : name,
+              });
+            }
+          }
+        }
+
+        const rawFuncs = c.FunctionImport;
+        const funcList = Array.isArray(rawFuncs) ? rawFuncs : [];
+        for (const fi of funcList) {
+          if (typeof fi === "object" && fi !== null) {
+            const name = (fi as Record<string, unknown>)["@_Name"];
+            if (typeof name === "string" && name.length > 0) {
+              functionImportsSet.add(name);
+            }
+          }
+        }
+
+        const rawAssocSets = c.AssociationSet;
+        const aSetsList = Array.isArray(rawAssocSets) ? rawAssocSets : [];
+        for (const as of aSetsList) {
+          if (typeof as === "object" && as !== null) {
+            associationSets.push(as as Record<string, unknown>);
+          }
+        }
+      }
     }
   }
+
+  const entitySchemas: Record<string, EntitySchema> = {};
+  for (const es of entitySetsList) {
+    const bareType = es.entityType.split(".").pop() ?? es.entityType;
+    const et = entityTypes.get(es.entityType) ?? entityTypes.get(bareType);
+
+    const keys: string[] = [];
+    if (et?.Key && typeof et.Key === "object") {
+      const keyObj = et.Key as Record<string, unknown>;
+      const propRefs = Array.isArray(keyObj.PropertyRef) ? keyObj.PropertyRef : [];
+      for (const pr of propRefs) {
+        if (typeof pr === "object" && pr !== null) {
+          const kName = (pr as Record<string, unknown>)["@_Name"];
+          if (typeof kName === "string" && kName.length > 0) {
+            keys.push(kName);
+          }
+        }
+      }
+    }
+
+    const properties: EntityProperty[] = [];
+    const rawProps = et?.Property;
+    const propList = Array.isArray(rawProps) ? rawProps : [];
+    for (const p of propList) {
+      if (typeof p === "object" && p !== null) {
+        const pObj = p as Record<string, unknown>;
+        const name = pObj["@_Name"];
+        const type = pObj["@_Type"];
+        if (typeof name === "string" && typeof type === "string") {
+          const prop: EntityProperty = {
+            name,
+            type,
+            nullable: pObj["@_Nullable"] !== "false",
+          };
+          if (pObj["@_MaxLength"] !== undefined) {
+            const maxL = Number(pObj["@_MaxLength"]);
+            if (!Number.isNaN(maxL)) {
+              prop.maxLength = maxL;
+            }
+          }
+          properties.push(prop);
+        }
+      }
+    }
+
+    const navigationProperties: NavigationProperty[] = [];
+    const rawNavs = et?.NavigationProperty;
+    const navList = Array.isArray(rawNavs) ? rawNavs : [];
+    for (const np of navList) {
+      if (typeof np === "object" && np !== null) {
+        const npObj = np as Record<string, unknown>;
+        const name = npObj["@_Name"];
+        const relationship = npObj["@_Relationship"];
+        const toRole = npObj["@_ToRole"];
+        if (typeof name === "string" && typeof relationship === "string" && typeof toRole === "string") {
+          const bareRel = relationship.split(".").pop() ?? relationship;
+          const assoc = associations.get(relationship) ?? associations.get(bareRel);
+
+          let multiplicity: "0..1" | "1" | "*" = "*";
+          if (assoc?.End && Array.isArray(assoc.End)) {
+            const end = (assoc.End as Array<Record<string, unknown>>).find((e) => e["@_Role"] === toRole);
+            const m = end?.["@_Multiplicity"];
+            if (m === "0..1" || m === "1" || m === "*") {
+              multiplicity = m;
+            }
+          }
+
+          let targetEntitySet = toRole;
+          const matchedSet = associationSets.find(
+            (as) => as["@_Association"] === relationship || as["@_Name"] === bareRel,
+          );
+          if (matchedSet?.End && Array.isArray(matchedSet.End)) {
+            const endSet = (matchedSet.End as Array<Record<string, unknown>>).find((e) => e["@_Role"] === toRole);
+            const esName = endSet?.["@_EntitySet"];
+            if (typeof esName === "string" && esName.length > 0) {
+              targetEntitySet = esName;
+            }
+          }
+
+          navigationProperties.push({
+            name,
+            targetEntitySet,
+            relationship,
+            multiplicity,
+          });
+        }
+      }
+    }
+
+    entitySchemas[es.name] = {
+      entitySet: es.name,
+      entityType: es.entityType,
+      keys,
+      properties,
+      navigationProperties,
+    };
+  }
+
+  return {
+    entitySets: entitySetsList.map((e) => e.name),
+    functionImports: [...functionImportsSet],
+    entitySchemas,
+  };
 }
 
-const parser = new XMLParser({
-  // Attribute keys keep the default `@_` prefix; we only read `Name`.
-  ignoreAttributes: false,
-  removeNSPrefix: true,
-  isArray: (name) => name === "EntitySet" || name === "FunctionImport",
-});
-
 export function parseMetadataXml(xml: string): MetadataNameSets {
-  const sets: MetadataNameSets = { entitySets: new Set(), functionImports: new Set() };
-  const parsed: unknown = parser.parse(xml);
-  collectNames(parsed, sets);
-  return sets;
+  const parsed = parseMetadata(xml);
+  return {
+    entitySets: new Set(parsed.entitySets),
+    functionImports: new Set(parsed.functionImports),
+  };
 }
 
 export interface MetadataServiceOptions {
   fetchImpl?: FetchImpl;
   now?: () => number;
   ttlMs?: number;
+  diskTtlMs?: number;
+  cacheDir?: string;
+  disableDiskCache?: boolean;
 }
 
 export class MetadataService {
@@ -91,14 +320,22 @@ export class MetadataService {
   private readonly fetchImpl?: FetchImpl;
   private readonly now: () => number;
   private readonly ttlMs: number;
+  private readonly diskTtlMs: number;
+  private readonly cacheDir: string;
+  private readonly disableDiskCache: boolean;
 
   constructor(options: MetadataServiceOptions = {}) {
     this.fetchImpl = options.fetchImpl;
     this.now = options.now ?? (() => Date.now());
     this.ttlMs = options.ttlMs ?? METADATA_TTL_MS;
+    this.diskTtlMs = options.diskTtlMs ?? METADATA_DISK_TTL_MS;
+    this.cacheDir = options.cacheDir ?? defaultCacheDir();
+    this.disableDiskCache =
+      options.disableDiskCache ??
+      (options.cacheDir !== undefined ? false : options.fetchImpl !== undefined);
   }
 
-  private async fetchNameSets(env: EnvTarget): Promise<MetadataNameSets> {
+  private async fetchFreshMetadata(env: EnvTarget): Promise<ParsedMetadata> {
     let xml: string;
     try {
       const result = await dispatchGet(env, "$metadata", {
@@ -112,33 +349,86 @@ export class MetadataService {
         error instanceof SanitizedError &&
         (error.code === "HTTP_ERROR" || error.code === "OAUTH_ASSERTION_ERROR" || error.code === "OAUTH_TOKEN_ERROR")
       ) {
-        // The service (or its OAuth endpoints) answered with an error: keep the
-        // richer sanitized error (e.g. 401 invalid credentials, rejected key)
-        // instead of masking it.
         throw error;
       }
-      // Fetch-level failures (network, timeout, blocked redirect) map to
-      // METADATA_UNAVAILABLE.
       throw new SanitizedError(
         "METADATA_UNAVAILABLE",
         "metadata for the configured environment could not be retrieved",
       );
     }
-    try {
-      return parseMetadataXml(xml);
-    } catch {
-      throw new SanitizedError("METADATA_UNAVAILABLE", "metadata for the configured environment could not be parsed");
+
+    return parseMetadata(xml);
+  }
+
+  async getParsedMetadata(env: EnvTarget, alias: string): Promise<ParsedMetadata> {
+    const memEntry = this.cache.get(alias);
+    if (memEntry !== undefined && this.now() - memEntry.fetchedAt < this.ttlMs) {
+      return memEntry.data;
     }
+
+    // Try reading disk cache
+    if (!this.disableDiskCache) {
+      try {
+        const cacheFile = path.join(this.cacheDir, `metadata-${encodeURIComponent(alias)}.json`);
+        const content = await fs.readFile(cacheFile, "utf-8");
+        const diskEntry = JSON.parse(content) as { fetchedAt: number; data: ParsedMetadata };
+        if (
+          typeof diskEntry.fetchedAt === "number" &&
+          this.now() - diskEntry.fetchedAt < this.diskTtlMs &&
+          diskEntry.data?.entitySets
+        ) {
+          const nameSets: MetadataNameSets = {
+            entitySets: new Set(diskEntry.data.entitySets),
+            functionImports: new Set(diskEntry.data.functionImports),
+          };
+          this.cache.set(alias, {
+            data: diskEntry.data,
+            nameSets,
+            fetchedAt: diskEntry.fetchedAt,
+          });
+          return diskEntry.data;
+        }
+      } catch {
+        // Disk read missed, expired, or invalid.
+      }
+    }
+
+    // Fetch fresh
+    const data = await this.fetchFreshMetadata(env);
+    const nameSets: MetadataNameSets = {
+      entitySets: new Set(data.entitySets),
+      functionImports: new Set(data.functionImports),
+    };
+    this.cache.set(alias, { data, nameSets, fetchedAt: this.now() });
+
+    // Best-effort disk write
+    if (!this.disableDiskCache) {
+      try {
+        await fs.mkdir(this.cacheDir, { recursive: true });
+        const cacheFile = path.join(this.cacheDir, `metadata-${encodeURIComponent(alias)}.json`);
+        await fs.writeFile(
+          cacheFile,
+          JSON.stringify({ fetchedAt: this.now(), data }),
+          "utf-8",
+        );
+      } catch {
+        // Best-effort; do not fail in-memory success if disk write fails
+      }
+    }
+
+    return data;
   }
 
   async getNameSets(env: EnvTarget, alias: string): Promise<MetadataNameSets> {
     const entry = this.cache.get(alias);
     if (entry !== undefined && this.now() - entry.fetchedAt < this.ttlMs) {
-      return entry.sets;
+      return entry.nameSets;
     }
-    const sets = await this.fetchNameSets(env);
-    this.cache.set(alias, { sets, fetchedAt: this.now() });
-    return sets;
+    const data = await this.getParsedMetadata(env, alias);
+    return {
+      entitySets: new Set(data.entitySets),
+      functionImports: new Set(data.functionImports),
+    };
   }
 
   /** Classify the first path segment against the tenant metadata. */
@@ -151,5 +441,10 @@ export class MetadataService {
       return { kind: "function-import" };
     }
     return { kind: "unknown" };
+  }
+
+  async getEntitySchema(env: EnvTarget, alias: string, entitySet: string): Promise<EntitySchema | undefined> {
+    const data = await this.getParsedMetadata(env, alias);
+    return data.entitySchemas[entitySet];
   }
 }

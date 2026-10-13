@@ -2,12 +2,11 @@
 
 A local, **read-only** MCP (Model Context Protocol) server for **SAP SuccessFactors OData v2**, communicating with the MCP host exclusively over **STDIO**. It exposes four tools (`list_environments`, `get_metadata`, `query_entity`, `batch_get`); data reads dispatch exactly one HTTPS GET per call, and `batch_get` dispatches exactly one HTTPS POST to the fixed `$batch` endpoint with a GET-only multipart envelope — with the read-only frontier enforced in server code, never in prompts.
 
-**Status:** MIT licensed and **published on npm** ([ssff-mcp](https://www.npmjs.com/package/ssff-mcp)). Linux-only MVP; OpenCode is the first target client.
+**Status:** MIT licensed and **published on npm** ([ssff-mcp](https://www.npmjs.com/package/ssff-mcp)). Cross-platform (Linux, macOS, Windows); OpenCode is the first target client.
 
 ## Requirements
 
-- Linux
-- Node.js >= 20
+- Node.js >= 20 (Linux, macOS, Windows)
 - pnpm — **only for developing from source**; the installed CLI needs nothing beyond Node
 
 ## Install
@@ -32,14 +31,23 @@ npx -y ssff-mcp@latest
 ```
 
 or install globally (`npm install -g ssff-mcp`) and run `ssff-mcp`. The
-installed CLI requires only Node >= 20; the configuration below is still
-required.
+installed CLI requires only Node >= 20.
+
+**Fastest setup:** run the interactive wizard — it writes `config.json` (mode
+`0600`) and prints the ready-to-paste block for your MCP client:
+
+```bash
+npx -y ssff-mcp@latest init
+```
+
+Otherwise, configure manually as described below, or use
+[inline mode](#inline-mode-no-config-file) and skip the file entirely.
 
 ## Configuration
 
-The configuration lives at the exact path **`~/.config/ssff-mcp/config.json`** (per-user, outside this repository). `XDG_CONFIG_HOME` is deliberately not honored.
+The configuration lives at the path **`~/.config/ssff-mcp/config.json`** (POSIX: Linux/macOS) or **`%USERPROFILE%\.config\ssff-mcp\config.json`** (Windows). `XDG_CONFIG_HOME` is deliberately not honored.
 
-1. Create the directory: `mkdir -p ~/.config/ssff-mcp`
+1. Create the directory: `mkdir -p ~/.config/ssff-mcp` (or `mkdir "%USERPROFILE%\.config\ssff-mcp"` on Windows)
 2. Copy the template: `cp config.template.json ~/.config/ssff-mcp/config.json`
    (for a packaged install, copy it from the installed package instead:
    `cp "$(npm root -g)/ssff-mcp/config.template.json" ~/.config/ssff-mcp/config.json`
@@ -47,9 +55,31 @@ The configuration lives at the exact path **`~/.config/ssff-mcp/config.json`** (
    to the install for anything else — or fetch it from the repository). The
    template ships inside the npm package with safe placeholders.
 3. Fill in the placeholders.
-4. Restrict permissions: `chmod 600 ~/.config/ssff-mcp/config.json`
+4. Restrict permissions: `chmod 600 ~/.config/ssff-mcp/config.json` on POSIX systems (Linux/macOS). On Windows, restrict access via Windows ACLs (e.g. `icacls`).
 
-The file is re-read and re-validated on **every tool call** (stateless). It is never logged and never persisted elsewhere by the server.
+The file is re-read and re-validated on **every tool call** (stateless). Secrets are never logged and never persisted elsewhere by the server.
+
+### Inline mode (no config file)
+
+If `~/.config/ssff-mcp/config.json` does **not** exist, the server can synthesize a single environment from `SF_*` environment variables injected by your MCP client:
+
+| Variable | Meaning |
+|---|---|
+| `SF_BASE_URL` | Tenant API origin (required to enable inline mode) |
+| `SF_USERNAME`, `SF_PASSWORD` | Basic auth credentials |
+| `SF_CLIENT_ID`, `SF_COMPANY_ID`, `SF_USER_ID`, `SF_TOKEN_URL`, `SF_PRIVATE_KEY` | OAuth 2.0 credentials (`SF_PRIVATE_KEY` accepts `\n` escapes or base64) |
+| `SF_ENVIRONMENT` | Environment alias (default: `default`) |
+| `SF_ENTITY_ALLOWLIST` | Comma-separated entity allowlist, for example `User,PerPersonal,EmpJob` |
+
+In inline mode a tool call may omit `environment` (there is exactly one). If a `config.json` exists it always wins, and the `SF_*` variables are ignored with a warning on stderr.
+
+### Wizard: `ssff-mcp init`
+
+```bash
+npx -y ssff-mcp@latest init
+```
+
+Guides you through the authentication type, validates the credentials live against `$metadata`, lets you pick the `entityAllowlist` with a filterable multiselect, writes `~/.config/ssff-mcp/config.json` atomically (mode `0600`, `.bak` backup if one existed) and prints the ready-to-paste block for Codex, Pi, OpenCode, Claude Desktop or Cursor. It requires an interactive terminal; a non-TTY run exits with code 2.
 
 ### Fields
 
@@ -59,7 +89,7 @@ The file is re-read and re-validated on **every tool call** (stateless). It is n
 | `environments.<alias>.baseUrl` | Tenant API origin, for example `https://api4.successfactors.com`. Must be `https`, no credentials/userinfo, no query string or fragment. A path prefix is allowed. The server appends `/odata/v2` — do not include it yourself. |
 | `environments.<alias>.auth.type` | `"basic"` or `"oauth"` (see the OAuth section below). |
 | `environments.<alias>.auth.username` | Basic auth API username. SuccessFactors API users are often of the form `user@companyId`. |
-| `environments.<alias>.auth.password` | Basic auth API password. Stored in plain text — see security disclosures below. |
+| `environments.<alias>.auth.password` | Basic auth API password. Can be a plain string, an environment variable `{ "fromEnv": "VAR_NAME" }`, or a CLI command `{ "fromCommand": ["op", "read", "item"] }`. |
 | `defaultEnvironment` | Optional. If present it MUST be `null`. Any non-null value is rejected: implicit environment selection is forbidden. |
 | `entityAllowlist` | Optional array. See [Entity allowlist](#entity-allowlist-optional) below. |
 
@@ -146,38 +176,27 @@ reject the connection.
 }
 ```
 
-Every tool call names its environment explicitly. Unknown or missing environment ⇒ the call is rejected (fail-closed); the server never picks an implicit environment and never retries against another one.
+Every tool call names its environment explicitly. Unknown or missing environment ⇒ the call is rejected (fail-closed); the server never picks an implicit environment and never retries against another one. The only exception is **inline mode**, where exactly one environment exists and `environment` may be omitted.
 
-## Security disclosures (read before using)
-
-- **The configuration file contains secrets in PLAIN TEXT.** Git-ignoring it is NOT encryption. Restrict it with `chmod 600 ~/.config/ssff-mcp/config.json`. Never copy the real file into the repository (`config.json` is gitignored defensively for this reason).
-- **OAuth private keys are also plain text**, and with SAP's IdP-helper flow the key additionally transits HTTPS to the configured `idpUrl` on each assertion acquisition (endpoints are fixed per environment in your config). Local signing (key never leaves the process) is a possible future improvement; today's behavior matches the standard SAP helper flow.
+- **Secret providers (`fromEnv` / `fromCommand`)**: Passwords and OAuth private keys can be resolved dynamically via environment variables (`{ "fromEnv": "VAR_NAME" }`) or CLI commands (`{ "fromCommand": ["op", "read", "item"] }`), avoiding plain text on disk. Executed directly via `execFile` (no shell, 5s timeout).
+- **The configuration file permissions:** Restrict it with `chmod 600 ~/.config/ssff-mcp/config.json` on Linux/macOS or restrict ACLs on Windows.
+- **OAuth private keys**: Can be plain text or resolved via secret providers. With SAP's IdP-helper flow the resolved key transits HTTPS to the configured `idpUrl` on each assertion acquisition (endpoints are fixed per environment in your config).
 - **OAuth tokens never touch disk, logs, or error messages.** They live in process memory only and die with the process.
 - **The tenant account MUST be least-privileged and read-only.** This MCP enforces read-only behavior client-side, but source-side permissions are an acceptance condition: verify the account's roles in the tenant. What the account can read, this server can read.
 - **All traffic to the tenant uses HTTPS.** Basic Auth credentials are only ever sent over TLS, and redirects are followed only to the same https host configured for the environment.
 - **Errors are sanitized.** Errors returned to the model are `{ code, message }` (plus optional `httpStatus`) with URLs redacted from service messages and generic wording for network failures (no hostnames).
 - **Logs are metadata-only, on stderr.** One JSON line per tool call: `{ ts, tool, environment, outcome, code?, durationMs, recordCount? }`. No URLs, no entity paths, no query values, no bodies, no credentials. stdout carries only the MCP protocol.
-- **No data persistence.** No response bodies, credentials, or metadata documents are written to disk. The only cache is in-memory (see Implementation decisions).
+- **Metadata caching:** Entity schemas parsed from `$metadata` are cached locally on disk under the OS cache directory (`~/.cache/ssff-mcp` on Linux, `~/Library/Caches/ssff-mcp` on macOS, `%LOCALAPPDATA%\ssff-mcp\cache` on Windows) with a 24h TTL. No person records or sensitive data are ever cached.
 
-## OpenCode wiring
+## MCP Resources
 
-In `opencode.json`, run the published npm package directly:
+In addition to tools, `ssff-mcp` exposes read-only MCP resources for inspecting the schema and entity catalog without executing large `$metadata` queries:
 
-```json
-{
-  "mcp": {
-    "ssff": {
-      "type": "local",
-      "command": ["npx", "-y", "ssff-mcp@latest"],
-      "enabled": true
-    }
-  }
-}
-```
-
-`npx` resolves the CLI from the registry (pin it with `ssff-mcp@0.1.1` if you
-prefer reproducible versions). If you develop from source, point the command at
-your local build instead: `["node", "/absolute/path/to/ssff-mcp/dist/src/index.js"]`.
+| Resource URI | Description |
+|---|---|
+| `sf://{environment}/overview` | High-level summary of the environment (baseUrl, authType, total entity count, function imports count, allowlist status). |
+| `sf://{environment}/entities` | Lightweight catalog of all entity sets (filtered by `entityAllowlist` if active), indicating entity name, type, key properties, and `isCustom` (`cust_` prefix). |
+| `sf://{environment}/entities/{entitySet}` | Exhaustive entity schema containing keys, typed properties (`Edm.*`, nullable), and navigation properties with target and cardinality (`0..1`, `1`, `*`). |
 
 ## Tools reference
 
@@ -193,7 +212,7 @@ Fetches `{serviceRoot}/$metadata` (GET, `Accept: application/xml`, 60s timeout) 
 
 | Argument | Maps to | Constraints |
 |---|---|---|
-| `environment` | — | Required; must be a configured alias. |
+| `environment` | — | Required; must be a configured alias. Optional in [inline mode](#inline-mode-no-config-file). |
 | `entityPath` | resource path | Required. Examples: `User`, `User('123')`, `Foobar(key1='a',key2=1)/navProperty`. Max 4 segments, max 512 chars; `$`-prefixed segments (e.g. `$batch`, `$value`, `$count`) are rejected. The first segment must be a declared entity set in the tenant's `$metadata` (function imports are rejected). |
 | `filter` | `$filter` | Raw value, passed through unmodified. |
 | `orderby` | `$orderby` | Raw value, passed through unmodified. |
@@ -221,7 +240,7 @@ Executes multiple read-only OData v2 GETs in **one** `$batch` POST. The multipar
 
 | Argument | Constraints |
 |---|---|
-| `environment` | Required; must be a configured alias. |
+| `environment` | Required; must be a configured alias. Optional in [inline mode](#inline-mode-no-config-file). |
 | `requests` | Array of **1..180 items** (SAP `$batch` hard limit). Each item uses exactly the `query_entity` GET grammar: `entityPath` (required) plus optional `filter`, `orderby`, `select`, `expand`, `top`, `skip`, `cursor`, `inlinecount`. There is **no field** for HTTP method, URL, host, headers, body or changesets; unknown keys are rejected by the strict schema before dispatch. |
 | `output` | `"json"` (default) or `"xml"`, global for the whole call. `xml` returns each item's raw Atom body (`Accept: application/atom+xml` on every embedded request). |
 
@@ -242,7 +261,7 @@ Behavior:
 - **No writes of any kind**: no POST/PUT/PATCH/DELETE/MERGE from tool input, no method-tunneling headers (there is no input surface for headers at all). The single sanctioned POST is `batch_get`'s fixed GET-only `$batch` envelope (plus the two fixed OAuth token endpoints); nothing else can produce a POST.
 - Cursor-based continuation (`cursor`), `inlinecount` totals, `output: "xml"` and `batch_get` (max 180 items, 1,000 total records) are implemented.
 - **Basic Auth or OAuth 2.0** per environment, over HTTPS only.
-- **Linux + STDIO only**; no HTTP listener exists anywhere in the server.
+- **Cross-platform STDIO only** (Linux, macOS, Windows); no HTTP listener exists anywhere in the server.
 
 ## Implementation decisions
 
@@ -251,7 +270,7 @@ Resolutions of the PRD open points, as recorded in the feature decision log:
 - **Q-1 (config schema + template name):** MVP schema is the illustrative skeleton from PRD C.1 — `environments.<alias>.baseUrl` plus `auth { type, username, password }`, with `defaultEnvironment` required to be null/absent. Template file name: `config.template.json`.
 - **Q-2 (MVP query option subset):** `$filter`, `$orderby`, `$select`, `$expand`, `$top`, `$skip` are exposed as typed tool fields (`filter`, `orderby`, `select`, `expand`, `top`, `skip`). Unknown option names are structurally rejected (schema-typed input, no passthrough map). Raw values pass through unmodified.
 - **A-1 (tool names):** `list_environments` (read-only, aliases only — helps fail-closed environment UX), `get_metadata`, `query_entity`.
-- **Transient metadata cache (PRD left it undefined):** in-memory, per-process, TTL 10 minutes, storing only parsed entity-set and function-import **name sets** (used for function-import exclusion per DS-04/FR-08). No disk, no bodies, no credentials. `get_metadata` itself always hits the source fresh and never uses this cache.
+- **Metadata caching (D-43 / D-44):** 10-minute in-memory cache plus 24-hour local disk cache storing parsed JSON schema indices under the OS cache directory (`~/.cache/ssff-mcp`, `~/Library/Caches/ssff-mcp`, `%LOCALAPPDATA%\ssff-mcp\cache`). `get_metadata` itself always hits the source fresh and never uses this cache.
 - **Ceiling semantics:** `$top` above 1000 is clamped to 1000 (flagged in the response); responses are truncated to 1000 records if a service ever returns more (DS-10 defense in depth). Exactly one page / one data fetch per call; `__next` is never followed, only reported as `hasMore`.
 
 ## Testing

@@ -5,7 +5,15 @@
       "auth": {
         "type": "basic",
         "username": "<api-username>",
-        "password": "<api-password>"
+        "password": "<api-password-or-provider>"
+      }
+    },
+    "<environment-alias-with-secret-provider>": {
+      "baseUrl": "https://<tenant-api-host>",
+      "auth": {
+        "type": "basic",
+        "username": "<api-username>",
+        "password": { "fromEnv": "SF_PASSWORD_PROD" }
       }
     },
     "<environment-alias-oauth>": {
@@ -15,9 +23,14 @@
         "clientId": "<oauth-client-api-key>",
         "companyId": "<tenant-company-id>",
         "userId": "<technical-user-id-without-company>",
-        "privateKey": "<rsa-private-key-exported-from-sf-admin>",
+        "privateKey": { "fromCommand": ["op", "read", "op://Personal/sf-private-key/key"] },
         "tokenUrl": "https://<token-endpoint-host>/oauth/token"
       }
     }
-  }
+  },
+  "entityAllowlist": [
+    { "entity": "User" },
+    { "entity": "PerPersonal" }
+  ]
 }
+

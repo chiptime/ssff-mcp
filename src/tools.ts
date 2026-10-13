@@ -14,7 +14,7 @@
  * - Every call produces one stderr JSON log line with metadata only.
  */
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { executeBatchGet, sanitizeEmbeddedFailure } from "./batch.js";
@@ -163,6 +163,10 @@ export interface ServerDeps {
   now?: () => number;
   /** Receives the loose-config-permissions warning (defaults to stderr). */
   onConfigWarning?: (message: string) => void;
+  /** Overrides the cache directory for metadata (tests/prod). */
+  cacheDir?: string;
+  /** Explicitly disables or enables disk cache (tests/prod). */
+  disableDiskCache?: boolean;
 }
 
 interface ToolOutcome {
@@ -174,8 +178,16 @@ interface ToolOutcome {
 function resolveEnvironment(
   environments: Record<string, EnvironmentConfig>,
   requested: string | undefined,
+  allowImplicit = false,
 ): { alias: string; env: EnvironmentConfig } {
   if (typeof requested !== "string" || requested.trim().length === 0) {
+    // Inline mode synthesizes exactly one environment; only then may a call
+    // omit `environment` (FR-49/D-49). A config.json keeps D-02/FR-02.
+    const aliases = Object.keys(environments);
+    if (allowImplicit && aliases.length === 1) {
+      const alias = aliases[0]!;
+      return { alias, env: environments[alias]! };
+    }
     throw new SanitizedError(
       "ENVIRONMENT_REQUIRED",
       "an environment must be explicitly provided; no environment is ever selected implicitly",
@@ -263,24 +275,35 @@ function encodeContinuationCursor(
 export function createMcpServer(deps: ServerDeps = {}): McpServer {
   const server = new McpServer(
     { name: "ssff-mcp", version: "0.1.0" },
-    { instructions: "Read-only MCP server for SAP SuccessFactors OData v2. Every request must name its environment explicitly." },
+    { instructions: "Read-only MCP server for SAP SuccessFactors OData v2. Name the environment explicitly; in inline mode (a single configured environment) it may be omitted." },
   );
   const log: Logger = makeLogger(deps.logSink);
-  const metadataService = new MetadataService({ fetchImpl: deps.fetchImpl, now: deps.now });
   const fetchImpl = deps.fetchImpl;
+  const metadataService = new MetadataService({
+    fetchImpl: deps.fetchImpl,
+    now: deps.now,
+    cacheDir: deps.cacheDir,
+    disableDiskCache: deps.disableDiskCache,
+  });
 
-  /** Freshly loaded config per tool call: environments + optional allowlist. */
+  /** Freshly loaded config per tool call: environments + optional allowlist + inline flag. */
   interface FreshConfig {
     environments: Record<string, EnvironmentConfig>;
     entityAllowlist?: AllowlistEntry[];
+    inline?: boolean;
   }
 
-  async function loadFreshConfig(): Promise<FreshConfig> {
-    const config = await loadConfig({ configPath: deps.configPath, onWarning: deps.onConfigWarning });
-    if (config.entityAllowlist === undefined) {
-      return { environments: config.environments };
-    }
-    return { environments: config.environments, entityAllowlist: config.entityAllowlist };
+  async function loadFreshConfig(resolveSecretsFor?: string | null): Promise<FreshConfig> {
+    const config = await loadConfig({
+      configPath: deps.configPath,
+      onWarning: deps.onConfigWarning,
+      resolveSecretsFor,
+    });
+    return {
+      environments: config.environments,
+      entityAllowlist: config.entityAllowlist,
+      inline: config.inline,
+    };
   }
 
   async function executeTool(
@@ -333,7 +356,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     },
     async () =>
       await executeTool("list_environments", undefined, async () => {
-        const { environments } = await loadFreshConfig();
+        const { environments } = await loadFreshConfig(null);
         const list = Object.keys(environments)
           .sort()
           .map((alias) => ({ alias, authType: environments[alias]!.auth.type }));
@@ -351,8 +374,8 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     },
     async (args) =>
       await executeTool("get_metadata", args.environment, async () => {
-        const { environments } = await loadFreshConfig();
-        const { alias, env } = resolveEnvironment(environments, args.environment);
+        const { environments, inline } = await loadFreshConfig(args.environment);
+        const { alias, env } = resolveEnvironment(environments, args.environment, inline);
         // Always fresh from the source; the metadata cache is never used here.
         const result = await dispatchGet(envTargetFor(env, alias), "$metadata", {
           accept: "application/xml",
@@ -376,8 +399,8 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     },
     async (args) =>
       await executeTool("query_entity", args.environment, async () => {
-        const { environments, entityAllowlist } = await loadFreshConfig();
-        const { alias, env } = resolveEnvironment(environments, args.environment);
+        const { environments, entityAllowlist, inline } = await loadFreshConfig(args.environment);
+        const { alias, env } = resolveEnvironment(environments, args.environment, inline);
 
         const output = args.output ?? "json";
 
@@ -529,8 +552,8 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     },
     async (args) =>
       await executeTool("batch_get", args.environment, async () => {
-        const { environments, entityAllowlist } = await loadFreshConfig();
-        const { alias, env } = resolveEnvironment(environments, args.environment);
+        const { environments, entityAllowlist, inline } = await loadFreshConfig(args.environment);
+        const { alias, env } = resolveEnvironment(environments, args.environment, inline);
 
         const output = args.output ?? "json";
         const target: EnvTarget = envTargetFor(env, alias);
@@ -734,6 +757,151 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           recordCount: recordsReturned,
         };
       }),
+  );
+
+  // --- MCP Resources (FR-36..FR-40, D-33..D-35, D-40) -----------------------
+
+  server.resource(
+    "sf_overview",
+    new ResourceTemplate("sf://{environment}/overview", {
+      list: async () => {
+        let conf;
+        try {
+          conf = await loadFreshConfig(null);
+        } catch {
+          return { resources: [] };
+        }
+        return {
+          resources: Object.keys(conf.environments).map((alias) => ({
+            uri: `sf://${alias}/overview`,
+            name: `${alias}_overview`,
+            mimeType: "application/json",
+            description: `Environment overview for alias "${alias}"`,
+          })),
+        };
+      },
+    }),
+    async (uri, { environment }) => {
+      const { environments, entityAllowlist, inline } = await loadFreshConfig(environment as string);
+      const resolved = resolveEnvironment(environments, environment as string, inline);
+      const target = envTargetFor(resolved.env);
+      const parsed = await metadataService.getParsedMetadata(target, resolved.alias);
+
+      const overview = {
+        environment: resolved.alias,
+        baseUrl: resolved.env.baseUrl,
+        authType: resolved.env.auth.type,
+        totalEntitySets: parsed.entitySets.length,
+        functionImportsCount: parsed.functionImports.length,
+        allowlistConfigured: entityAllowlist !== undefined,
+        allowlistDeniedAll: entityAllowlist !== undefined && entityAllowlist.length === 0,
+      };
+
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: "application/json",
+            text: JSON.stringify(overview, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  server.resource(
+    "sf_entities",
+    new ResourceTemplate("sf://{environment}/entities", {
+      list: async () => {
+        let conf;
+        try {
+          conf = await loadFreshConfig(null);
+        } catch {
+          return { resources: [] };
+        }
+        return {
+          resources: Object.keys(conf.environments).map((alias) => ({
+            uri: `sf://${alias}/entities`,
+            name: `${alias}_entities`,
+            mimeType: "application/json",
+            description: `Entity catalog for alias "${alias}"`,
+          })),
+        };
+      },
+    }),
+    async (uri, { environment }) => {
+      const { environments, entityAllowlist, inline } = await loadFreshConfig(environment as string);
+      const resolved = resolveEnvironment(environments, environment as string, inline);
+      const target = envTargetFor(resolved.env);
+      const parsed = await metadataService.getParsedMetadata(target, resolved.alias);
+
+      let allowedSets = parsed.entitySets;
+      if (entityAllowlist !== undefined) {
+        allowedSets = allowedSets.filter((name) => isEntityAllowed(entityAllowlist, name));
+      }
+
+      const entityList = allowedSets.map((name) => {
+        const schema = parsed.entitySchemas[name];
+        return {
+          name,
+          entityType: schema?.entityType ?? name,
+          isCustom: name.startsWith("cust_") || name.startsWith("Cust_"),
+          keyProperties: schema?.keys ?? [],
+        };
+      });
+
+      const catalog = {
+        environment: resolved.alias,
+        totalCount: entityList.length,
+        entities: entityList,
+      };
+
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: "application/json",
+            text: JSON.stringify(catalog, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  server.resource(
+    "sf_entity_schema",
+    new ResourceTemplate("sf://{environment}/entities/{entitySet}", { list: undefined }),
+    async (uri, { environment, entitySet }) => {
+      const { environments, entityAllowlist, inline } = await loadFreshConfig(environment as string);
+      const resolved = resolveEnvironment(environments, environment as string, inline);
+      const entityName = entitySet as string;
+
+      if (entityAllowlist !== undefined && !isEntityAllowed(entityAllowlist, entityName)) {
+        throw new SanitizedError(
+          "ENTITY_NOT_ALLOWED",
+          `ENTITY_NOT_ALLOWED: entity "${entityName}" is not permitted by the configured allowlist`,
+        );
+      }
+
+      const target = envTargetFor(resolved.env);
+      const schema = await metadataService.getEntitySchema(target, resolved.alias, entityName);
+      if (!schema) {
+        throw new SanitizedError(
+          "RESOURCE_NOT_FOUND",
+          `RESOURCE_NOT_FOUND: entity "${entityName}" not found in metadata for environment "${resolved.alias}"`,
+        );
+      }
+
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: "application/json",
+            text: JSON.stringify(schema, null, 2),
+          },
+        ],
+      };
+    },
   );
 
   return server;

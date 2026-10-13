@@ -39,6 +39,7 @@
     "start": "node dist/src/index.js"
   },
   "dependencies": {
+    "@clack/prompts": "^1.8.1",
     "@modelcontextprotocol/sdk": "^1.18.0",
     "fast-xml-parser": "^5.0.0",
     "odata-batch": "2.1.0",
