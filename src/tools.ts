@@ -26,6 +26,7 @@ import { resolveLocale } from "./i18n.js";
 import { makeLogger, type LogSink, type Logger } from "./logger.js";
 import { classifyEmployeeLink, effectiveDateKey, isCustomMdfEntity, isEmployeeLinkedType } from "./mdf.js";
 import { MetadataService } from "./metadata.js";
+import { exceedsResponseCap, responseTooLargeError } from "./size-guard.js";
 import {
   buildQuery,
   extractSkiptoken,
@@ -534,7 +535,11 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           // DS-P2-06: raw body minus the next-link href. Paging/cursor were
           // derived from the ORIGINAL href above; the returned text must never
           // expose the service URL or the raw $skiptoken.
-          return { structured, text: sanitizeXmlNextLinks(result.body) };
+          const xmlText = sanitizeXmlNextLinks(result.body);
+          if (exceedsResponseCap(xmlText)) {
+            throw responseTooLargeError(xmlText);
+          }
+          return { structured, text: xmlText };
         }
 
         let parsed: unknown;
@@ -569,9 +574,14 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
             structured.cursor = cursor;
           }
         }
+        const text = JSON.stringify(structured);
+        // Size guard (D-75): only what is returned to the model is measured.
+        if (exceedsResponseCap(text)) {
+          throw responseTooLargeError(text);
+        }
         return {
           structured,
-          text: JSON.stringify(structured),
+          text,
           recordCount: unwrapped.records.length,
         };
       }),
@@ -681,6 +691,25 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         // become sanitized per-item errors; raw error bodies never leave.
         const results: Array<Record<string, unknown>> = [];
         let recordsReturned = 0;
+        // Per-request size guard (D-75/FR-86): each inner response is measured on
+        // its own, never the batch as a whole. An oversized part becomes a sanitized
+        // per-item failure and stops counting toward the aggregate record ceiling.
+        const pushGuarded = (entry: Record<string, unknown>, index: number, path: string): void => {
+          const measured = typeof entry.body === "string" ? entry.body : JSON.stringify(entry);
+          if (entry.success === true && exceedsResponseCap(measured)) {
+            const error = responseTooLargeError(measured);
+            recordsReturned -= typeof entry.recordCount === "number" ? entry.recordCount : 0;
+            results.push({
+              index,
+              path,
+              success: false,
+              httpStatus: entry.httpStatus,
+              error: { code: error.code, message: error.message },
+            });
+            return;
+          }
+          results.push(entry);
+        };
         for (const [index, response] of responses.entries()) {
           const item = planned[index]!;
           const entry: Record<string, unknown> = { index, path: item.entityPath };
@@ -735,7 +764,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
                 entry.cursor = cursor;
               }
             }
-            results.push(entry);
+            pushGuarded(entry, index, item.entityPath);
             continue;
           }
 
@@ -777,7 +806,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
               entry.cursor = cursor;
             }
           }
-          results.push(entry);
+          pushGuarded(entry, index, item.entityPath);
         }
 
         const structured: Record<string, unknown> = {
