@@ -75,7 +75,7 @@ Todos los tests pasan en verde (**236/236** hoy; 208 al cerrar la fase). Se impl
 **Bloque 3 — Resources**
 - [x] **HECHO** — `get_metadata`/descripciones de tool: **CERRADO (2026-10-14)**. Se fue más allá: `get_metadata` se **retira** (D-76/D-77, `archive/PRD-feature-remove-get-metadata.md`); el esquema queda solo por los recursos.
 - [x] **HECHO** — Test de caché de disco a nivel `createMcpServer` con `cacheDir` temporal. Verificado: existe en `test/tools.test.ts`.
-- [ ] **ABIERTO** — Tamaño real: validar que `/entities` < 50 KB y `/entities/{name}` < 10 KB. **Sin medir.** Dato disponible hoy: PROD tiene **658** entidades y el catálogo lleva `keyProperties` por entidad.
+- [x] **HECHO — medido (2026-10-14)** — Tamaño real, medido contra los metadatos cacheados de PROD: `/entities` = **142 KB** con 658 entidades; `/entities/{entitySet}` máximo = **41 KB** (`User`). **Límites reajustados por el usuario a 150 KB y 50 KB**, así que **cumple** en ambos. **Pendiente derivado**: los recursos **NO** pasan por el tope de `src/size-guard.ts`, que solo cubre tools — el catálogo llega al modelo sin recorte (decisión abierta).
 - [ ] **ABIERTO** — `resources/list` solo lista overview y entities; los schemas por entidad quedan como template. Verificado: `sf://{env}/entities/{entitySet}` sigue con `list: undefined` (`src/tools.ts:834`). Confirmar que es suficiente.
 - [x] **HECHO** — Verificar `isCustom` (`cust_`/`Cust_`) contra convención real de MDF: **verificado empíricamente**. 79/79 (PROD), 87/87 (DEV) y 91/91 (TEST) usan `cust_`; **cero** `Cust_`. Ver `PRD-feature-custom-mdf.md` §0.3 (A-MDF-01).
 
