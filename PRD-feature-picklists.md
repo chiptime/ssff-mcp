@@ -23,7 +23,7 @@
 | **D-57** | **Enriquecimiento No Destructivo con Metadatos Aditivos `_picklistLabels`**: El enriquecimiento automático en `query_entity` y `batch_get` preserva estrictamente el valor y tipo nativo de cada propiedad original (garantizando D-24 y D-32). Añade un subobjeto aditivo `_picklistLabels` por registro con `{ label, externalCode, picklistId, resolved: true/false }`. | Evita romper parsers o pipelines existentes que esperen el ID numérico nativo, proporcionando a la vez el contexto semántico completo al LLM. |
 | **D-58** | **Independencia de `entityAllowlist` para Catálogos Internos del Servidor**: Las consultas internas ejecutadas por `PicklistService` para hidratar la caché se consideran operaciones de metadatos de sistema (análogas a `$metadata` según FR-19) y están exentas del filtro de `entityAllowlist`. Si un usuario consulta `query_entity("PicklistOption")` directamente, la allowlist sí se aplica. | Permite que una allowlist orientada a negocio (ej. `["User", "PerPersonal"]`) resuelva etiquetas de género o estado civil sin obligar al usuario a incluir tablas técnicas en su configuración. |
 | **D-59** | **Resiliencia Fail-Safe y Ausencia de Errores Destructivos**: Si un ID o código no existe en el catálogo (dato histórico, huérfano o valor obsoleto), o si la resolución de picklist falla temporalmente por conectividad, la consulta principal NUNCA se aborta; se devuelve el registro nativo con `resolved: false` en `_picklistLabels`. | Principio de fail-safe: una falla en una etiqueta descriptiva jamás debe interrumpir el acceso a datos empresariales críticos. |
-| **D-60** | **Cadena de Fallback Multilingüe BCP-47**: Prioridad de locale: Parámetro de llamada `locale` > Configuración de entorno `defaultLocale` (`config.json`) > Variable de entorno `SF_DEFAULT_LOCALE` > Fallback global `"en_US"`. Degradación de etiqueta: `locale solicitado` > `en_US` > `defaultValue / label_localized` > `externalCode` > `raw ID`. | Garantiza legibilidad en español, portugués, alemán, etc., con degradación suave a inglés si no hay traducción disponible. |
+| **D-60** | **Cadena de Fallback Multilingüe BCP-47**: Prioridad de locale: Parámetro de llamada `locale` > Variable de entorno `SF_DEFAULT_LOCALE` > Fallback global `"en_US"`. El nivel de configuración `defaultLocale` **no lo define este PRD**: lo introduce `PRD-feature-custom-mdf.md` (D-70/FR-76) como campo **global** de `config.json`, y esta feature lo reutilizará si llega a implementarse. Degradación de etiqueta: `locale solicitado` > `en_US` > `defaultValue / label_localized` > `externalCode` > `raw ID`. | Garantiza legibilidad en español, portugués, alemán, etc., con degradación suave a inglés si no hay traducción disponible. |
 | **D-61** | **Búsqueda Inversa y Asistencia en Construcción de `$filter`**: `resolve_picklist` permite buscar por texto libre o etiqueta en un idioma para obtener el `optionId` o `externalCode` correspondiente. | Resuelve la incapacidad del LLM de filtrar entidades por campos restringidos (ej. saber que "Casado" equivale a `maritalStatus eq '10119'`). |
 
 ### 0.1 Implicaciones Derivadas (Obligatorias)
@@ -198,7 +198,7 @@ const resolvePicklistSchema = z
     optionId: z.union([z.string(), z.number()]).optional().describe("Option ID numérico de SAP (ej. '10283' o 10283)."),
     externalCode: z.string().optional().describe("Código externo de negocio (ej. 'M', 'FULL_TIME')."),
     query: z.string().optional().describe("Texto libre o etiqueta a buscar para traducción inversa (ej. 'Casado', 'Masculino')."),
-    locale: z.string().optional().describe("Código de idioma (ej. 'es_ES', 'en_US'). Por defecto usa el configurado en el entorno."),
+    locale: z.string().optional().describe("Código de idioma (ej. 'es_ES', 'en_US'). Por defecto usa el configurado globalmente (`defaultLocale`), si existe."),
     forceRefresh: z.boolean().optional().describe("Si es true, ignora la caché local y consulta directamente a SAP."),
   })
   .strict()
@@ -280,7 +280,7 @@ Se añaden dos campos opcionales a `queryEntitySchema` y a cada elemento de `bat
 * `resolvePicklists`: `z.boolean().optional().default(false)`
   * Describe: *"Cuando es true, enriquece automáticamente los campos asociados a picklists añadiendo las etiquetas legibles en la propiedad _picklistLabels sin modificar los valores nativos."*
 * `locale`: `z.string().optional()`
-  * Describe: *"Idioma preferido para las etiquetas (ej. 'es_ES', 'en_US'). Si se omite, utiliza el locale configurado en el entorno."*
+  * Describe: *"Idioma preferido para las etiquetas (ej. 'es_ES', 'en_US'). Si se omite, utiliza el locale configurado globalmente (`defaultLocale`), si existe."*
 
 #### 4.2.2 Formato de Respuesta Enriquecida (JSON)
 Dado un registro original devuelto por SAP:
@@ -325,9 +325,10 @@ Si el cliente solicita `output: "xml"` (D-32), el cuerpo XML Atom se devuelve **
 1. **Estándar**: Códigos BCP-47 con formato SAP (`en_US`, `es_ES`, `de_DE`, `fr_FR`, `pt_BR`, `zh_CN`, `ja_JP`).
 2. **Jerarquía de Configuración**:
    - Nivel 1: Parámetro explícito `locale` en la llamada a la herramienta MCP.
-   - Nivel 2: Propiedad `"defaultLocale"` en `config.json` dentro del bloque del entorno correspondiente.
-   - Nivel 3: Variable de entorno del proceso `SF_DEFAULT_LOCALE`.
-   - Nivel 4: Valor predeterminado global del sistema: `"en_US"`.
+   - Nivel 2: Variable de entorno del proceso `SF_DEFAULT_LOCALE`.
+   - Nivel 3: Valor predeterminado global del sistema: `"en_US"`.
+
+   > **Nota (2026-10-14)**: el antiguo «Nivel 2» —`defaultLocale` en `config.json`, **dentro del bloque del entorno**— se elimina de este PRD. El campo lo introduce `PRD-feature-custom-mdf.md` (D-70/FR-76) como propiedad **global** de `config.json`, no por entorno. Definirlo dos veces, y además con dos formas distintas, era el camino directo a la divergencia.
 3. **Cadena de Fallback Lingüístico**:
    Si una opción de picklist carece de traducción en el locale solicitado:
    `Locale solicitado` ➔ `"en_US"` (idioma base internacional de SAP) ➔ `defaultValue / label_localized` ➔ `externalCode` ➔ `ID numérico crudo`.
@@ -366,8 +367,8 @@ Si el cliente solicita `output: "xml"` (D-32), el cuerpo XML Atom se devuelve **
   * El parser EDMX extrae el atributo `@_picklist` o `@_sap:picklist` en los nodos `<Property>`.
   * Extiende la interfaz `EntityProperty` para incluir `picklistId?: string`.
   * Asocia propiedades de navegación que apunten a `PicklistOption` o `PickListValueV2`.
-* **`src/config.ts`** *(Extensión menor)*:
-  * El esquema Zod de `EnvironmentConfig` admite el campo opcional `defaultLocale: z.string().optional()`.
+* **`src/config.ts`** *(Sin cambios por parte de esta feature)*:
+  * `defaultLocale` **NO** se añade aquí. Lo introduce `PRD-feature-custom-mdf.md` (FR-76) como campo **global** de `configSchema`. Esta feature solo lo consume si llega a implementarse; añadirlo también en `EnvironmentConfig` duplicaría el campo y rompería la configuración con la validación `.strict()`.
   * Admite la variable de entorno `SF_DEFAULT_LOCALE`.
 * **`src/tools.ts`** *(Integración)*:
   * Registra la herramienta `resolve_picklist`.
