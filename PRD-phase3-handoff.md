@@ -3,6 +3,7 @@
 | Campo | Valor |
 |---|---|
 | Fecha | 2026-10-13 |
+| Revisado | **2026-10-14** — checklist del §4 verificado contra el repo; §2, §3 y §6 corregidos |
 | Rama / estado git | `main`, **todo commiteado y publicado** en `origin/main` (revisado 2026-10-14). npm: `0.2.0` publicado; `0.3.0` en `package.json`, sin publicar |
 | Spec vinculante | [PRD-phase3.md](PRD-phase3.md) (v1.0 CONFIRMED, D-33..D-42, FR-36..FR-47) |
 | Este documento | Estado real de implementación + trabajo restante + decisiones nuevas a registrar |
@@ -20,7 +21,9 @@ Fase 3 = tres bloques priorizados por el usuario (orden de ejecución acordado):
 
 **Backlog (NO tocar en esta fase):** MCP Prompts HR, detección Custom MDF avanzada, resolución de Picklists, OData v4. **Actualización (2026-10-14):** los cuatro ya tienen PRD propio — `PRD-feature-hr-prompts.md`, `PRD-feature-custom-mdf.md`, `PRD-feature-picklists.md` y `PRD-feature-odata-v4.md` — y el de MDF quedó además verificado empíricamente contra PROD/DEV/TEST.
 
-## 2. Decisiones nuevas tomadas tras PRD-phase3 v1.0 (REGISTRAR en el PRD)
+## 2. Decisiones nuevas tomadas tras PRD-phase3 v1.0 (REGISTRADAS en el PRD)
+
+> Ya incorporadas a `PRD-phase3.md` v1.1 como **D-43/D-44**.
 
 | ID propuesto | Decisión | Origen |
 |---|---|---|
@@ -28,9 +31,9 @@ Fase 3 = tres bloques priorizados por el usuario (orden de ejecución acordado):
 | **D-44** | TTL de disco = **24 h** (`METADATA_DISK_TTL_MS`); TTL memoria = 10 min (`METADATA_TTL_MS`). Se guarda **JSON parseado** (`{fetchedAt, data}`), nunca el XML crudo. Ruta: Linux `$XDG_CACHE_HOME`/`~/.cache/ssff-mcp`, macOS `~/Library/Caches/ssff-mcp`, Windows `%LOCALAPPDATA%\ssff-mcp\cache`; fichero `metadata-<alias codificado>.json`. Escritura best-effort (un fallo de disco no rompe la llamada). | Implementación |
 
 > [!WARNING]
-> D-43 **enmienda D-09 de PRD.md** ("sin persistencia en disco") y DS-P2-02/D-34 de PRD-phase3 ("ningún esquema se persiste en disco"). Hay que actualizar esos textos: la excepción es solo metadata de esquema (sin datos de personas ni secretos). Pendiente confirmar con el usuario: permisos del fichero de caché (¿`0600`?) y si se necesita un mecanismo de invalidación manual.
+> D-43 **enmienda D-09 de PRD.md** ("sin persistencia en disco") y DS-P2-02/D-34 de PRD-phase3 ("ningún esquema se persiste en disco"). **Actualizado (2026-10-14)**: los textos ya están enmendados en `PRD-phase3.md` v1.1. De las dos cuestiones pendientes, **permisos quedó cerrada** (D-44/A1: `0700` directorio, `0600` fichero); **invalidación manual sigue sin decisión registrada** — el TTL de 24 h es el único mecanismo previsto.
 
-## 3. Estado de implementación (working tree sin commit)
+## 3. Estado de implementación al cerrar la fase (revisado 2026-10-14)
 
 | Archivo | Cambio | Estado |
 |---|---|---|
