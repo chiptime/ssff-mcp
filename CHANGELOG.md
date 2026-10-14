@@ -10,6 +10,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > are inferred from the `chore: release <version>` commits. Entries before 0.3.0 are a
 > best-effort summary; only 0.3.0 is a verbatim release record.
 
+## [Unreleased]
+
+### Added
+
+- **Effective-dating query options.** `query_entity` and `batch_get` accept optional
+  `fromDate`, `toDate` and `asOfDate` (`YYYY-MM-DD`). They are sent as **bare** query
+  parameters, because SuccessFactors silently ignores the `$`-prefixed forms and falls
+  back to the currently active slice. They are valid on collection reads and on
+  key-predicate reads, and are bound into the continuation cursor.
+  Employee Central effective-dated entities need them: without the window, a historical
+  `EmpJob` key lookup answers **404** and `EmpJob`/`PerPersonal` return only the active
+  slice. `asOfDate` is mutually exclusive with `fromDate`/`toDate`.
+- **OData v2 typed literals in key predicates.** The entity-path grammar now accepts a
+  case-insensitive type prefix (`datetimeoffset`, `datetime`, `time`, `guid`, `binary`,
+  `X`, `decimal`, `float`, `double`) before a quoted string, the `true`/`false`/`null`
+  literals, and the numeric type suffixes `L`, `f`, `F`, `d`, `D`, `m`, `M`, so real
+  composite keys such as
+  `PaymentInformationDetailV3(PaymentInformationV3_effectiveStartDate=datetime'2013-01-01T00:00:00',PaymentInformationV3_worker='1000001',externalCode=860259L)`
+  validate instead of being rejected with `PATH_INVALID`.
+- **Opt-in integration smoke test** covering the document, bank-certificate and
+  other-requirements catalog plus the effective-dating scenarios against a real tenant
+  (`SSFF_MCP_INTEGRATION=1`). It is skipped, never failed, without credentials.
+
+### Fixed
+
+- **Filtered queries and `orderby` no longer lose their spaces.** Option values for
+  `$filter`, `$orderby`, `$select` and `$expand` were assembled through
+  `URLSearchParams`, which encodes a space as `+` and percent-encodes quotes, commas and
+  parentheses; SuccessFactors answers **400** to both. They are now assembled by raw
+  concatenation with spaces encoded uniformly as `%20`, preserving every other character
+  literally. See `PRD-feature-odata-query-fidelity.md` (M1/FR-77).
+- **Batch inner requests keep literal `$` option names.** A `%24`-prefixed option name is
+  matched verbatim by the `$batch` parser and therefore **silently ignored**, so the part
+  returned unfiltered data (measured: 1000 default rows instead of the filtered one). The
+  previous blind `%24 → $` rewrite is gone; the query is embedded exactly as built.
+
+### Security
+
+- Control characters (CR, LF, NUL) in `filter`, `orderby`, `select` and `expand` are
+  rejected with `OPTION_INVALID` before any dispatch, since they could inject extra HTTP
+  request lines into the `$batch` multipart envelope. The error never echoes the value.
+
+### Changed
+
+- **Cursors issued before this release are invalid.** The cursor binding now also covers
+  `fromDate`/`toDate`/`asOfDate`, and the query assembly changed. Older cursors are
+  rejected with `CURSOR_INVALID` (the same behaviour as after a server restart); re-run
+  the query with the same arguments.
+
+### Documentation
+
+- Documented the query encoding contract (raw assembly, uniform `%20`, literal reserved
+  characters, opaque percent-encoded `$skiptoken`) and the effective-dating options in the
+  README, and added the PRD for OData query fidelity (FR-77..FR-85, D-71..D-74).
+
 ## [0.3.0] — 2026-10-14
 
 ### Breaking
@@ -76,5 +131,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional fail-closed `entityAllowlist` enforcement.
 - GET-only `batch_get` built on the `odata-batch` retrieve pattern.
 
+[Unreleased]: https://github.com/chiptime/ssff-mcp/compare/0.3.0...HEAD
 [0.3.0]: https://github.com/chiptime/ssff-mcp/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/chiptime/ssff-mcp/releases/tag/0.2.0
