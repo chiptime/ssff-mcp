@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | **CONFIRMED v1.0** — Especificación técnica completa de arquitectura, viabilidad y diseño |
+| Estado | **CONFIRMED v2.0** — **implementado** (2026-10-14). Revisión mayor: se eliminó la premisa falsa de asimetría de navegación, se reescribieron las reglas de clasificación y se añadieron D-70/D-75 y FR-75/FR-76/FR-86. |
 | Fecha | 2026-10-14 |
 | Fuente de decisiones | Requerimiento de integración para consulta de entidades personalizadas de SAP SuccessFactors MDF sobre OData v2 sin desbordar la ventana de contexto del LLM ni alucinar rutas de navegación inexistentes |
 | Idioma | Documento en español neutro profesional; identificadores y términos de código en inglés. Los textos de guía dirigidos al LLM (`warnings`) son **multilingües** en tiempo de ejecución (D-70/FR-75) |
@@ -429,3 +429,31 @@ defaultLocale: z.string().regex(/^[A-Za-z]{2}(-[A-Za-z]{2})?$/).optional(),
 
 ### 8.3 Dependencias de Terceros
 * Cero dependencias nuevas. Reutiliza el stack actual.
+
+---
+
+## 9. Estado de implementación y decisiones resueltas (2026-10-14)
+
+Implementado en `src/mdf.ts`, `src/i18n.ts`, `src/size-guard.ts` y `src/tools.ts`; suite en verde (317 tests).
+
+Estas son las decisiones que §4 y §5.1 dejaban abiertas y que **la implementación resolvió**. Se registran aquí porque hasta ahora solo existían en la conversación:
+
+| Decisión abierta | Resuelto como | Dónde |
+|---|---|---|
+| ¿`employeeLinkedOnly` incluye `COMPOSITE_CHILD`? | **No**: un hijo compuesto es vínculo indirecto. | `isEmployeeLinkedType` (`src/mdf.ts:93`) |
+| Tipos 2 y 4 (`EmpEmployment`), sin casos medidos | **Se mantienen** en el enum y las reglas. | `src/mdf.ts:15-21` |
+| Memoización: ¿bajo demanda o cacheada en `ParsedMetadata`? | **Bajo demanda**. `ParsedMetadata` y `CacheEntry` no cambian ⇒ **el formato de la caché en disco no migra**. | `src/metadata.ts:69,75` |
+| Ubicación del catálogo i18n | **`src/i18n.ts`**, en código y sin dependencias. | `src/i18n.ts` |
+| Cobertura i18n | `en_US` + `es_ES`, con `DEFAULT_LOCALE` y `resolveLocale`. | `src/i18n.ts:12-17,60` |
+| ¿`entityType` en el detalle? | **Sí**, incluido. | `CustomMdfDetails` (`src/mdf.ts:64-74`) |
+| Filtrado del recurso de listado | **Asimetría aceptada**: `employeeLinkedOnly` vive en el tool, no en el recurso. | `inspectCustomMdfSchema` |
+| Dependencia cruzada de `defaultLocale` | **Global** en `configSchema`, como pedía FR-76. | `src/config.ts:161-178` |
+
+### 9.1 Desviaciones conocidas
+
+| Requisito | Estado real |
+|---|---|
+| **FR-86** pedía un tope de bytes **configurable** | Hoy se ajusta con la variable de entorno **`SF_MAX_RESPONSE_BYTES`** (por defecto 256 KiB); un valor ausente, no numérico o no positivo cae al defecto. **No** es campo de `config.json`: exponerlo ahí exige pasar el valor por los tres call sites de `src/tools.ts`. Pendiente decidir si se quiere en la configuración. |
+| La Regla 1 decía "preferir `externalCodeNav`/`userIdNav` si existen" | La implementación es **más estricta, y mejor**: la Regla 1 solo dispara si la nav es la **propia de la clave** (`${key}Nav`). Lo justifica `src/mdf.ts:108-113`: aceptar cualquier navegación a `User` absorbería toda entidad vinculada y dejaría las reglas 3-4 inalcanzables. |
+| Ejemplo ilustrativo de §5.1.3 | El documento no se actualizó, aunque la spec (§4.2/D-67) sí. La implementación usa la forma verificada en producción: `<navProp>/userId`. |
+| Fallback i18n por idioma base (`es_MX` → `es_ES`) | **Sin verificar** si `resolveLocale` lo soporta o solo hace coincidencia exacta. |
