@@ -22,7 +22,9 @@ import { loadConfig, type EnvironmentConfig } from "./config.js";
 import { CURSOR_VERSION, defaultCursorCodec } from "./cursor.js";
 import { SanitizedError, toSanitizedError } from "./errors.js";
 import { dispatchGet, envTargetFor, type EnvTarget, type FetchImpl } from "./http.js";
+import { resolveLocale } from "./i18n.js";
 import { makeLogger, type LogSink, type Logger } from "./logger.js";
+import { classifyEmployeeLink, effectiveDateKey, isCustomMdfEntity, isEmployeeLinkedType } from "./mdf.js";
 import { MetadataService } from "./metadata.js";
 import {
   buildQuery,
@@ -153,6 +155,8 @@ export interface ServerDeps {
   cacheDir?: string;
   /** Explicitly disables or enables disk cache (tests/prod). */
   disableDiskCache?: boolean;
+  /** Environment variables read for SF_DEFAULT_LOCALE (defaults to process.env; tests). */
+  env?: NodeJS.ProcessEnv;
 }
 
 interface ToolOutcome {
@@ -265,6 +269,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
   );
   const log: Logger = makeLogger(deps.logSink);
   const fetchImpl = deps.fetchImpl;
+  const envVars = deps.env ?? process.env;
   const metadataService = new MetadataService({
     fetchImpl: deps.fetchImpl,
     now: deps.now,
@@ -276,6 +281,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
   interface FreshConfig {
     environments: Record<string, EnvironmentConfig>;
     entityAllowlist?: AllowlistEntry[];
+    defaultLocale?: string;
     inline?: boolean;
   }
 
@@ -288,6 +294,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     return {
       environments: config.environments,
       entityAllowlist: config.entityAllowlist,
+      defaultLocale: config.defaultLocale,
       inline: config.inline,
     };
   }
@@ -803,10 +810,16 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
 
       const entityList = allowedSets.map((name) => {
         const schema = parsed.entitySchemas[name];
+        const isCustom = isCustomMdfEntity(name);
         return {
           name,
           entityType: schema?.entityType ?? name,
-          isCustom: name.startsWith("cust_") || name.startsWith("Cust_"),
+          isCustom,
+          isEmployeeLinked:
+            isCustom && schema !== undefined
+              ? isEmployeeLinkedType(classifyEmployeeLink(schema, parsed.entitySchemas).type)
+              : false,
+          isEffectiveDated: schema !== undefined && effectiveDateKey(schema) !== undefined,
           keyProperties: schema?.keys ?? [],
         };
       });
@@ -833,7 +846,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     "sf_entity_schema",
     new ResourceTemplate("sf://{environment}/entities/{entitySet}", { list: undefined }),
     async (uri, { environment, entitySet }) => {
-      const { environments, entityAllowlist, inline } = await loadFreshConfig(environment as string);
+      const { environments, entityAllowlist, defaultLocale, inline } = await loadFreshConfig(environment as string);
       const resolved = resolveEnvironment(environments, environment as string, inline);
       const entityName = entitySet as string;
 
@@ -853,14 +866,65 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         );
       }
 
+      // Custom MDF entities get additive MDF fields (FR-72); every other entity
+      // keeps the plain schema contract. Resources take no parameters, so the
+      // locale uses levels 2-4 only (D-70).
+      const payload = isCustomMdfEntity(entityName)
+        ? ((await metadataService.getCustomMdfDetails(
+            target,
+            resolved.alias,
+            entityName,
+            entityAllowlist,
+            resolveLocale({ config: defaultLocale, env: envVars.SF_DEFAULT_LOCALE }),
+          )) ?? schema)
+        : schema;
+
       return {
         contents: [
           {
             uri: uri.href,
             mimeType: "application/json",
-            text: JSON.stringify(schema, null, 2),
+            text: JSON.stringify(payload, null, 2),
           },
         ],
+      };
+    },
+  );
+
+  server.resource(
+    "sf_mdf_custom",
+    new ResourceTemplate("sf://{environment}/mdf/custom", {
+      list: async () => {
+        let conf;
+        try {
+          conf = await loadFreshConfig(null);
+        } catch {
+          return { resources: [] };
+        }
+        return {
+          resources: Object.keys(conf.environments).map((alias) => ({
+            uri: `sf://${alias}/mdf/custom`,
+            name: `${alias}_mdf_custom`,
+            mimeType: "application/json",
+            description: `Custom MDF catalog for alias "${alias}"`,
+          })),
+        };
+      },
+    }),
+    async (uri, { environment }) => {
+      const { environments, entityAllowlist, inline } = await loadFreshConfig(environment as string);
+      const resolved = resolveEnvironment(environments, environment as string, inline);
+      const target = envTargetFor(resolved.env);
+      // Zero-network (D-62): classified from the cached $metadata; allowlist-filtered (D-68).
+      const entities = await metadataService.listCustomMdf(target, resolved.alias, entityAllowlist);
+      const body = {
+        environment: resolved.alias,
+        totalCount: entities.length,
+        employeeLinkedCount: entities.filter((entity) => isEmployeeLinkedType(entity.linkType)).length,
+        entities,
+      };
+      return {
+        contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(body, null, 2) }],
       };
     },
   );

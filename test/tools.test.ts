@@ -893,6 +893,7 @@ test("MCP resource templates and listResources expose overview and entities for 
     assert.deepEqual(templateUris, [
       "sf://{environment}/entities",
       "sf://{environment}/entities/{entitySet}",
+      "sf://{environment}/mdf/custom",
       "sf://{environment}/overview",
     ]);
 
@@ -900,8 +901,10 @@ test("MCP resource templates and listResources expose overview and entities for 
     const uris = resources.resources.map((r) => r.uri).sort();
     assert.deepEqual(uris, [
       "sf://tenant-a/entities",
+      "sf://tenant-a/mdf/custom",
       "sf://tenant-a/overview",
       "sf://tenant-b/entities",
+      "sf://tenant-b/mdf/custom",
       "sf://tenant-b/overview",
     ]);
   });
