@@ -10,6 +10,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > are inferred from the `chore: release <version>` commits. Entries before 0.3.0 are a
 > best-effort summary; only 0.3.0 is a verbatim release record.
 
+## [Unreleased]
+
+### Added
+
+- **Custom MDF discovery** (`PRD-feature-custom-mdf.md`, D-62..D-70). New tool
+  `inspect_custom_mdf` and resource `sf://{env}/mdf/custom` classify `cust_*` objects
+  from the cached `$metadata` (no data request) into six employee-link types, flag
+  effective-dated objects, and return `queryGuidance` with a ready `query_entity` example.
+  `sf://{env}/entities` gains `isEmployeeLinked` / `isEffectiveDated`, and
+  `sf://{env}/entities/{entitySet}` gains `isCustom`, `isEffectiveDated`, `employeeLink`
+  and `guidance` for Custom MDF entities only (additive; other entities are unchanged).
+- **`defaultLocale`** config field and `SF_DEFAULT_LOCALE`. Guidance prose is emitted in a
+  single language chosen by `locale` argument > `defaultLocale` > `SF_DEFAULT_LOCALE` > `en_US`
+  (catalogs: `en_US`, `es_ES`).
+- **Response size cap** (D-75/FR-86): results returned to the model are limited to 256 KiB.
+  Larger ones fail with the new `RESPONSE_TOO_LARGE` code and an actionable message;
+  `batch_get` applies it per inner request.
+
+### Changed
+
+- `sf://{env}/entities` and `list` of resource templates include the new items above. Clients
+  that pin the exact list of tools or resources will see `inspect_custom_mdf` and
+  `sf://{env}/mdf/custom`.
+
 ## [0.3.0] — 2026-10-14
 
 ### Breaking

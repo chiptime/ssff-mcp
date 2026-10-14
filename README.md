@@ -70,6 +70,7 @@ If `~/.config/ssff-mcp/config.json` does **not** exist, the server can synthesiz
 | `SF_CLIENT_ID`, `SF_COMPANY_ID`, `SF_USER_ID`, `SF_TOKEN_URL`, `SF_PRIVATE_KEY` | OAuth 2.0 credentials (`SF_PRIVATE_KEY` accepts `\n` escapes or base64) |
 | `SF_ENVIRONMENT` | Environment alias (default: `default`) |
 | `SF_ENTITY_ALLOWLIST` | Comma-separated entity allowlist, for example `User,PerPersonal,EmpJob` |
+| `SF_DEFAULT_LOCALE` | Language of the Custom MDF guidance text (for example `es_ES`); see [Guidance language](#guidance-language-locale) |
 
 In inline mode a tool call may omit `environment` (there is exactly one). If a `config.json` exists it always wins, and the `SF_*` variables are ignored with a warning on stderr.
 
@@ -92,6 +93,7 @@ Guides you through the authentication type, validates the credentials live again
 | `environments.<alias>.auth.password` | Basic auth API password. Can be a plain string, an environment variable `{ "fromEnv": "VAR_NAME" }`, or a CLI command `{ "fromCommand": ["op", "read", "item"] }`. |
 | `defaultEnvironment` | Optional. If present it MUST be `null`. Any non-null value is rejected: implicit environment selection is forbidden. |
 | `entityAllowlist` | Optional array. See [Entity allowlist](#entity-allowlist-optional) below. |
+| `defaultLocale` | Optional language preference for the Custom MDF guidance text, for example `"es"` or `"es_ES"` (`-` is accepted too). Only the format is validated; a language without translations falls back to `en_US`. See [Guidance language](#guidance-language-locale). |
 
 ### Entity allowlist (optional)
 
@@ -195,14 +197,47 @@ In addition to tools, `ssff-mcp` exposes read-only MCP resources for inspecting 
 | Resource URI | Description |
 |---|---|
 | `sf://{environment}/overview` | High-level summary of the environment (baseUrl, authType, total entity count, function imports count, allowlist status). |
-| `sf://{environment}/entities` | Lightweight catalog of all entity sets (filtered by `entityAllowlist` if active), indicating entity name, type, key properties, and `isCustom` (`cust_` prefix). |
-| `sf://{environment}/entities/{entitySet}` | Exhaustive entity schema containing keys, typed properties (`Edm.*`, nullable), and navigation properties with target and cardinality (`0..1`, `1`, `*`). |
+| `sf://{environment}/entities` | Lightweight catalog of all entity sets (filtered by `entityAllowlist` if active), indicating entity name, type, key properties, `isCustom` (`cust_` prefix), `isEmployeeLinked` and `isEffectiveDated`. |
+| `sf://{environment}/entities/{entitySet}` | Exhaustive entity schema containing keys, typed properties (`Edm.*`, nullable), and navigation properties with target and cardinality (`0..1`, `1`, `*`). For Custom MDF entities it also carries `isCustom`, `isEffectiveDated`, `employeeLink` and `guidance` (see [Custom MDF](#custom-mdf-discovery)). |
+| `sf://{environment}/mdf/custom` | Compact catalog of the Custom MDF (`cust_*`) entities the allowlist permits: `totalCount`, `employeeLinkedCount` and, per entity, `name`, `isEffectiveDated`, `linkType`, `targetEntity?`, `matchField?`. |
+
+### Custom MDF discovery
+
+SuccessFactors Metadata Framework objects (`cust_*`, matched by `/^[cC]ust_/`) are classified **entirely from the cached `$metadata`**: no data request is made. The server decides how each object relates to an employee, ignoring the audit navigations `createdByNav` / `lastModifiedByNav` (they point to `User` on every object):
+
+| `linkType` | Meaning |
+|---|---|
+| `DIRECT_USER_KEY` | The key (`externalCode` or `userId`) is the user, through its own `externalCodeNav` / `userIdNav`. |
+| `DIRECT_EMPLOYMENT_KEY` | Same, targeting `EmpEmployment`. |
+| `USER_FIELD_NAVIGATION` | Another field navigates to `User` (any name; the target entity is the signal). |
+| `EMPLOYMENT_FIELD_NAVIGATION` | Same, targeting `EmpEmployment`. |
+| `COMPOSITE_CHILD` | Key `cust_<Parent>_<field>` with an existing custom parent; no direct employee link. |
+| `UNLINKED_STANDALONE` | No employee link (master data or catalog). |
+
+An object is effective-dated (`isEffectiveDated`) when its key contains `effectiveStartDate` or `mdfSystemEffectiveStartDate`.
+
+`guidance` gives the suggested `$filter` (`externalCode eq '<userId>'`, `userId eq '<userId>'` or `<navProp>/userId eq '<userId>'`), the `$orderby` for effective-dated objects, warnings and a ready `query_entity` example. Always query the custom entity as the root: expanding it from `User` is possible but returns the whole child collection and cannot be bounded.
+
+#### Guidance language (`locale`)
+
+The warnings are written in **one** language per response, never several. The first value present wins: the `locale` argument of `inspect_custom_mdf` (the user's own language) > `defaultLocale` in `config.json` > `SF_DEFAULT_LOCALE` > `en_US`. Resources take no parameters, so they use only the last three. The language used is reported in `guidance.locale`. Available catalogs: `en_US`, `es_ES`. `$filter` templates, the example query and OData identifiers are never translated.
 
 ## Tools reference
 
 ### `list_environments` (no arguments)
 
 Returns `{ environments: [{ alias, authType }] }` — aliases and auth type only. No URLs, no credentials. No network access.
+
+### `inspect_custom_mdf` — arguments
+
+Discovers Custom MDF objects from the cached `$metadata` (no data request). Without `entitySet` it returns `{ environment, locale, totalCount, employeeLinkedCount, entities }`; with it, the schema plus `employeeLink` and `guidance`.
+
+| Argument | Constraints |
+|---|---|
+| `environment` | Required; must be a configured alias. Optional in [inline mode](#inline-mode-no-config-file). |
+| `entitySet` | Optional. A Custom MDF entity set. Unknown or non-custom names return `RESOURCE_NOT_FOUND`; names excluded by `entityAllowlist` return `ENTITY_NOT_ALLOWED`. |
+| `employeeLinkedOnly` | Optional boolean (listing only). Keeps entities linked directly to `User` or `EmpEmployment`. |
+| `locale` | Optional. Language of the guidance text, normally the user's own (`es_ES`). Takes precedence over `defaultLocale` and `SF_DEFAULT_LOCALE`. |
 
 ### `query_entity` — arguments
 
@@ -225,6 +260,8 @@ Unknown option names are structurally impossible: the tool schema is typed and s
 Response (`structuredContent`, JSON output): `{ environment, path, recordCount, records, hasMore, topClamped?, truncatedToCeiling?, totalCount?, cursor? }`. Records are preserved **verbatim** with native SuccessFactors fields (`__metadata` kept, no normalization). `totalCount` appears only when the service returns `__count`; `cursor` appears only when `hasMore` is true **and** a `$skiptoken` could be extracted from the service's next link (continuation is never invented).
 
 Response (`structuredContent`, XML output): `{ environment, path, contentType: "xml", hasMore, cursor?, totalCount? }` — the tool text is the **raw XML body** with all data fields and native XML preserved **except the next-link href**: the `href` of the Atom `<link rel="next">` is stripped before the body is returned (DS-P2-06), so neither the service URL nor the raw `$skiptoken` ever appears in the output; continuation is exposed only as the opaque `cursor`. `hasMore`/`cursor`/`totalCount` are derived from the original `<link rel="next">` href and `<m:count>` elements before sanitization. XML cannot be truncated safely, so a response with more than 1,000 `<entry>` elements is rejected with `RESPONSE_INVALID` instead of being cut.
+
+**Response size cap:** what a call returns to the model is limited to **256 KiB** of text. A larger result is rejected with `RESPONSE_TOO_LARGE` and a message that says how to narrow it (`$select`, `$top`, `$filter`, no collection `$expand`). The cap is purely size-based (no entity list). Metadata used internally for classification and caching is exempt. In `batch_get` it is applied to **each inner request** separately: an oversized item fails alone with `RESPONSE_TOO_LARGE` and the other items are returned normally.
 
 **Pagination ceiling:** at most **1,000 records** and exactly **one OData page** per call. Next links (`__next`) are never followed automatically and never returned; `hasMore` merely reports that a next page exists. If a page somehow contains more than 1,000 records, it is truncated to 1,000 (`truncatedToCeiling: true`).
 
@@ -265,7 +302,7 @@ Resolutions of the PRD open points, as recorded in the feature decision log:
 
 - **Q-1 (config schema + template name):** MVP schema is the illustrative skeleton from PRD C.1 — `environments.<alias>.baseUrl` plus `auth { type, username, password }`, with `defaultEnvironment` required to be null/absent. Template file name: `config.template.json`.
 - **Q-2 (MVP query option subset):** `$filter`, `$orderby`, `$select`, `$expand`, `$top`, `$skip` are exposed as typed tool fields (`filter`, `orderby`, `select`, `expand`, `top`, `skip`). Unknown option names are structurally rejected (schema-typed input, no passthrough map). Raw values pass through unmodified.
-- **A-1 (tool names):** `list_environments` (read-only, aliases only — helps fail-closed environment UX), `query_entity`, `batch_get`. `get_metadata` was **retired** (see `archive/PRD-feature-remove-get-metadata.md`): it returned the raw EDMX to the model and was the only path that bypassed the metadata cache.
+- **A-1 (tool names):** `list_environments` (read-only, aliases only — helps fail-closed environment UX), `query_entity`, `batch_get`, `inspect_custom_mdf` (metadata-only). `get_metadata` was **retired** (see `archive/PRD-feature-remove-get-metadata.md`): it returned the raw EDMX to the model and was the only path that bypassed the metadata cache.
 - **Metadata caching (D-43 / D-44):** 10-minute in-memory cache plus 24-hour local disk cache storing parsed JSON schema indices under the OS cache directory (`~/.cache/ssff-mcp`, `~/Library/Caches/ssff-mcp`, `%LOCALAPPDATA%\ssff-mcp\cache`). Every metadata path visible to the model reads through this cache; the retired `get_metadata` tool was the only exception.
 - **Ceiling semantics:** `$top` above 1000 is clamped to 1000 (flagged in the response); responses are truncated to 1000 records if a service ever returns more (DS-10 defense in depth). Exactly one page / one data fetch per call; `__next` is never followed, only reported as `hasMore`.
 
