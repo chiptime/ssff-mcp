@@ -608,10 +608,12 @@ test("per-item __next yields an opaque cursor; replay sends the raw skiptoken", 
   });
 });
 
-test("inner request URLs decode %24 to literal $ so $top/$skiptoken apply inside $batch", async () => {
-  // Regression for the live finding: SAP's $batch ignores percent-encoded
-  // system query options; buildQuery's URLSearchParams output must be decoded
-  // before it is embedded in the multipart envelope.
+test("batch inner request lines carry literal $ option names (a %24 name is silently ignored by SF)", async () => {
+  // Live finding (odd/tasks/odata-query-fidelity.md, L12): SAP's $batch decodes
+  // percent-encoding once in option VALUES but matches option NAMES verbatim,
+  // so a `%24filter`/`%24top` name is silently ignored and the part returns
+  // UNFILTERED data. buildQuery therefore emits literal `$` names and the
+  // batch layer embeds the target untouched (no %24 -> $ rewriting).
   const configPath = await writeStandardConfig();
   const next = "https://tenant-a.example.com/odata/v2/User?$skiptoken=tok-decode";
   const { fetchImpl, posts } = makeTestFetch(
@@ -624,11 +626,12 @@ test("inner request URLs decode %24 to literal $ so $top/$skiptoken apply inside
     });
     assert.equal(result.isError, undefined);
     const line = requestLinesOf(posts[0]!.body)[0]!;
+    assert.ok(line.includes("$filter=userId%20eq%20'a%24b'"));
     assert.ok(line.includes("$top=3"));
     assert.ok(line.includes("$inlinecount=allpages"));
-    // A literal "%24" inside a VALUE is double-encoded by URLSearchParams
-    // (%2524) and must survive untouched.
-    assert.ok(line.includes("%2524b"));
+    // A literal "%24" inside a VALUE survives verbatim: no URLSearchParams
+    // double-encoding (%2524) and no whole-string %24 -> $ rewrite.
+    assert.ok(!line.includes("%2524b"));
     assert.ok(!line.includes("%24top"));
     assert.ok(!line.includes("%24inlinecount"));
   });

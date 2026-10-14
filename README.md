@@ -249,6 +249,9 @@ Discovers Custom MDF objects from the cached `$metadata` (no data request). With
 | `orderby` | `$orderby` | Raw value, passed through unmodified. |
 | `select` | `$select` | Raw value, passed through unmodified. |
 | `expand` | `$expand` | Raw value, passed through unmodified. |
+| `fromDate` | `fromDate` | Effective-dating window start, `YYYY-MM-DD`. Sent as the **bare** `fromDate` parameter (NOT `$fromDate`, which SuccessFactors silently ignores). Invalid format ⇒ `OPTION_INVALID`. Cannot be combined with `asOfDate`. See [Query encoding and effective dating](#query-encoding-and-effective-dating). |
+| `toDate` | `toDate` | Effective-dating window end, `YYYY-MM-DD`. Sent bare, same rules as `fromDate`. |
+| `asOfDate` | `asOfDate` | Effective-dating point in time, `YYYY-MM-DD`. Sent bare, same format rules; mutually exclusive with `fromDate`/`toDate` (`OPTION_INVALID`). |
 | `top` | `$top` | Integer >= 1. Values above 1000 are clamped to 1000 and flagged (`topClamped: true`). |
 | `skip` | `$skip` | Integer 0..1,000,000. Cannot be combined with `cursor`. |
 | `cursor` | `$skiptoken` | Opaque continuation cursor from a previous response (see below). Must be replayed with the SAME `environment`, `entityPath` and options as the call that produced it; otherwise `CURSOR_INVALID`. |
@@ -265,7 +268,7 @@ Response (`structuredContent`, XML output): `{ environment, path, contentType: "
 
 **Pagination ceiling:** at most **1,000 records** and exactly **one OData page** per call. Next links (`__next`) are never followed automatically and never returned; `hasMore` merely reports that a next page exists. If a page somehow contains more than 1,000 records, it is truncated to 1,000 (`truncatedToCeiling: true`).
 
-**Continuation (cursor):** when `hasMore` is true and the service's next link carries a `$skiptoken`, the response includes an opaque `cursor`. To fetch the exact next page, re-issue the **same** call (same `environment`, `entityPath` and options) passing that cursor in the `cursor` argument; the server appends the wrapped `$skiptoken` verbatim. The cursor is a stateless HMAC-SHA256-signed envelope (base64url payload + signature) around the service's own `$skiptoken`, bound to environment + entity path + the canonical query options (`filter`, `orderby`, `select`, `expand`, `top`, `inlinecount`, `output` — not `skip`). There is **no server-side storage and no clock-based TTL**; the HMAC secret is random per process, so **every cursor becomes invalid when the server process restarts** — after a restart, simply run a fresh query. An altered cursor, one reused with different arguments, or one issued by a previous process run is rejected with `CURSOR_INVALID` **before any network dispatch**. `skip` and `cursor` are mutually exclusive (`OPTION_INVALID`). Cursor errors never echo the token or the skiptoken.
+**Continuation (cursor):** when `hasMore` is true and the service's next link carries a `$skiptoken`, the response includes an opaque `cursor`. To fetch the exact next page, re-issue the **same** call (same `environment`, `entityPath` and options) passing that cursor in the `cursor` argument; the server appends the wrapped `$skiptoken` verbatim. The cursor is a stateless HMAC-SHA256-signed envelope (base64url payload + signature) around the service's own `$skiptoken`, bound to environment + entity path + the canonical query options (`filter`, `orderby`, `select`, `expand`, `fromDate`, `toDate`, `asOfDate`, `top`, `inlinecount`, `output` — not `skip`). There is **no server-side storage and no clock-based TTL**; the HMAC secret is random per process, so **every cursor becomes invalid when the server process restarts** — after a restart, simply run a fresh query. An altered cursor, one reused with different arguments, or one issued by a previous process run is rejected with `CURSOR_INVALID` **before any network dispatch**. `skip` and `cursor` are mutually exclusive (`OPTION_INVALID`). Cursor errors never echo the token or the skiptoken.
 
 ### `batch_get` — arguments
 
@@ -274,17 +277,27 @@ Executes multiple read-only OData v2 GETs in **one** `$batch` POST. The multipar
 | Argument | Constraints |
 |---|---|
 | `environment` | Required; must be a configured alias. Optional in [inline mode](#inline-mode-no-config-file). |
-| `requests` | Array of **1..180 items** (SAP `$batch` hard limit). Each item uses exactly the `query_entity` GET grammar: `entityPath` (required) plus optional `filter`, `orderby`, `select`, `expand`, `top`, `skip`, `cursor`, `inlinecount`. There is **no field** for HTTP method, URL, host, headers, body or changesets; unknown keys are rejected by the strict schema before dispatch. |
+| `requests` | Array of **1..180 items** (SAP `$batch` hard limit). Each item uses exactly the `query_entity` GET grammar: `entityPath` (required) plus optional `filter`, `orderby`, `select`, `expand`, `fromDate`, `toDate`, `asOfDate`, `top`, `skip`, `cursor`, `inlinecount`. There is **no field** for HTTP method, URL, host, headers, body or changesets; unknown keys are rejected by the strict schema before dispatch. |
 | `output` | `"json"` (default) or `"xml"`, global for the whole call. `xml` returns each item's raw Atom body (`Accept: application/atom+xml` on every embedded request). |
 
 Behavior:
 
 - **Full preflight before the POST:** every item is validated (path grammar, `entityAllowlist`, option bounds, cursor binding, `$metadata` classification — function imports and unknown entity sets rejected) **before** the `$batch` POST is built. One invalid item rejects the whole batch; the only allowed pre-batch call is the `$metadata` classification GET (cached 10 min).
-- **One POST, one page per item:** exactly one POST to `{serviceRoot}$batch`; pages are never followed or combined automatically. Embedded requests carry **literal `$` query options** (`$top`, `$skiptoken`, …): SAP's `$batch` does not percent-decode inner request targets, so the server decodes `%24` before embedding (verified live; without it `$top`/cursor replay would silently no-op).
+- **One POST, one page per item:** exactly one POST to `{serviceRoot}$batch`; pages are never followed or combined automatically. Every inner request line carries **literal `$` option names** (`$filter`, `$top`, `$skiptoken`, …), because a percent-encoded name (`%24filter`, `%24top`) is **silently ignored** and the part then returns **unfiltered** data (measured live: 1000 default rows instead of the filtered one). Percent-encoding inside option **values** is decoded once by the batch parser, so `%20` behaves exactly like a direct GET (`+` is not accepted there: the part answers 400). The server therefore embeds the query exactly as built, with no `%24` rewriting.
 - **Per-item results in input order:** `{ index, path, success, httpStatus, recordCount, records|body, hasMore, cursor?, totalCount?, topClamped?, truncatedToCeiling? }`. Embedded non-2xx parts become **sanitized per-item errors** (`error.code`/`error.message`, URLs redacted) — the call itself still succeeds; raw embedded error bodies are never returned.
 - **Aggregate ceiling:** at most **1,000 records in total** across the whole response (not per item). Items are processed in order; JSON records are truncated at the remaining budget and the affected item is flagged `truncatedToCeiling: true`. XML cannot be truncated safely: if the aggregate `<entry>` count would exceed 1,000, the whole response is rejected with `RESPONSE_INVALID`.
 - **Cursors:** per-item continuation cursors work exactly like `query_entity` cursors (same signed envelope, same binding rules, replay with the same environment, entityPath and options). A cursor produced by a `batch_get` item can be replayed in another `batch_get` item or in `query_entity` with identical arguments.
 - **Auth:** Basic or OAuth per environment, exactly like `query_entity`. An OAuth 401 on the batch POST invalidates the cached token and replays the **whole batch exactly once** (safe: every embedded operation is a GET); Basic 401 does not retry.
+
+### Query encoding and effective dating
+
+How `query_entity` and `batch_get` turn options into the request query string:
+
+- **Raw assembly, spaces as `%20`.** `filter`, `orderby`, `select` and `expand` are assembled by raw concatenation. Only spaces are encoded, uniformly as `%20`; single quotes, `+`, `,`, `/`, `(`, `)`, `:`, `=` and `;` are preserved literally. (`URLSearchParams` produced `+` for spaces, which SuccessFactors rejects with 400.)
+- **Control characters are rejected.** CR, LF or NUL in any of those four values is rejected with `OPTION_INVALID` before dispatch, since they could inject request lines into the `$batch` multipart envelope. The error never echoes the value.
+- **`$skiptoken` stays opaque.** It is percent-encoded so it round-trips byte-identically and cannot break a `batch_get` inner request line.
+- **Effective dating.** `fromDate`, `toDate` and `asOfDate` are `YYYY-MM-DD` and are sent **bare**. SuccessFactors **silently ignores the `$`-prefixed forms** and falls back to the active slice (verified live). `asOfDate` is exclusive of `fromDate`/`toDate`. Effective dating is required to read historical HRIS rows: without the window, a historical `EmpJob` key lookup returns 404. The options are valid on collection reads and on key-predicate reads.
+- **Cursors issued before this change are invalid.** The cursor binding now includes the effective-dating options and the query assembly changed, so an older cursor is rejected with `CURSOR_INVALID` (the same as after a server restart); simply re-run the query.
 
 ## Limitations & MVP scope
 
@@ -313,6 +326,16 @@ pnpm test
 ```
 
 Builds the project and runs the suite (`node --test dist/test/`). The negative suite is the point: write-shape rejection before dispatch, fail-closed environment handling, redirect blocking, error sanitization, the pagination ceiling and log-field allowlists are all covered by automated tests.
+
+### Opt-in integration test
+
+`test/odata-query-fidelity.integration.test.ts` runs the query-fidelity scenarios (encoding, key-predicate grammar, effective dating) against a real tenant through the real MCP tool path. It is opt-in:
+
+```bash
+SSFF_MCP_INTEGRATION=1 pnpm test
+```
+
+Without `SSFF_MCP_INTEGRATION=1` it is skipped, and it is skipped (not failed) when your real `~/.config/ssff-mcp/config.json` cannot be loaded or has no `TEST_basic` environment. It prints no secrets: only the environment alias, record counts, HTTP statuses and sanitized error codes.
 
 ## License
 

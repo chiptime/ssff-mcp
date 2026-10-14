@@ -455,6 +455,189 @@ test("changed filter with the same cursor yields CURSOR_INVALID and no fetch", a
   });
 });
 
+test("fromDate and toDate are sent on the wire as bare query params, never $-prefixed", async () => {
+  const configPath = await writeStandardConfig();
+  const { fetch, requests } = recordingFetch((url) => {
+    if (url.endsWith("/$metadata")) {
+      return xmlResponse(SAMPLE_METADATA_XML);
+    }
+    return jsonResponse(feed([{ userId: "u1" }]));
+  });
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const result = await callTool(client, "query_entity", {
+      environment: "tenant-a",
+      entityPath: "User",
+      fromDate: "1970-01-12",
+      toDate: "9999-12-31",
+    });
+    assert.equal(result.isError, undefined);
+    const dataRequests = requests.filter((r) => !r.url.includes("$metadata"));
+    assert.equal(dataRequests.length, 1);
+    const url = new URL(dataRequests[0]!.url);
+    assert.equal(url.searchParams.get("fromDate"), "1970-01-12");
+    assert.equal(url.searchParams.get("toDate"), "9999-12-31");
+    assert.equal(url.searchParams.get("$fromDate"), null);
+    assert.equal(url.searchParams.get("$toDate"), null);
+  });
+});
+
+test("asOfDate is sent on the wire as a bare query param", async () => {
+  const configPath = await writeStandardConfig();
+  const { fetch, requests } = recordingFetch((url) => {
+    if (url.endsWith("/$metadata")) {
+      return xmlResponse(SAMPLE_METADATA_XML);
+    }
+    return jsonResponse(feed([{ userId: "u1" }]));
+  });
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const result = await callTool(client, "query_entity", {
+      environment: "tenant-a",
+      entityPath: "User",
+      asOfDate: "2024-06-30",
+    });
+    assert.equal(result.isError, undefined);
+    const dataRequests = requests.filter((r) => !r.url.includes("$metadata"));
+    const url = new URL(dataRequests[0]!.url);
+    assert.equal(url.searchParams.get("asOfDate"), "2024-06-30");
+    assert.equal(url.searchParams.get("$asOfDate"), null);
+  });
+});
+
+test("malformed or conflicting effective-dating options yield OPTION_INVALID and no fetch", async () => {
+  const configPath = await writeStandardConfig();
+  const { fetch, requests } = recordingFetch(() => {
+    return xmlResponse(SAMPLE_METADATA_XML);
+  });
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const malformed = await callTool(client, "query_entity", {
+      environment: "tenant-a",
+      entityPath: "User",
+      fromDate: "1970-1-12",
+    });
+    const malformedPayload = errorPayload(malformed);
+    assert.equal(malformedPayload.code, "OPTION_INVALID");
+    assert.ok(!malformedPayload.message.includes("1970-1-12"));
+
+    const conflicting = await callTool(client, "query_entity", {
+      environment: "tenant-a",
+      entityPath: "User",
+      asOfDate: "2024-06-30",
+      toDate: "9999-12-31",
+    });
+    assert.equal(errorPayload(conflicting).code, "OPTION_INVALID");
+
+    const batched = await callTool(client, "batch_get", {
+      environment: "tenant-a",
+      requests: [{ entityPath: "User", fromDate: "19700112" }],
+    });
+    assert.equal(errorPayload(batched).code, "OPTION_INVALID");
+
+    assert.equal(requests.length, 0);
+  });
+});
+
+// An explicitly provided effective-dating value is never "absent" (verification
+// B1): empty, whitespace-only and trailing-newline values are OPTION_INVALID on
+// BOTH tools and must not dispatch any request.
+for (const option of ["fromDate", "toDate", "asOfDate"] as const) {
+  for (const [label, submitted] of [
+    ["empty", ""],
+    ["whitespace-only", " "],
+    ["trailing-newline", "2026-10-14\n"],
+  ] as const) {
+    test(`${label} ${option} yields OPTION_INVALID and no dispatch on query_entity and batch_get`, async () => {
+      const configPath = await writeStandardConfig();
+      const { fetch, requests } = recordingFetch(() => xmlResponse(SAMPLE_METADATA_XML));
+      await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+        const requestsBefore = requests.length;
+        const expected = { code: "OPTION_INVALID", message: `${option} must be a date in YYYY-MM-DD format` };
+
+        const single = await callTool(client, "query_entity", {
+          environment: "tenant-a",
+          entityPath: "User",
+          [option]: submitted,
+        });
+        assert.deepEqual(errorPayload(single), expected);
+
+        const batched = await callTool(client, "batch_get", {
+          environment: "tenant-a",
+          requests: [{ entityPath: "User", [option]: submitted }],
+        });
+        assert.deepEqual(errorPayload(batched), expected);
+
+        assert.equal(requests.length, requestsBefore);
+      });
+    });
+  }
+}
+
+test("changed fromDate with the same cursor yields CURSOR_INVALID and no fetch", async () => {
+  const configPath = await writeStandardConfig();
+  const { fetch, requests } = recordingFetch((url) => {
+    if (url.endsWith("/$metadata")) {
+      return xmlResponse(SAMPLE_METADATA_XML);
+    }
+    return jsonResponse(feed([{ userId: "u1" }], NEXT_WITH_TOKEN));
+  });
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const baseArgs = {
+      environment: "tenant-a",
+      entityPath: "User",
+      top: 100,
+      fromDate: "1970-01-12",
+      toDate: "9999-12-31",
+    };
+    const first = await callTool(client, "query_entity", baseArgs);
+    const cursor = (first.structuredContent as { cursor: string }).cursor;
+    assert.ok(typeof cursor === "string" && cursor.length > 0);
+    const requestsBefore = requests.length; // metadata + first page
+
+    const changedFrom = await callTool(client, "query_entity", { ...baseArgs, fromDate: "1980-01-01", cursor });
+    const payload = errorPayload(changedFrom);
+    assert.equal(payload.code, "CURSOR_INVALID");
+    assert.ok(!payload.message.includes(cursor));
+
+    const droppedTo = await callTool(client, "query_entity", {
+      environment: "tenant-a",
+      entityPath: "User",
+      top: 100,
+      fromDate: "1970-01-12",
+      cursor,
+    });
+    assert.equal(errorPayload(droppedTo).code, "CURSOR_INVALID");
+
+    // Rejected pre-dispatch: not even the (cached) metadata lookup ran.
+    assert.equal(requests.length, requestsBefore);
+  });
+});
+
+test("replaying a cursor with the same effective-dating options continues the read", async () => {
+  const configPath = await writeStandardConfig();
+  let dataCalls = 0;
+  const { fetch, requests } = recordingFetch((url) => {
+    if (url.endsWith("/$metadata")) {
+      return xmlResponse(SAMPLE_METADATA_XML);
+    }
+    dataCalls += 1;
+    return dataCalls === 1 ? jsonResponse(feed([{ userId: "u1" }], NEXT_WITH_TOKEN)) : jsonResponse(feed([{ userId: "u2" }]));
+  });
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const baseArgs = { environment: "tenant-a", entityPath: "User", top: 100, asOfDate: "2024-06-30" };
+    const first = await callTool(client, "query_entity", baseArgs);
+    const cursor = (first.structuredContent as { cursor: string }).cursor;
+
+    const second = await callTool(client, "query_entity", { ...baseArgs, cursor });
+    assert.equal(second.isError, undefined);
+    assert.deepEqual((second.structuredContent as { records: unknown[] }).records, [{ userId: "u2" }]);
+
+    const dataRequests = requests.filter((r) => !r.url.includes("$metadata"));
+    assert.equal(dataRequests.length, 2);
+    const secondUrl = new URL(dataRequests[1]!.url);
+    assert.equal(secondUrl.searchParams.get("asOfDate"), "2024-06-30");
+    assert.equal(secondUrl.searchParams.get("$skiptoken"), "tok-1000-2000");
+  });
+});
+
 test("skip combined with cursor yields OPTION_INVALID and no fetch", async () => {
   const configPath = await writeStandardConfig();
   const { fetch, requests } = recordingFetch((url) => {

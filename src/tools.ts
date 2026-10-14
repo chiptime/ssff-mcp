@@ -48,6 +48,9 @@ export const QUERY_ENTITY_DESCRIPTION = [
   "Options map 1:1 to OData system query options and their values pass through unmodified:",
   "filter -> $filter, orderby -> $orderby, select -> $select, expand -> $expand, top -> $top,",
   "skip -> $skip, inlinecount -> $inlinecount (allpages only).",
+  "Effective dating: fromDate, toDate and asOfDate (bare YYYY-MM-DD, NOT $-prefixed; SuccessFactors",
+  "ignores the $-prefixed forms) select the effective-dated slices; asOfDate is exclusive and cannot",
+  "be combined with fromDate or toDate.",
   "Ceiling: at most 1000 records and exactly one OData page are returned per call;",
   "next links are never followed automatically (hasMore indicates a next page exists).",
   "Continuation: when hasMore is true the response may carry an opaque cursor;",
@@ -63,8 +66,10 @@ export const QUERY_ENTITY_DESCRIPTION = [
 export const BATCH_GET_DESCRIPTION = [
   "Executes multiple read-only OData v2 GETs against the selected environment in ONE $batch POST.",
   "Each item uses exactly the query_entity GET grammar (entityPath plus optional filter, orderby,",
-  "select, expand, top, skip, cursor, inlinecount); there is no field for HTTP method, URL, host,",
-  "headers, body or changesets, and unknown keys are rejected before dispatch.",
+  "select, expand, fromDate, toDate, asOfDate, top, skip, cursor, inlinecount); there is no field for",
+  "HTTP method, URL, host, headers, body or changesets, and unknown keys are rejected before dispatch.",
+  "fromDate, toDate and asOfDate are bare YYYY-MM-DD effective-dating options (NOT $-prefixed);",
+  "asOfDate is exclusive and cannot be combined with fromDate or toDate.",
   "Hard limits: 1 to 180 items per call (SAP $batch limit) and at most 1000 records returned in",
   "TOTAL across all items; items are processed in input order and truncated records are flagged",
   "(truncatedToCeiling) when the aggregate ceiling is hit.",
@@ -79,6 +84,18 @@ export const BATCH_GET_DESCRIPTION = [
   "like query_entity cursors and must be replayed with the same environment, entityPath and options.",
 ].join(" ");
 
+// The date format is validated in buildQuery (not by zod) so a malformed value
+// surfaces as our sanitized OPTION_INVALID rather than a protocol validation error.
+const EFFECTIVE_FROM_DESCRIPTION =
+  "Effective-dating window start, format YYYY-MM-DD. Sent as the bare fromDate query parameter " +
+  "(not $-prefixed). Cannot be combined with asOfDate.";
+const EFFECTIVE_TO_DESCRIPTION =
+  "Effective-dating window end, format YYYY-MM-DD. Sent as the bare toDate query parameter " +
+  "(not $-prefixed). Cannot be combined with asOfDate.";
+const EFFECTIVE_AS_OF_DESCRIPTION =
+  "Effective-dating point in time, format YYYY-MM-DD. Sent as the bare asOfDate query parameter " +
+  "(not $-prefixed). Cannot be combined with fromDate or toDate.";
+
 const environmentArg = z.string().optional();
 
 const queryEntitySchema = z
@@ -89,6 +106,9 @@ const queryEntitySchema = z
     orderby: z.string().optional(),
     select: z.string().optional(),
     expand: z.string().optional(),
+    fromDate: z.string().optional().describe(EFFECTIVE_FROM_DESCRIPTION),
+    toDate: z.string().optional().describe(EFFECTIVE_TO_DESCRIPTION),
+    asOfDate: z.string().optional().describe(EFFECTIVE_AS_OF_DESCRIPTION),
     top: z.number().int().optional(),
     skip: z.number().int().optional(),
     cursor: z
@@ -152,6 +172,9 @@ const batchRequestItemSchema = z
     orderby: z.string().optional(),
     select: z.string().optional(),
     expand: z.string().optional(),
+    fromDate: z.string().optional().describe(EFFECTIVE_FROM_DESCRIPTION),
+    toDate: z.string().optional().describe(EFFECTIVE_TO_DESCRIPTION),
+    asOfDate: z.string().optional().describe(EFFECTIVE_AS_OF_DESCRIPTION),
     top: z.number().int().optional(),
     skip: z.number().int().optional(),
     cursor: z.string().optional(),
@@ -232,6 +255,9 @@ interface QueryEntityArgs {
   orderby?: string;
   select?: string;
   expand?: string;
+  fromDate?: string;
+  toDate?: string;
+  asOfDate?: string;
   top?: number;
   skip?: number;
   cursor?: string;
@@ -242,7 +268,16 @@ interface QueryEntityArgs {
 /** Option fields the cursor binding covers (shared by query_entity and batch_get items). */
 type CursorOptionsSource = Pick<
   QueryEntityArgs,
-  "filter" | "orderby" | "select" | "expand" | "top" | "inlinecount" | "output"
+  | "filter"
+  | "orderby"
+  | "select"
+  | "expand"
+  | "fromDate"
+  | "toDate"
+  | "asOfDate"
+  | "top"
+  | "inlinecount"
+  | "output"
 >;
 
 /**
@@ -264,6 +299,16 @@ function cursorBindingOptions(args: CursorOptionsSource): Record<string, unknown
   }
   if (args.expand !== undefined) {
     options.expand = args.expand;
+  }
+  // The effective-dating window shapes the result, so the cursor binds it too.
+  if (args.fromDate !== undefined) {
+    options.fromDate = args.fromDate;
+  }
+  if (args.toDate !== undefined) {
+    options.toDate = args.toDate;
+  }
+  if (args.asOfDate !== undefined) {
+    options.asOfDate = args.asOfDate;
   }
   if (args.top !== undefined) {
     options.top = args.top;
@@ -490,6 +535,9 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           orderby: args.orderby,
           select: args.select,
           expand: args.expand,
+          fromDate: args.fromDate,
+          toDate: args.toDate,
+          asOfDate: args.asOfDate,
           top: args.top,
           skip: args.skip,
           inlinecount: args.inlinecount,
@@ -650,6 +698,9 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
             orderby: item.orderby,
             select: item.select,
             expand: item.expand,
+            fromDate: item.fromDate,
+            toDate: item.toDate,
+            asOfDate: item.asOfDate,
             top: item.top,
             skip: item.skip,
             inlinecount: item.inlinecount,

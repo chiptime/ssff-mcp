@@ -18,13 +18,30 @@ export const MAX_SEGMENTS = 4;
 const NAME_PATTERN = "[A-Za-z_][A-Za-z0-9_]*";
 const SEGMENT_NAME = new RegExp(`^${NAME_PATTERN}$`);
 
-// OData v2 key predicate values: single-quoted strings ('It''s' doubling
-// allowed), integers/decimals, optionally signed.
-const LITERAL = `(?:'(?:[^']|'')*'|-?\\d+(?:\\.\\d+)?)`;
+// OData v2 key predicate values (matched case-insensitively, see SEGMENT):
+// - a single-quoted string body ('It''s' doubling allowed; `:`, `-`, `/` etc.
+//   are plain body characters), optionally preceded by a type prefix such as
+//   datetime'2013-01-01T00:00:00', guid'...' or X'0A0B';
+// - true, false or null;
+// - an optionally signed integer/decimal with an optional numeric type suffix
+//   (860259L, 1.5f, 2D, 3m).
+// Raw `%` is still only legal inside a quoted body, never elsewhere (FR-77).
+const QUOTED = `'(?:[^']|'')*'`;
+const TYPE_PREFIX = `(?:datetimeoffset|datetime|time|guid|binary|X|decimal|float|double)`;
+const LITERAL = `(?:${TYPE_PREFIX}?${QUOTED}|true|false|null|-?\\d+(?:\\.\\d+)?[LfFdDmM]?)`;
 const PAIR = `${NAME_PATTERN}\\s*=\\s*${LITERAL}`;
 const PREDICATE_ITEM = `(?:${PAIR}|${LITERAL})`;
 const PREDICATE = `\\(\\s*(?:${PREDICATE_ITEM}(?:\\s*,\\s*${PREDICATE_ITEM})*)?\\s*\\)`;
-const SEGMENT = new RegExp(`^${NAME_PATTERN}(?:${PREDICATE})?$`);
+// The `i` flag makes type prefixes, true/false/null and numeric suffixes
+// case-insensitive (real $metadata and callers use both cases); NAME_PATTERN
+// already covers both cases, so it is unaffected.
+const SEGMENT = new RegExp(`^${NAME_PATTERN}(?:${PREDICATE})?$`, "i");
+
+// CR, LF and NUL are never legal in a query option value (FR-80).
+const CONTROL_CHARACTERS = /[\r\n\0]/;
+
+// Effective-dating option values (fromDate/toDate/asOfDate) are plain dates.
+const EFFECTIVE_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 export interface ValidatedPath {
   segments: string[];
@@ -98,11 +115,17 @@ export interface QueryOptions {
   orderby?: string;
   select?: string;
   expand?: string;
+  /** Effective-dating window start (`YYYY-MM-DD`). Emitted BARE (`fromDate=`), never `$fromDate`. */
+  fromDate?: string;
+  /** Effective-dating window end (`YYYY-MM-DD`). Emitted BARE (`toDate=`), never `$toDate`. */
+  toDate?: string;
+  /** Effective-dating point in time (`YYYY-MM-DD`). Emitted BARE; mutually exclusive with fromDate/toDate. */
+  asOfDate?: string;
   top?: number;
   skip?: number;
   /** Adds `$inlinecount=allpages` (the only accepted value, D-31). */
   inlinecount?: "allpages";
-  /** Raw continuation token extracted from a validated cursor (FR-25). Appended verbatim as `$skiptoken`. */
+  /** Opaque continuation token extracted from a validated cursor (FR-25). Percent-encoded as `$skiptoken`. */
   skiptoken?: string;
 }
 
@@ -126,35 +149,83 @@ export function buildQuery(entityPath: string, options: QueryOptions): BuiltQuer
     }
   }
 
+  // Control characters would let a value inject extra HTTP request lines or
+  // headers inside the `$batch` multipart envelope. The message never echoes
+  // the offending value (it may carry business keys).
+  for (const name of ["filter", "orderby", "select", "expand"] as const) {
+    const value = options[name];
+    if (value !== undefined && CONTROL_CHARACTERS.test(value)) {
+      throw new SanitizedError("OPTION_INVALID", `${name} must not contain carriage return, line feed or NUL characters`);
+    }
+  }
+
+  // Effective-dating options are validated before anything is assembled. The
+  // messages state the expected format and never echo the submitted value.
+  for (const name of ["fromDate", "toDate", "asOfDate"] as const) {
+    const value = options[name];
+    // An explicitly provided value is never "absent": an empty string is
+    // rejected like any other malformed date, because silently dropping it would
+    // change the effective-dating window and therefore the result set.
+    if (value !== undefined && !EFFECTIVE_DATE.test(value)) {
+      throw new SanitizedError("OPTION_INVALID", `${name} must be a date in YYYY-MM-DD format`);
+    }
+  }
+  if (options.asOfDate !== undefined && (options.fromDate !== undefined || options.toDate !== undefined)) {
+    throw new SanitizedError("OPTION_INVALID", "asOfDate cannot be combined with fromDate or toDate");
+  }
+
   const topClamped = top !== undefined && top > RECORD_CEILING;
-  const params = new URLSearchParams();
-  addIfPresent(params, "$filter", options.filter);
-  addIfPresent(params, "$orderby", options.orderby);
-  addIfPresent(params, "$select", options.select);
-  addIfPresent(params, "$expand", options.expand);
+  const pairs: string[] = [];
+  // Emission order is BYTE-EXACT with the reference `ODataQuery.getQuery`
+  // (FR-84): $filter, $select, $expand, $top, $skiptoken, $inlinecount,
+  // $orderby. The MCP-only options sit where they cannot disturb that order for
+  // any shared option set: fromDate/toDate/asOfDate after $expand and $skip right
+  // after $top. Full deterministic order:
+  //   $filter, $select, $expand, fromDate, toDate, asOfDate, $top, $skip,
+  //   $skiptoken, $inlinecount, $orderby.
+  // $filter/$select/$expand/$orderby bypass URLSearchParams (which would turn
+  // spaces into `+` and percent-encode `'`, `,`, `(`, `/`...). Only spaces are
+  // encoded, uniformly as `%20`; every other character is emitted literally.
+  addRawIfPresent(pairs, "$filter", options.filter);
+  addRawIfPresent(pairs, "$select", options.select);
+  addRawIfPresent(pairs, "$expand", options.expand);
+  // Effective-dating options are BARE names: SuccessFactors silently ignores
+  // `$fromDate`/`$toDate`/`$asOfDate` and falls back to the active slice. The
+  // values are already restricted to YYYY-MM-DD above, so no encoding is needed.
+  // They are validated as provided, so only an undefined value is skipped here.
+  addRawIfPresent(pairs, "fromDate", options.fromDate);
+  addRawIfPresent(pairs, "toDate", options.toDate);
+  addRawIfPresent(pairs, "asOfDate", options.asOfDate);
   if (top !== undefined) {
-    params.set("$top", String(topClamped ? RECORD_CEILING : top));
+    pairs.push(`$top=${topClamped ? RECORD_CEILING : top}`);
   }
   if (skip !== undefined && skip > 0) {
-    params.set("$skip", String(skip));
+    pairs.push(`$skip=${skip}`);
+  }
+  // The skiptoken is opaque (never interpreted or rewritten, D-27 / A-P2-3) but
+  // MUST be percent-encoded: `extractSkiptoken` decodes it through
+  // `URL.searchParams.get("$skiptoken")`, so the round-trip is only
+  // byte-identical when it is encoded here, and the JSON braces/quotes of a
+  // token such as {"startRow":1000,"endRow":2000} must never break the HTTP
+  // request line inside a `$batch` multipart envelope.
+  if (options.skiptoken !== undefined && options.skiptoken.length > 0) {
+    pairs.push(`$skiptoken=${encodeURIComponent(options.skiptoken)}`);
   }
   if (options.inlinecount === "allpages") {
-    params.set("$inlinecount", "allpages");
+    pairs.push("$inlinecount=allpages");
   }
-  // The skiptoken is opaque: appended raw (URLSearchParams encodes it), never
-  // interpreted or rewritten (D-27 / A-P2-3).
-  addIfPresent(params, "$skiptoken", options.skiptoken);
+  addRawIfPresent(pairs, "$orderby", options.orderby);
 
-  const queryString = params.toString();
+  const queryString = pairs.join("&");
   return {
     pathAndQuery: queryString.length > 0 ? `${entityPath}?${queryString}` : entityPath,
     topClamped,
   };
 }
 
-function addIfPresent(params: URLSearchParams, name: string, value: string | undefined): void {
+function addRawIfPresent(pairs: string[], name: string, value: string | undefined): void {
   if (value !== undefined && value.length > 0) {
-    params.set(name, value);
+    pairs.push(`${name}=${value.replace(/ /g, "%20")}`);
   }
 }
 
