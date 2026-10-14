@@ -382,7 +382,22 @@ export class MetadataService {
   async getParsedMetadata(env: EnvTarget, alias: string): Promise<ParsedMetadata> {
     const memEntry = this.cache.get(alias);
     if (memEntry !== undefined && this.now() - memEntry.fetchedAt < this.ttlMs) {
-      return memEntry.data;
+      // FR-95: `ssff-mcp cache invalidate` runs in another process and can only
+      // delete the disk file, so the in-memory entry stops being trusted once
+      // the file is gone. Without this the command would look broken for up to
+      // the 10-minute memory TTL.
+      let backed = true;
+      if (!this.disableDiskCache) {
+        try {
+          await fs.stat(path.join(this.cacheDir, `metadata-${encodeURIComponent(alias)}.json`));
+        } catch {
+          backed = false;
+        }
+      }
+      if (backed) {
+        return memEntry.data;
+      }
+      this.cache.delete(alias);
     }
 
     // Try reading disk cache

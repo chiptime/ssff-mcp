@@ -13,6 +13,7 @@ import { discoverEntities } from "./discovery.js";
 export type CliCommand =
   | { kind: "serve" }
   | { kind: "init" }
+  | { kind: "cache-invalidate"; alias?: string; all: boolean }
   | { kind: "help" }
   | { kind: "unknown"; arg: string };
 
@@ -44,6 +45,18 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
   }
   if (first === "init") {
     return { kind: "init" };
+  }
+  if (first === "cache") {
+    const action = argv[1];
+    if (action === "invalidate") {
+      const rest = argv.slice(2);
+      if (rest.includes("--all")) {
+        return { kind: "cache-invalidate", all: true };
+      }
+      const alias = rest.find((value) => !value.startsWith("-"));
+      return { kind: "cache-invalidate", all: false, alias };
+    }
+    return { kind: "unknown", arg: `cache ${action ?? ""}`.trim() };
   }
   if (first === "help" || first === "--help" || first === "-h") {
     return { kind: "help" };

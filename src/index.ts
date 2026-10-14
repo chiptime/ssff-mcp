@@ -14,6 +14,7 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createMcpServer } from "./tools.js";
 import { parseCliArgs, runInit } from "./cli/init.js";
+import { runCacheInvalidate } from "./cli/cache.js";
 
 const HELP = [
   "ssff-mcp — read-only MCP server for SAP SuccessFactors OData v2",
@@ -21,6 +22,7 @@ const HELP = [
   "Usage:",
   "  ssff-mcp          Start the MCP server over STDIO (default)",
   "  ssff-mcp init     Run the interactive configuration wizard",
+  "  ssff-mcp cache invalidate <alias|--all>   Drop cached $metadata for an environment",
   "  ssff-mcp --help   Show this help",
   "",
 ].join("\n");
@@ -30,6 +32,10 @@ async function main(): Promise<void> {
 
   if (command.kind === "init") {
     process.exitCode = await runInit();
+    return;
+  }
+  if (command.kind === "cache-invalidate") {
+    process.exitCode = await runCacheInvalidate(command.alias, command.all);
     return;
   }
   if (command.kind === "help") {
