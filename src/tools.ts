@@ -112,6 +112,37 @@ const queryEntitySchema = z
 
 const listEnvironmentsSchema = z.object({}).strict();
 
+export const INSPECT_CUSTOM_MDF_DESCRIPTION = [
+  "Discovers Custom MDF objects (cust_* entity sets) of the selected environment from the cached $metadata;",
+  "no data request is made. Without entitySet it returns the compact catalog of allowed Custom MDF entities",
+  "(name, isEffectiveDated, linkType, targetEntity, matchField); employeeLinkedOnly keeps only the entities",
+  "tied to a User or EmpEmployment. With entitySet it returns the schema plus employeeLink and query guidance",
+  "(suggested $filter, $orderby for effective-dated objects, warnings, and a ready query_entity example).",
+  "Always query the custom entity as the root with $filter and $top; expanding it from User returns the whole child collection.",
+  "locale selects the language of the guidance warnings (the user's language, e.g. es_ES).",
+].join(" ");
+
+const inspectCustomMdfSchema = z
+  .object({
+    environment: environmentArg,
+    entitySet: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("Specific Custom MDF entity set (e.g. 'cust_EmployeeEquipment'). If omitted, lists all Custom MDF entities."),
+    employeeLinkedOnly: z
+      .boolean()
+      .optional()
+      .describe("When listing, keep only entities linked to User or EmpEmployment. Default: false."),
+    locale: z
+      .string()
+      .optional()
+      .describe(
+        "Locale for the guidance text, normally the user's own language (e.g. 'es_ES'). It takes precedence over config defaultLocale, SF_DEFAULT_LOCALE and the 'en_US' fallback.",
+      ),
+  })
+  .strict();
+
 /** One batch_get item: exactly the query_entity GET grammar, nothing else. */
 const batchRequestItemSchema = z
   .object({
@@ -355,6 +386,41 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           .map((alias) => ({ alias, authType: environments[alias]!.auth.type }));
         const structured = { environments: list };
         return { structured, text: JSON.stringify(structured, null, 2) };
+      }),
+  );
+
+  server.registerTool(
+    "inspect_custom_mdf",
+    {
+      title: "Inspect Custom MDF objects",
+      description: INSPECT_CUSTOM_MDF_DESCRIPTION,
+      inputSchema: inspectCustomMdfSchema,
+    },
+    async (args) =>
+      await executeTool("inspect_custom_mdf", args.environment, async () => {
+        const { environments, entityAllowlist, defaultLocale, inline } = await loadFreshConfig(args.environment);
+        const { alias, env } = resolveEnvironment(environments, args.environment, inline);
+        const target: EnvTarget = envTargetFor(env, alias);
+        const locale = resolveLocale({ tool: args.locale, config: defaultLocale, env: envVars.SF_DEFAULT_LOCALE });
+
+        if (args.entitySet !== undefined) {
+          const details = await metadataService.getCustomMdfDetails(target, alias, args.entitySet, entityAllowlist, locale);
+          if (details === undefined) {
+            throw new SanitizedError("RESOURCE_NOT_FOUND", "the entity set is not a Custom MDF object of this environment");
+          }
+          const structured = details as unknown as Record<string, unknown>;
+          return { structured, text: JSON.stringify(structured) };
+        }
+
+        const entities = await metadataService.listCustomMdf(target, alias, entityAllowlist, args.employeeLinkedOnly === true);
+        const structured: Record<string, unknown> = {
+          environment: alias,
+          locale,
+          totalCount: entities.length,
+          employeeLinkedCount: entities.filter((entity) => isEmployeeLinkedType(entity.linkType)).length,
+          entities,
+        };
+        return { structured, text: JSON.stringify(structured), recordCount: entities.length };
       }),
   );
 
