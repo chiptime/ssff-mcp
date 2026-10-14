@@ -69,6 +69,8 @@ export interface SsffConfig {
   entityAllowlist?: AllowlistEntry[];
   /** Preferred language for guidance prose (FR-76); absent when not configured. */
   defaultLocale?: string;
+  /** Cap, in bytes, for what is returned to the model (D-75/FR-86); absent when not configured. */
+  maxResponseBytes?: number;
   /**
    * True when the config was synthesized from inline SF_* environment
    * variables (no config.json). Only in this mode may a tool call omit
@@ -174,6 +176,9 @@ const configSchema = z
         message: "defaultLocale must be a language or language_REGION code such as es or es_ES",
       })
       .optional(),
+    // Optional cap, in bytes, for what is returned to the model (D-75/FR-86).
+    // Positive integer; absent falls back to SF_MAX_RESPONSE_BYTES, then 256 KiB.
+    maxResponseBytes: z.number().int().positive().optional(),
   })
   .strict();
 
@@ -560,6 +565,9 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<SsffC
   }
   if (result.data.defaultLocale !== undefined) {
     config.defaultLocale = result.data.defaultLocale;
+  }
+  if (result.data.maxResponseBytes !== undefined) {
+    config.maxResponseBytes = result.data.maxResponseBytes;
   }
 
   // A present config.json always wins; make a silently-ignored inline mode explicit.

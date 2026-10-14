@@ -12,12 +12,25 @@ import { SanitizedError } from "./errors.js";
 /** Default maximum UTF-8 size of one result returned to the model (256 KiB). */
 export const MAX_RESPONSE_BYTES = 256 * 1024;
 
+let configuredMaxResponseBytes: number | undefined;
+
 /**
- * Effective cap for this process: `SF_MAX_RESPONSE_BYTES` when it holds a
- * positive integer, otherwise the 256 KiB default. Mirrors how
- * `SF_DEFAULT_LOCALE` overrides `defaultLocale` (i18n.ts).
+ * Applies the `config.json` value (FR-86). Called on every config load, which
+ * the server re-does per call, so the effective cap always tracks the live
+ * configuration. `undefined` clears it and falls back to the environment.
+ */
+export function setMaxResponseBytes(configured?: number): void {
+  configuredMaxResponseBytes = configured;
+}
+
+/**
+ * Effective cap: `config.json` wins, then `SF_MAX_RESPONSE_BYTES` when it holds
+ * a positive integer, then the 256 KiB default.
  */
 export function resolveMaxResponseBytes(): number {
+  if (configuredMaxResponseBytes !== undefined) {
+    return configuredMaxResponseBytes;
+  }
   const raw = process.env.SF_MAX_RESPONSE_BYTES;
   if (raw !== undefined && raw.trim() !== "") {
     const parsed = Number.parseInt(raw, 10);

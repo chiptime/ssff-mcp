@@ -26,7 +26,7 @@ import { resolveLocale } from "./i18n.js";
 import { makeLogger, type LogSink, type Logger } from "./logger.js";
 import { classifyEmployeeLink, effectiveDateKey, isCustomMdfEntity, isEmployeeLinkedType } from "./mdf.js";
 import { MetadataService } from "./metadata.js";
-import { exceedsResponseCap, responseTooLargeError } from "./size-guard.js";
+import { exceedsResponseCap, responseTooLargeError, setMaxResponseBytes } from "./size-guard.js";
 import {
   buildQuery,
   extractSkiptoken,
@@ -368,6 +368,8 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       onWarning: deps.onConfigWarning,
       resolveSecretsFor,
     });
+    // FR-86: the configured cap outranks SF_MAX_RESPONSE_BYTES and the default.
+    setMaxResponseBytes(config.maxResponseBytes);
     return {
       environments: config.environments,
       entityAllowlist: config.entityAllowlist,
