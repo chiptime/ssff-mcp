@@ -51,42 +51,23 @@ function backendGetQuery({
 }
 
 /**
- * Declared parity condition (FR-84 / S7):
+ * Declared parity condition (FR-84 / S7), BYTE-EXACT:
  *
- *   "same option set, same per-option bytes, order-independent".
+ *   MCP `pathAndQuery` query string === reference `getQuery` output, character
+ *   for character, option ORDER included.
  *
- * Both query strings are split into ordered `name=value` pairs (name = text up
- * to the first `=`). The single agreed divergence is applied to the REFERENCE
- * side only: every literal space becomes `%20` (the MCP always emits `%20`; the
- * reference emits raw spaces, which SuccessFactors accepts but which are not
- * valid on an HTTP request line). Then:
- *   1. the two pair lists, each sorted by name, must be byte-identical;
- *   2. every individual option value must be byte-identical between the sides;
- *   3. the MCP side must not contain `%24` (option names carry a literal `$`)
- *      and must not introduce any `+` (a `+` only appears when the input value
- *      itself contains one, so its count must equal the count in the input).
+ * The single agreed divergence is applied to the REFERENCE side only: every
+ * literal space becomes `%20` (the MCP always emits `%20`; the reference emits
+ * raw spaces, which SuccessFactors accepts but which are not valid on an HTTP
+ * request line). The whole strings are then compared directly: no splitting, no
+ * sorting. In addition the MCP side must not contain `%24` (option names carry a
+ * literal `$`) and must not introduce any `+` (a `+` only appears when the input
+ * value itself contains one, so its count must equal the count in the input).
  *
- * Parameter ORDER is deliberately out of scope: SuccessFactors does not depend
- * on the order of query options, and the MCP owns its own deterministic order
- * (`$filter`, `$orderby`, `$select`, `$expand`, ..., `$top`, ..., `$inlinecount`,
- * `$skiptoken`) which differs from the reference order. Effective-dating
- * options (`fromDate`/`toDate`/`asOfDate`) diverge from the backend by design
- * and are not part of the parity scope.
+ * Effective-dating options (`fromDate`/`toDate`/`asOfDate`) and `$skip` have no
+ * reference counterpart: they diverge by design and are not part of the parity
+ * scope, so no case below sets them.
  */
-function toPairs(query: string): Array<[string, string]> {
-  if (query.length === 0) {
-    return [];
-  }
-  return query.split("&").map((part) => {
-    const index = part.indexOf("=");
-    return [part.slice(0, index), part.slice(index + 1)] as [string, string];
-  });
-}
-
-function byName(a: [string, string], b: [string, string]): number {
-  return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
-}
-
 function countOf(text: string, char: string): number {
   return text.split(char).length - 1;
 }
@@ -110,25 +91,12 @@ function toBackendParams(options: QueryOptions): BackendParams {
 
 function assertParity(options: QueryOptions): void {
   const mcpQuery = buildQuery("User", options).pathAndQuery.split("?")[1] ?? "";
-  const backendQuery = backendGetQuery(toBackendParams(options));
+  const backendQuery = backendGetQuery(toBackendParams(options)).replace(/ /g, "%20");
 
-  const mcpPairs = toPairs(mcpQuery);
-  const backendPairs = toPairs(backendQuery).map(
-    ([name, value]) => [name, value.replace(/ /g, "%20")] as [string, string],
-  );
+  // 1. Byte-exact: same options, same bytes, same order.
+  assert.equal(mcpQuery, backendQuery);
 
-  // 1. Same option set, same bytes, order-independent.
-  assert.deepEqual([...mcpPairs].sort(byName), [...backendPairs].sort(byName));
-
-  // 2. Per-option value bytes are identical.
-  assert.equal(mcpPairs.length, backendPairs.length);
-  for (const [name, value] of backendPairs) {
-    const mcp = mcpPairs.find(([mcpName]) => mcpName === name);
-    assert.ok(mcp, `MCP side is missing option ${name}`);
-    assert.equal(mcp[1], value, `value bytes differ for ${name}`);
-  }
-
-  // 3. No percent-encoded `$` and no `+` introduced by the MCP assembly.
+  // 2. No percent-encoded `$` and no `+` introduced by the MCP assembly.
   assert.equal(mcpQuery.includes("%24"), false, "MCP query contains %24");
   const inputPlusCount = [options.filter, options.orderby, options.select, options.expand]
     .map((value) => countOf(value ?? "", "+"))
@@ -165,6 +133,22 @@ const CASES: ParityCase[] = [
       inlinecount: "allpages",
     },
   },
+  {
+    // A plain alphanumeric token is unaffected by percent-encoding, so the
+    // reference (raw) and the MCP (encoded) agree byte for byte.
+    label: "every option together plus an unreserved-only skiptoken",
+    options: {
+      filter: "status eq 'f'",
+      orderby: "startDate desc",
+      select: "userId,firstName",
+      expand: "manager",
+      top: 10,
+      skiptoken: "tok123",
+      inlinecount: "allpages",
+    },
+  },
+  { label: "orderby alone", options: { orderby: "startDate desc" } },
+  { label: "select and top only", options: { select: "userId", top: 3 } },
 ];
 
 for (const { label, options } of CASES) {
@@ -172,23 +156,6 @@ for (const { label, options } of CASES) {
     assertParity(options);
   });
 }
-
-test("parity: the MCP keeps its own order, which differs from the reference order", () => {
-  // Documents why order is out of the parity claim: the two assemblers
-  // legitimately disagree on it while agreeing on the option set and bytes.
-  const options: QueryOptions = {
-    filter: "status eq 'f'",
-    orderby: "startDate desc",
-    select: "userId",
-    expand: "manager",
-    top: 5,
-    inlinecount: "allpages",
-  };
-  const mcpNames = toPairs(buildQuery("User", options).pathAndQuery.split("?")[1] ?? "").map(([n]) => n);
-  const backendNames = toPairs(backendGetQuery(toBackendParams(options))).map(([n]) => n);
-  assert.notDeepEqual(mcpNames, backendNames);
-  assert.deepEqual([...mcpNames].sort(), [...backendNames].sort());
-});
 
 test("parity oracle self-check: the reference keeps spaces literal and the MCP never does", () => {
   const options: QueryOptions = { filter: "status eq 'f'" };
@@ -198,9 +165,17 @@ test("parity oracle self-check: the reference keeps spaces literal and the MCP n
 
 test("parity: a reference mismatch would be detected (guard against a vacuous comparison)", () => {
   // A `+`-encoded space (the pre-fix URLSearchParams shape) must NOT satisfy parity.
-  const backendPairs = toPairs(backendGetQuery({ _filter: "status eq 'f'" })).map(
-    ([name, value]) => [name, value.replace(/ /g, "%20")] as [string, string],
-  );
-  const encodedPairs = toPairs("$filter=status+eq+%27f%27");
-  assert.notDeepEqual([...encodedPairs].sort(byName), [...backendPairs].sort(byName));
+  const backend = backendGetQuery({ _filter: "status eq 'f'" }).replace(/ /g, "%20");
+  assert.notEqual("$filter=status+eq+%27f%27", backend);
+  assert.equal(backend, "$filter=status%20eq%20'f'");
+  // The pre-fix option order must NOT satisfy parity either.
+  const preFixOrder = "$filter=status%20eq%20'f'&$orderby=startDate%20desc&$select=userId&$expand=manager";
+  const reference = backendGetQuery({
+    _filter: "status eq 'f'",
+    _orderby: "startDate desc",
+    _select: "userId",
+    _expand: "manager",
+  }).replace(/ /g, "%20");
+  assert.notEqual(preFixOrder, reference);
+  assert.equal(reference, "$filter=status%20eq%20'f'&$select=userId&$expand=manager&$orderby=startDate%20desc");
 });

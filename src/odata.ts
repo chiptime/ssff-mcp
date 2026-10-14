@@ -163,33 +163,36 @@ export function buildQuery(entityPath: string, options: QueryOptions): BuiltQuer
   // messages state the expected format and never echo the submitted value.
   for (const name of ["fromDate", "toDate", "asOfDate"] as const) {
     const value = options[name];
-    if (value !== undefined && value.length > 0 && !EFFECTIVE_DATE.test(value)) {
+    // An explicitly provided value is never "absent": an empty string is
+    // rejected like any other malformed date, because silently dropping it would
+    // change the effective-dating window and therefore the result set.
+    if (value !== undefined && !EFFECTIVE_DATE.test(value)) {
       throw new SanitizedError("OPTION_INVALID", `${name} must be a date in YYYY-MM-DD format`);
     }
   }
-  if (
-    options.asOfDate !== undefined &&
-    options.asOfDate.length > 0 &&
-    ((options.fromDate !== undefined && options.fromDate.length > 0) ||
-      (options.toDate !== undefined && options.toDate.length > 0))
-  ) {
+  if (options.asOfDate !== undefined && (options.fromDate !== undefined || options.toDate !== undefined)) {
     throw new SanitizedError("OPTION_INVALID", "asOfDate cannot be combined with fromDate or toDate");
   }
 
   const topClamped = top !== undefined && top > RECORD_CEILING;
   const pairs: string[] = [];
-  // $filter/$orderby/$select/$expand bypass URLSearchParams (which would turn
+  // Emission order is BYTE-EXACT with the reference `ODataQuery.getQuery`
+  // (FR-84): $filter, $select, $expand, $top, $skiptoken, $inlinecount,
+  // $orderby. The MCP-only options sit where they cannot disturb that order for
+  // any shared option set: fromDate/toDate/asOfDate after $expand and $skip right
+  // after $top. Full deterministic order:
+  //   $filter, $select, $expand, fromDate, toDate, asOfDate, $top, $skip,
+  //   $skiptoken, $inlinecount, $orderby.
+  // $filter/$select/$expand/$orderby bypass URLSearchParams (which would turn
   // spaces into `+` and percent-encode `'`, `,`, `(`, `/`...). Only spaces are
   // encoded, uniformly as `%20`; every other character is emitted literally.
   addRawIfPresent(pairs, "$filter", options.filter);
-  addRawIfPresent(pairs, "$orderby", options.orderby);
   addRawIfPresent(pairs, "$select", options.select);
   addRawIfPresent(pairs, "$expand", options.expand);
   // Effective-dating options are BARE names: SuccessFactors silently ignores
   // `$fromDate`/`$toDate`/`$asOfDate` and falls back to the active slice. The
   // values are already restricted to YYYY-MM-DD above, so no encoding is needed.
-  // Full emission order (deterministic): $filter, $orderby, $select, $expand,
-  // fromDate, toDate, asOfDate, $top, $skip, $inlinecount, $skiptoken.
+  // They are validated as provided, so only an undefined value is skipped here.
   addRawIfPresent(pairs, "fromDate", options.fromDate);
   addRawIfPresent(pairs, "toDate", options.toDate);
   addRawIfPresent(pairs, "asOfDate", options.asOfDate);
@@ -198,9 +201,6 @@ export function buildQuery(entityPath: string, options: QueryOptions): BuiltQuer
   }
   if (skip !== undefined && skip > 0) {
     pairs.push(`$skip=${skip}`);
-  }
-  if (options.inlinecount === "allpages") {
-    pairs.push("$inlinecount=allpages");
   }
   // The skiptoken is opaque (never interpreted or rewritten, D-27 / A-P2-3) but
   // MUST be percent-encoded: `extractSkiptoken` decodes it through
@@ -211,6 +211,10 @@ export function buildQuery(entityPath: string, options: QueryOptions): BuiltQuer
   if (options.skiptoken !== undefined && options.skiptoken.length > 0) {
     pairs.push(`$skiptoken=${encodeURIComponent(options.skiptoken)}`);
   }
+  if (options.inlinecount === "allpages") {
+    pairs.push("$inlinecount=allpages");
+  }
+  addRawIfPresent(pairs, "$orderby", options.orderby);
 
   const queryString = pairs.join("&");
   return {

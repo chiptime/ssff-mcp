@@ -542,6 +542,41 @@ test("malformed or conflicting effective-dating options yield OPTION_INVALID and
   });
 });
 
+// An explicitly provided effective-dating value is never "absent" (verification
+// B1): empty, whitespace-only and trailing-newline values are OPTION_INVALID on
+// BOTH tools and must not dispatch any request.
+for (const option of ["fromDate", "toDate", "asOfDate"] as const) {
+  for (const [label, submitted] of [
+    ["empty", ""],
+    ["whitespace-only", " "],
+    ["trailing-newline", "2026-10-14\n"],
+  ] as const) {
+    test(`${label} ${option} yields OPTION_INVALID and no dispatch on query_entity and batch_get`, async () => {
+      const configPath = await writeStandardConfig();
+      const { fetch, requests } = recordingFetch(() => xmlResponse(SAMPLE_METADATA_XML));
+      await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+        const requestsBefore = requests.length;
+        const expected = { code: "OPTION_INVALID", message: `${option} must be a date in YYYY-MM-DD format` };
+
+        const single = await callTool(client, "query_entity", {
+          environment: "tenant-a",
+          entityPath: "User",
+          [option]: submitted,
+        });
+        assert.deepEqual(errorPayload(single), expected);
+
+        const batched = await callTool(client, "batch_get", {
+          environment: "tenant-a",
+          requests: [{ entityPath: "User", [option]: submitted }],
+        });
+        assert.deepEqual(errorPayload(batched), expected);
+
+        assert.equal(requests.length, requestsBefore);
+      });
+    });
+  }
+}
+
 test("changed fromDate with the same cursor yields CURSOR_INVALID and no fetch", async () => {
   const configPath = await writeStandardConfig();
   const { fetch, requests } = recordingFetch((url) => {

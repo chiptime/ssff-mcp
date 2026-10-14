@@ -306,7 +306,7 @@ test("spaces in filter/orderby/select/expand are emitted as %20, never as +", ()
   });
   assert.equal(
     built.pathAndQuery,
-    "User?$filter=userId%20eq%20'x'&$orderby=userId%20desc&$select=userId,%20firstName&$expand=manager,%20hr",
+    "User?$filter=userId%20eq%20'x'&$select=userId,%20firstName&$expand=manager,%20hr&$orderby=userId%20desc",
   );
   assert.ok(!built.pathAndQuery.includes("+"));
 });
@@ -328,7 +328,7 @@ test("a literal $ in an option value is not double-encoded and $ option names ar
   assert.ok(!built.pathAndQuery.includes("%24"));
 });
 
-test("option order is filter, orderby, select, expand, top, skip, inlinecount, skiptoken", () => {
+test("option order follows the ODataQuery.getQuery reference: filter, select, expand, top, skip, skiptoken, inlinecount, orderby", () => {
   const built = buildQuery("User", {
     skiptoken: "t",
     inlinecount: "allpages",
@@ -341,7 +341,7 @@ test("option order is filter, orderby, select, expand, top, skip, inlinecount, s
   });
   assert.equal(
     built.pathAndQuery,
-    "User?$filter=f&$orderby=o&$select=s&$expand=e&$top=2&$skip=1&$inlinecount=allpages&$skiptoken=t",
+    "User?$filter=f&$select=s&$expand=e&$top=2&$skip=1&$skiptoken=t&$inlinecount=allpages&$orderby=o",
   );
 });
 
@@ -380,10 +380,44 @@ test("effective-dating options are valid on a key-predicate path", () => {
   assert.equal(built.pathAndQuery, `${path}?fromDate=1970-01-12&toDate=9999-12-31`);
 });
 
-test("empty-string effective-dating values are omitted", () => {
-  assert.equal(buildQuery("EmpJob", { fromDate: "", toDate: "", asOfDate: "" }).pathAndQuery, "EmpJob");
-  // An empty fromDate does not conflict with asOfDate.
-  assert.equal(buildQuery("EmpJob", { fromDate: "", asOfDate: "2024-06-30" }).pathAndQuery, "EmpJob?asOfDate=2024-06-30");
+// An explicitly provided effective-dating value is never "absent": silently
+// dropping it would change the effective-dating window and therefore the result
+// set (verification B1).
+for (const option of ["fromDate", "toDate", "asOfDate"] as const) {
+  for (const [label, submitted] of [
+    ["an empty string", ""],
+    ["a whitespace-only value", " "],
+    ["a trailing-newline value", "2026-10-14\n"],
+  ] as const) {
+    test(`${option} as ${label} is rejected with OPTION_INVALID`, () => {
+      assert.throws(() => buildQuery("EmpJob", { [option]: submitted }), (error: unknown) => {
+        if (!isSanitizedError(error)) {
+          return false;
+        }
+        assert.equal(error.code, "OPTION_INVALID");
+        assert.equal(error.message, `${option} must be a date in YYYY-MM-DD format`);
+        return true;
+      });
+    });
+  }
+}
+
+test("an empty effective-dating value counts as provided in the asOfDate exclusivity check", () => {
+  // The format check runs first, so the empty value is reported as malformed.
+  assert.throws(
+    () => buildQuery("EmpJob", { fromDate: "", asOfDate: "2024-06-30" }),
+    (error: unknown) =>
+      isSanitizedError(error) &&
+      error.code === "OPTION_INVALID" &&
+      error.message === "fromDate must be a date in YYYY-MM-DD format",
+  );
+  assert.throws(
+    () => buildQuery("EmpJob", { toDate: "", asOfDate: "2024-06-30" }),
+    (error: unknown) =>
+      isSanitizedError(error) &&
+      error.code === "OPTION_INVALID" &&
+      error.message === "toDate must be a date in YYYY-MM-DD format",
+  );
 });
 
 for (const option of ["fromDate", "toDate", "asOfDate"] as const) {
@@ -414,7 +448,7 @@ test("effective-dating options are validated before assembly even when other opt
   assert.throws(() => buildQuery("User", { filter: "a eq 1", top: 5, fromDate: "bad" }), optionInvalid());
 });
 
-test("option order places fromDate, toDate and asOfDate between $expand and $top", () => {
+test("option order places fromDate, toDate and asOfDate between $expand and $top, and $orderby last", () => {
   const built = buildQuery("User", {
     skiptoken: "t",
     inlinecount: "allpages",
@@ -428,7 +462,7 @@ test("option order places fromDate, toDate and asOfDate between $expand and $top
   });
   assert.equal(
     built.pathAndQuery,
-    "User?$filter=f&$orderby=o&$select=s&$expand=e&asOfDate=2024-06-30&$top=2&$skip=1&$inlinecount=allpages&$skiptoken=t",
+    "User?$filter=f&$select=s&$expand=e&asOfDate=2024-06-30&$top=2&$skip=1&$skiptoken=t&$inlinecount=allpages&$orderby=o",
   );
   const both = buildQuery("User", { toDate: "9999-12-31", fromDate: "1970-01-12", expand: "e", top: 2 });
   assert.equal(both.pathAndQuery, "User?$expand=e&fromDate=1970-01-12&toDate=9999-12-31&$top=2");
