@@ -9,21 +9,37 @@
 
 import { SanitizedError } from "./errors.js";
 
-/** Maximum UTF-8 size of one result returned to the model (256 KiB). */
+/** Default maximum UTF-8 size of one result returned to the model (256 KiB). */
 export const MAX_RESPONSE_BYTES = 256 * 1024;
+
+/**
+ * Effective cap for this process: `SF_MAX_RESPONSE_BYTES` when it holds a
+ * positive integer, otherwise the 256 KiB default. Mirrors how
+ * `SF_DEFAULT_LOCALE` overrides `defaultLocale` (i18n.ts).
+ */
+export function resolveMaxResponseBytes(): number {
+  const raw = process.env.SF_MAX_RESPONSE_BYTES;
+  if (raw !== undefined && raw.trim() !== "") {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isInteger(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return MAX_RESPONSE_BYTES;
+}
 
 export function responseBytes(text: string): number {
   return Buffer.byteLength(text, "utf8");
 }
 
-export function exceedsResponseCap(text: string): boolean {
-  return responseBytes(text) > MAX_RESPONSE_BYTES;
+export function exceedsResponseCap(text: string, capBytes: number = resolveMaxResponseBytes()): boolean {
+  return responseBytes(text) > capBytes;
 }
 
 /** Sanitized, actionable error: says how to narrow the query, never echoes data. */
-export function responseTooLargeError(text: string): SanitizedError {
+export function responseTooLargeError(text: string, capBytes: number = resolveMaxResponseBytes()): SanitizedError {
   const actualKb = Math.ceil(responseBytes(text) / 1024);
-  const capKb = MAX_RESPONSE_BYTES / 1024;
+  const capKb = Math.ceil(capBytes / 1024);
   return new SanitizedError(
     "RESPONSE_TOO_LARGE",
     `the response is about ${actualKb} KB, above the ${capKb} KB limit for results returned to the model; ` +
