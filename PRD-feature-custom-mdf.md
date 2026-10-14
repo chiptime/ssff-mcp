@@ -6,13 +6,13 @@
 | Fecha | 2026-10-14 |
 | Fuente de decisiones | Requerimiento de integración para consulta de entidades personalizadas de SAP SuccessFactors MDF sobre OData v2 sin desbordar la ventana de contexto del LLM ni alucinar rutas de navegación inexistentes |
 | Idioma | Documento en español neutro profesional; identificadores y términos de código en inglés. Los textos de guía dirigidos al LLM (`warnings`) son **multilingües** en tiempo de ejecución (D-70/FR-75) |
-| Relación con PRD anteriores | **Extiende** `PRD.md` (MVP), `PRD-phase2.md` (Fase 2), `PRD-phase3.md` (Fase 3) y `PRD-phase4.md` (Fase 4), incorporando los requisitos funcionales **FR-67..FR-76**, las decisiones **D-62..D-70** y las implicaciones derivadas **DS-MDF-01..DS-MDF-06**. El bloque **D-53..D-61 / FR-56..FR-66** pertenece a `PRD-feature-picklists.md`, por lo que este documento arranca en **D-62 / FR-67** |
+| Relación con PRD anteriores | **Extiende** `PRD.md` (MVP), `PRD-phase2.md` (Fase 2), `PRD-phase3.md` (Fase 3) y `PRD-phase4.md` (Fase 4), incorporando los requisitos funcionales **FR-67..FR-76** y **FR-86**, las decisiones **D-62..D-70** y **D-75**, y las implicaciones derivadas **DS-MDF-01..DS-MDF-06**. Reparto del ledger: **D-53..D-61 / FR-56..FR-66** → `PRD-feature-picklists.md`; **D-71..D-74 / FR-77..FR-85** → `PRD-feature-odata-query-fidelity.md`. Este documento arranca en **D-62 / FR-67** |
 
 ---
 
 ## 0. Registro de Decisiones (Ledger)
 
-### 0.1 Decisiones confirmadas (D-62..D-70)
+### 0.1 Decisiones confirmadas (D-62..D-70 · D-75)
 
 | ID | Decisión | Origen / Justificación |
 |---|---|---|
@@ -21,10 +21,13 @@
 | **D-64** | **Clasificación semántica de vinculación con empleados (`MdfEmployeeLinkType`)**: El servidor analiza claves y `NavigationProperties` — **excluyendo siempre `createdByNav` y `lastModifiedByNav`** — para categorizar en 6 tipos: `DIRECT_USER_KEY` (clave `externalCode` **o `userId`**, y nav a `User`), `DIRECT_EMPLOYMENT_KEY`, `USER_FIELD_NAVIGATION`, `EMPLOYMENT_FIELD_NAVIGATION`, `COMPOSITE_CHILD` (clave `cust_<Padre>_<campo>` con `<Padre>` custom existente), o `UNLINKED_STANDALONE`. **Medido en PROD (2026-10-14): 38/79 realmente vinculadas; sin excluir las navs de auditoría la regla marcaba las 79.** | Resuelve la opacidad de los nombres técnicos para el modelo de IA. |
 | **D-65** | **Doble canal de exposición MCP (Recursos y Enriquecimiento)**: Exponer **un solo** recurso nuevo, `sf://{env}/mdf/custom` (catálogo compacto y filtrable de Custom MDF), y enriquecer los recursos existentes: el catálogo general `sf://{env}/entities` con los flags booleanos `isEmployeeLinked` e `isEffectiveDated` (el flag `isCustom` ya existe, `src/tools.ts:848`), y el recurso de detalle `sf://{env}/entities/{entitySet}` con los campos aditivos `isCustom`, `isEffectiveDated`, `employeeLink` y `guidance` cuando la entidad sea Custom MDF. **NO se crea un recurso `sf://{env}/mdf/custom/{entitySet}` paralelo**: duplicaría el detalle ya existente. | Evita proliferar superficie MCP: el detalle ya existe y solo se enriquece de forma aditiva, sin romper consumidores. |
 | **D-66** | **Herramienta MCP de introspección asistida (`inspect_custom_mdf`)**: Registrar una herramienta MCP específica (`inspect_custom_mdf`) con argumentos `{ environment?, entitySet?, employeeLinkedOnly? }`. Si `entitySet` está presente, devuelve el esquema y la guía semántica de consulta; si se omite, devuelve el listado compacto de Custom MDF disponibles. | Los clientes LLM en turnos conversacionales exploran más proactivamente vía tools que inspeccionando recursos MCP no pre-cargados. |
-| **D-67** | **Generación de `queryGuidance` semántico para el LLM**: Cada objeto Custom MDF expuesto incluye un bloque `queryGuidance` que indica: la plantilla recomendada de `$filter`, el campo de enlace, si requiere ordenamiento por fecha (`$orderby=effectiveStartDate desc`), advertencias sobre que la navegación inversa desde `User` **existe y es expandible pero devuelve la colección hija completa sin poder acotarse** (medido: 224 registros / 1,75 MB; OData v2 no admite `$select` ni `$top` anidados en `$expand`), y un ejemplo listo para ejecutar con `query_entity`. | Protege la ventana de contexto (DS-MDF-05) y evita las consultas singleton sin clave compuesta. |
+| **D-67** | **Generación de `queryGuidance` semántico para el LLM**: Cada objeto Custom MDF expuesto incluye un bloque `queryGuidance` que indica: la plantilla recomendada de `$filter` (una de las **tres formas verificadas en producción**: `externalCode eq`, `userId eq`, o **segmento de navegación** `<navProp>/userId eq`), el campo de enlace, si requiere ordenamiento por fecha (`$orderby=effectiveStartDate desc` + `$top=1`, con ventana `$fromDate=1970-01-12&toDate=9999-12-31` para el histórico), advertencias sobre que la navegación inversa desde `User` **existe y es expandible pero devuelve la colección hija completa sin poder acotarse** (medido: 224 registros / 1,75 MB; OData v2 no admite `$select` ni `$top` anidados en `$expand`, y el tope de FR-86 la rechazaría), y un ejemplo listo para ejecutar con `query_entity`. | Protege la ventana de contexto (DS-MDF-05) y evita las consultas singleton sin clave compuesta. La forma por segmento de navegación se añadió tras cotejar con el backend de producción (`recruiting-backend`), que la usa para `cust_Prendas` y `cust_UbicacionFisica`. |
 | **D-68** | **Cumplimiento estricto fail-closed de `entityAllowlist`**: Toda entidad `cust_*` excluida por `entityAllowlist` (o si esta es vacía `[]`) es filtrada en los listados y genera un error sanitizado `ENTITY_NOT_ALLOWED` en `inspect_custom_mdf`, en `sf://{env}/mdf/custom` y en el recurso de detalle `sf://{env}/entities/{entitySet}` (que ya lo hace hoy, `src/tools.ts:879-884`). | Principio inmutable de seguridad fail-closed (D-15, D-30, D-35). |
 | **D-69** | **Mapeo explícito de objetos dependientes de fecha (Effective Dating)**: Si la clave primaria contiene `effectiveStartDate` **o `mdfSystemEffectiveStartDate`**, el sistema lo marca como `isEffectiveDated: true`, documenta la necesidad de clave compuesta en singleton y recomienda consultar la colección con `$filter` y `$orderby` en lugar de una ruta de clave única. | Evita errores OData 400/404 al intentar acceder a registros sin fecha efectiva. La segunda variante de campo se detectó empíricamente (2026-10-14). |
 | **D-70** | **`queryGuidance` multilingüe**: el texto de `warnings` (y cualquier prosa de guía) se resuelve en **un único idioma activo**, nunca en todos a la vez. **Manda la elección del usuario**, resuelta por esta precedencia: (1) parámetro `locale` de `inspect_custom_mdf`, que refleja el idioma en que el usuario está hablando; (2) `defaultLocale` de `config.json`, la preferencia declarada por el usuario (FR-76); (3) variable `SF_DEFAULT_LOCALE`; (4) `"en_US"`. El locale efectivo se expone en `guidance.locale`. Las plantillas de `$filter`, el `exampleQuery` y los identificadores OData **no** se traducen. Los recursos MCP, al no admitir parámetros de consulta, usan solo los niveles 2-4. | Alineado con el criterio de localización de `PRD-feature-picklists.md` (D-60). Emitir todos los idiomas a la vez violaría DS-MDF-05 (< 5 KB por entidad). |
+| **D-75** | **Tope de tamaño de respuesta (guard de contexto)**: los tools que devuelven datos (`query_entity`, `batch_get`) DEBEN aplicar un tope de bytes configurable a la respuesta. Superarlo produce un error **saneado y accionable** —que indique cómo acotar con `$select`/`$top`/`$filter`— y nunca una respuesta gigante. El tope es transversal: NO DEBE depender de una lista de entidades conocidas. | Origen: los sondeos de A-MDF-04 midieron **1,75 MB en una sola respuesta** (`User?$expand=cust_GerenteOfcust_centroNav`). Verificado además que `operational-centers`, el backend de producción, **no tiene ningún guard equivalente** (cliente HTTP sin `maxContentLength`). Protege la ventana de contexto del LLM. |
+
+> **Reparto del ledger**: los IDs **D-71..D-74 / FR-77..FR-85** pertenecen a `PRD-feature-odata-query-fidelity.md` (encoding `%20`, gramática de key predicates, paridad, `$fromDate`/`$toDate`). Este documento no los reutiliza.
 
 ---
 
@@ -49,7 +52,7 @@
 * **A-MDF-01** — ✅ **VERIFICADA**: 79/79 (PROD), 87/87 (DEV) y 91/91 (TEST) usan el prefijo `cust_`. **Cero** entidades con `Cust_` en los tres tenants: la alternativa `[cC]` de D-63 se mantiene pero está inactiva.
 * **A-MDF-02** — ⚠️ **PARCIALMENTE FALSA**: `externalCodeNav` **no** es universal; existe en 22/79 (PROD), 24/87 (DEV) y 26/91 (TEST). Además, **toda** entidad custom tiene `createdByNav` y `lastModifiedByNav` apuntando a `User`, que no son vínculo de negocio. La heurística no puede basarse en el nombre `externalCodeNav`.
 * **A-MDF-03** — ✅ **VERIFICADA**: el patrón `cust_<Padre>_<campo>` se cumple, con el padre como entidad custom existente. 15 (PROD), 18 (DEV) y 19 (TEST) hijos compuestos.
-* **A-MDF-04** — ✅ **VERIFICADA en DEV**: los sondeos del 2026-10-14 consultaron datos reales (`cust_centro` y `User`) con la cuenta de API y devolvieron registros, lo que prueba que el usuario dispone de permisos RBP de lectura sobre entidades custom. Pendiente confirmar en PROD, donde la allowlist y los roles pueden diferir.
+* **A-MDF-04** — ✅ **VERIFICADA en DEV**: los sondeos del 2026-10-14 consultaron datos reales (`cust_centro` y `User`) con la cuenta de API y devolvieron registros, lo que prueba que el usuario dispone de permisos RBP de lectura sobre entidades custom. **Efecto colateral medido**: una sola respuesta alcanzó **1,75 MB**, de donde nace D-75/FR-86 (tope de tamaño de respuesta). Pendiente confirmar los permisos en PROD, donde la allowlist y los roles pueden diferir.
 * **A-MDF-05** — ✅ **VERIFICADA**: 658 / 665 / 671 entidades totales, con 12,0% / 13,1% / 13,6% de `cust_*`. Dentro del rango estimado.
 
 ---
@@ -187,14 +190,21 @@ Para cada entidad en `entitySets`:
      (70 falsos positivos frente a 15 hijos reales).
    * **Regla 6 (`UNLINKED_STANDALONE`)**: ninguna de las anteriores.
 5. **Generación de `MdfQueryGuidance`**:
-   * Se construye la plantilla de consulta recomendada:
-     * Si `DIRECT_USER_KEY`: `$filter="externalCode eq '<userId>'"`.
-     * Si `USER_FIELD_NAVIGATION`: `$filter="<fieldName> eq '<userId>'"`.
-     * Si `isEffectiveDated`: se añade recomendación de `$orderby="effectiveStartDate desc"` y
-       advertencia sobre el uso de claves compuestas en singleton.
+   * Plantilla de `$filter` según el tipo de vínculo. Las tres formas están **verificadas en
+     producción** (`recruiting-backend` de operational-centers):
+     * `DIRECT_USER_KEY` con clave `externalCode`: `$filter="externalCode eq '<userId>'"`.
+     * `DIRECT_USER_KEY` con clave `userId`: `$filter="userId eq '<userId>'"`.
+     * `USER_FIELD_NAVIGATION` **por segmento de navegación**: `$filter="<navProp>/userId eq '<userId>'"`.
+       Es la forma que producción usa para entidades como `cust_Prendas`
+       (`$filter=externalCodeNav/userId eq '<id>'`) y `cust_UbicacionFisica`
+       (`$filter=cust_centro/externalCode eq '<id>'`). Filtrar por el nombre del campo escalar
+       puede fallar si la propiedad no existe suelta; el segmento de navegación sí funciona.
+   * Si `isEffectiveDated`: recomendar `$orderby="effectiveStartDate desc"` **más `$top=1`** para
+     obtener el registro vigente, y `$fromDate=1970-01-12&toDate=9999-12-31` para el histórico.
+     Es la forma exacta medida en producción; nótese que `toDate` va **sin** `$`.
    * La advertencia sobre `$expand` en `User` se redacta según el resultado verificado de §3.4:
      la navegación existe y es expandible, pero devuelve la colección hija completa e inacotable
-     (224 registros / 1,75 MB medidos).
+     (224 registros / 1,75 MB medidos), y el tope de FR-86 la rechazaría.
    * El texto de las advertencias se resuelve en el **idioma activo** (D-70/FR-75). Las plantillas
      de `$filter`, el `exampleQuery` y los identificadores OData **no** se traducen.
 
@@ -379,7 +389,7 @@ defaultLocale: z.string().regex(/^[A-Za-z]{2}(-[A-Za-z]{2})?$/).optional(),
 
 ---
 
-## 7. Requisitos Funcionales (FR-67..FR-76)
+## 7. Requisitos Funcionales (FR-67..FR-76 · FR-86)
 
 * **FR-67 (Detección Automática de Custom MDF)**: El sistema DEBE clasificar automáticamente como Custom MDF cualquier entidad cuyo nombre coincida con el patrón `/^[cC]ust_/`.
 * **FR-68 (Clasificación de Vinculación de Empleado)**: El sistema DEBE analizar las claves y `NavigationProperties` de cada entidad Custom MDF para asignar uno de los 6 tipos de `MdfEmployeeLinkType`.
@@ -391,6 +401,7 @@ defaultLocale: z.string().regex(/^[A-Za-z]{2}(-[A-Za-z]{2})?$/).optional(),
 * **FR-74 (Aislamiento de Allowlist)**: Si `entityAllowlist` está configurada, ninguna entidad excluida DEBE ser listada ni inspeccionada a través de las nuevas herramientas o recursos, respondiendo con `ENTITY_NOT_ALLOWED`.
 * **FR-75 (Guía multilingüe)**: El texto de `warnings` DEBE resolverse en **un único idioma activo**, dando prioridad a la elección del usuario, mediante la precedencia `locale` (tool) > `defaultLocale` (`config.json`) > `SF_DEFAULT_LOCALE` > `"en_US"`, exponiendo el locale resuelto en `guidance.locale`. El sistema **NUNCA DEBE** emitir simultáneamente los textos de todos los idiomas. Las plantillas de `$filter`, el `exampleQuery` y los identificadores OData NO se traducen.
 * **FR-76 (Campo `defaultLocale` en la configuración)**: `configSchema` DEBE admitir la clave opcional `defaultLocale` en formato BCP-47 laxo. Sin ella, la validación `.strict()` rechazaría cualquier configuración que la use. Su ausencia DEBE hacer caer la resolución al nivel siguiente de la cadena de FR-75.
+* **FR-86 (Tope de tamaño de respuesta)**: Los tools que devuelven datos de SuccessFactors (`query_entity`, `batch_get`) DEBEN rechazar las respuestas que superen un tope de bytes configurable, devolviendo un error **saneado** que indique cómo acotar la consulta (`$select`, `$top`, `$filter`). El tope NO DEBE basarse en una lista de entidades conocidas: es una defensa transversal que protege la ventana de contexto del LLM.
 
 ---
 
