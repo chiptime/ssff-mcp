@@ -218,4 +218,10 @@ Scenario: Caza E2E de la skill (FR-77..FR-85) [V2+V3]
 - **CERRADA (confirmada)** — Tratamiento `%20` uniforme: aplicar el espacio→`%20` de forma uniforme a `$filter`, `$orderby`, `$select` y `$expand`. **Confirmado uniforme** (D-71, FR-77).
 - **CERRADA (confirmada por el usuario)** — Inclusión de `asOfDate` junto a `fromDate`/`toDate`: nombres bare sin `$`, validación `YYYY-MM-DD`, permitidos también en key predicates, incluidos en el cursor binding (FR-81).
 - **CERRADA (confirmada)** — Versión / nota de cursor: el changelog y la documentación deben registrar que el cursor binding incluye las opciones de effective-dating y que el ensamblado de la query pasa a crudo+`%20` (con la consiguiente invalidación de cursors antiguos, ya tratada en §4).
-- **ASSUMPTION**: el parser de `$batch` de SF decodifica `%XX` exactamente una vez en las URLs internas (evidencia empírica del 2026-10-13; reforzada el 2026-10-14: los nombres bare `fromDate`/`toDate`/`asOfDate` se comportan idéntico en GET directo y dentro de `$batch`; no hay cita de documentación SAP). El humo V2 lo valida con datos reales.
+- **VERIFICADO (2026-10-14, sustituye al supuesto anterior)** — el parser de `$batch` de SF **decodifica `%XX` exactamente una vez en los VALORES de las opciones**, pero **NO decodifica los NOMBRES de opción**: los empareja verbatim. Medido contra `TEST_basic` con `PerPersonal` (`$top=5`, worker `1000001`):
+  - `$batch` con `%20` en valores y `$filter`/`$top` literales → 200, mismo resultado que el GET directo (1 registro).
+  - `$batch` con `+` para el espacio → parte con **400** (SF no trata `+` como espacio en OData v2).
+  - `$batch` con nombres `%24filter`/`%24top` → 200 pero **silenciosamente ignorados: la query se ejecuta SIN FILTRAR** (1000 registros por defecto en lugar de 1). `%24top=5` también es ignorado (1000), mientras `$top=5` se aplica (5).
+  - `$batch` con espacios **crudos** en la request line (patrón de operational-centers) → 200, 1 registro (SF los tolera; no es necesario usarlos).
+  Consecuencia normativa: emitir los nombres de opción con `$` **literal** es obligatorio (FR-77) y `src/batch.ts` no debe reescribir el target interno; el antiguo `replaceAll("%24","$")` es código muerto y muta un `%24` literal dentro de un valor, por lo que se elimina (S10 del feature document).
+

@@ -26,6 +26,9 @@ const PREDICATE_ITEM = `(?:${PAIR}|${LITERAL})`;
 const PREDICATE = `\\(\\s*(?:${PREDICATE_ITEM}(?:\\s*,\\s*${PREDICATE_ITEM})*)?\\s*\\)`;
 const SEGMENT = new RegExp(`^${NAME_PATTERN}(?:${PREDICATE})?$`);
 
+// CR, LF and NUL are never legal in a query option value (FR-80).
+const CONTROL_CHARACTERS = /[\r\n\0]/;
+
 export interface ValidatedPath {
   segments: string[];
   firstSegmentName: string;
@@ -102,7 +105,7 @@ export interface QueryOptions {
   skip?: number;
   /** Adds `$inlinecount=allpages` (the only accepted value, D-31). */
   inlinecount?: "allpages";
-  /** Raw continuation token extracted from a validated cursor (FR-25). Appended verbatim as `$skiptoken`. */
+  /** Opaque continuation token extracted from a validated cursor (FR-25). Percent-encoded as `$skiptoken`. */
   skiptoken?: string;
 }
 
@@ -126,35 +129,54 @@ export function buildQuery(entityPath: string, options: QueryOptions): BuiltQuer
     }
   }
 
+  // Control characters would let a value inject extra HTTP request lines or
+  // headers inside the `$batch` multipart envelope. The message never echoes
+  // the offending value (it may carry business keys).
+  for (const name of ["filter", "orderby", "select", "expand"] as const) {
+    const value = options[name];
+    if (value !== undefined && CONTROL_CHARACTERS.test(value)) {
+      throw new SanitizedError("OPTION_INVALID", `${name} must not contain carriage return, line feed or NUL characters`);
+    }
+  }
+
   const topClamped = top !== undefined && top > RECORD_CEILING;
-  const params = new URLSearchParams();
-  addIfPresent(params, "$filter", options.filter);
-  addIfPresent(params, "$orderby", options.orderby);
-  addIfPresent(params, "$select", options.select);
-  addIfPresent(params, "$expand", options.expand);
+  const pairs: string[] = [];
+  // $filter/$orderby/$select/$expand bypass URLSearchParams (which would turn
+  // spaces into `+` and percent-encode `'`, `,`, `(`, `/`...). Only spaces are
+  // encoded, uniformly as `%20`; every other character is emitted literally.
+  addRawIfPresent(pairs, "$filter", options.filter);
+  addRawIfPresent(pairs, "$orderby", options.orderby);
+  addRawIfPresent(pairs, "$select", options.select);
+  addRawIfPresent(pairs, "$expand", options.expand);
   if (top !== undefined) {
-    params.set("$top", String(topClamped ? RECORD_CEILING : top));
+    pairs.push(`$top=${topClamped ? RECORD_CEILING : top}`);
   }
   if (skip !== undefined && skip > 0) {
-    params.set("$skip", String(skip));
+    pairs.push(`$skip=${skip}`);
   }
   if (options.inlinecount === "allpages") {
-    params.set("$inlinecount", "allpages");
+    pairs.push("$inlinecount=allpages");
   }
-  // The skiptoken is opaque: appended raw (URLSearchParams encodes it), never
-  // interpreted or rewritten (D-27 / A-P2-3).
-  addIfPresent(params, "$skiptoken", options.skiptoken);
+  // The skiptoken is opaque (never interpreted or rewritten, D-27 / A-P2-3) but
+  // MUST be percent-encoded: `extractSkiptoken` decodes it through
+  // `URL.searchParams.get("$skiptoken")`, so the round-trip is only
+  // byte-identical when it is encoded here, and the JSON braces/quotes of a
+  // token such as {"startRow":1000,"endRow":2000} must never break the HTTP
+  // request line inside a `$batch` multipart envelope.
+  if (options.skiptoken !== undefined && options.skiptoken.length > 0) {
+    pairs.push(`$skiptoken=${encodeURIComponent(options.skiptoken)}`);
+  }
 
-  const queryString = params.toString();
+  const queryString = pairs.join("&");
   return {
     pathAndQuery: queryString.length > 0 ? `${entityPath}?${queryString}` : entityPath,
     topClamped,
   };
 }
 
-function addIfPresent(params: URLSearchParams, name: string, value: string | undefined): void {
+function addRawIfPresent(pairs: string[], name: string, value: string | undefined): void {
   if (value !== undefined && value.length > 0) {
-    params.set(name, value);
+    pairs.push(`${name}=${value.replace(/ /g, "%20")}`);
   }
 }
 

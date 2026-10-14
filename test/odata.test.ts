@@ -209,6 +209,92 @@ test("skiptoken values with reserved characters are URL-encoded, not interpreted
   assert.equal(query.get("$skiptoken"), raw);
 });
 
+// --- raw query assembly: %20 spaces, literal reserved chars (FR-77 / FR-78 / FR-80) ---
+// These assertions inspect the RAW pathAndQuery string on purpose: going through
+// URL.searchParams would decode both `+` and `%20` and hide the encoding bug.
+
+test("spaces in filter/orderby/select/expand are emitted as %20, never as +", () => {
+  const built = buildQuery("User", {
+    filter: "userId eq 'x'",
+    orderby: "userId desc",
+    select: "userId, firstName",
+    expand: "manager, hr",
+  });
+  assert.equal(
+    built.pathAndQuery,
+    "User?$filter=userId%20eq%20'x'&$orderby=userId%20desc&$select=userId,%20firstName&$expand=manager,%20hr",
+  );
+  assert.ok(!built.pathAndQuery.includes("+"));
+});
+
+test("a literal + inside a quoted filter value survives verbatim", () => {
+  const built = buildQuery("User", { filter: "name eq 'a+b'" });
+  assert.equal(built.pathAndQuery, "User?$filter=name%20eq%20'a+b'");
+});
+
+test("reserved characters in option values are preserved literally", () => {
+  const filter = "(a eq 'x' and b/c eq 1);d eq 'y,z:w'";
+  const built = buildQuery("User", { filter });
+  assert.equal(built.pathAndQuery, `User?$filter=${filter.replace(/ /g, "%20")}`);
+});
+
+test("a literal $ in an option value is not double-encoded and $ option names are literal", () => {
+  const built = buildQuery("User", { filter: "name eq '$x'", top: 5, skip: 3, inlinecount: "allpages" });
+  assert.equal(built.pathAndQuery, "User?$filter=name%20eq%20'$x'&$top=5&$skip=3&$inlinecount=allpages");
+  assert.ok(!built.pathAndQuery.includes("%24"));
+});
+
+test("option order is filter, orderby, select, expand, top, skip, inlinecount, skiptoken", () => {
+  const built = buildQuery("User", {
+    skiptoken: "t",
+    inlinecount: "allpages",
+    skip: 1,
+    top: 2,
+    expand: "e",
+    select: "s",
+    orderby: "o",
+    filter: "f",
+  });
+  assert.equal(
+    built.pathAndQuery,
+    "User?$filter=f&$orderby=o&$select=s&$expand=e&$top=2&$skip=1&$inlinecount=allpages&$skiptoken=t",
+  );
+});
+
+test("$skiptoken is percent-encoded and round-trips through extractSkiptoken byte-identically", () => {
+  const raw = '{"startRow":1000,"endRow":2000}';
+  const built = buildQuery("User", { skiptoken: raw });
+  assert.equal(built.pathAndQuery, `User?$skiptoken=${encodeURIComponent(raw)}`);
+  assert.ok(!/[{}"]/.test(built.pathAndQuery));
+  assert.equal(extractSkiptoken(`https://x.example.com/odata/v2/${built.pathAndQuery}`), raw);
+});
+
+test("empty skiptoken is not appended", () => {
+  assert.equal(buildQuery("User", { skiptoken: "" }).pathAndQuery, "User");
+});
+
+for (const [label, control] of [
+  ["CR", "\r"],
+  ["LF", "\n"],
+  ["NUL", "\0"],
+] as const) {
+  for (const option of ["filter", "orderby", "select", "expand"] as const) {
+    test(`${option} containing ${label} is rejected with OPTION_INVALID without echoing the value`, () => {
+      const submitted = `secret-business-key${control}GET /evil`;
+      assert.throws(() => buildQuery("User", { [option]: submitted }), (error: unknown) => {
+        if (!isSanitizedError(error)) {
+          return false;
+        }
+        assert.equal(error.code, "OPTION_INVALID");
+        assert.ok(!error.message.includes("secret-business-key"));
+        assert.ok(!error.message.includes("evil"));
+        assert.ok(!error.message.includes(control));
+        return true;
+      });
+    });
+  }
+}
+
 // --- __count / totalCount (FR-26) ----------------------------------------------
 
 test("unwrapODataV2 returns totalCount from d.__count as string or number", () => {

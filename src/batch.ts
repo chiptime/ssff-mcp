@@ -407,23 +407,27 @@ export interface ExecuteBatchOptions {
 }
 
 /**
- * SAP's `$batch` endpoint does not percent-decode the embedded request
- * target: `%24top`/`%24skiptoken` are silently IGNORED inside a batch part
- * (verified live against the tenant, while the outer GET path decodes them
- * fine). URLSearchParams only ever produces `%24` for a literal `$` in option
- * names/values (a literal "%24" in a value is encoded to `%2524` and is
- * untouched), so rewriting `%24` back to `$` makes the embedded request carry
- * exactly the query the direct GET would send after decoding. Without this,
- * `$top`/`$skip`/`$skiptoken` (cursor replay!) would silently no-op in batch.
- */
-function toInnerRequestUrl(url: string): string {
-  return url.replaceAll("%24", "$");
-}
-
-/**
  * Build the GET-only envelope with odata-batch's retrieve mode and dispatch
  * it as the single fixed $batch POST. Returns one parsed response per item,
  * in input order.
+ *
+ * Inner request targets are embedded EXACTLY as `buildQuery` produced them;
+ * there is deliberately no URL rewriting here. The contract, measured live
+ * against a SuccessFactors tenant (odd/tasks/odata-query-fidelity.md, L12):
+ *
+ * - Percent-encoding in option VALUES is decoded once by SAP's batch parser,
+ *   so `%20` for a space behaves identically to a direct GET. (A `+` for a
+ *   space is NOT accepted there: the part answers 400.)
+ * - Option NAMES are matched verbatim, with no decoding. A name that reaches
+ *   the inner request line as `%24filter`/`%24top` is silently IGNORED: the
+ *   part still answers 200 but runs the query unfiltered (1000 default rows
+ *   instead of the filtered one). That is why `buildQuery` must emit every
+ *   system option name with a literal `$`, and why this layer must never
+ *   re-encode the target.
+ *
+ * A blanket `%24` -> `$` rewrite of the whole URL (the previous workaround for
+ * `URLSearchParams` output) is no longer needed and would be harmful: it also
+ * mutates a literal `%24` that a caller placed inside an option value.
  */
 export async function executeBatchGet(options: ExecuteBatchOptions): Promise<BatchResponseParsed[]> {
   const repository = new SsffBatchRepository({
@@ -442,7 +446,7 @@ export async function executeBatchGet(options: ExecuteBatchOptions): Promise<Bat
     {
       url: `${options.env.serviceRoot}$batch`,
       auth: "",
-      retrieve: options.requests.map((call) => ({ url: toInnerRequestUrl(call.url) })),
+      retrieve: options.requests.map((call) => ({ url: call.url })),
       batchResponseType: options.output,
       individualResponseType: options.output,
     },
