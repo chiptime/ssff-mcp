@@ -3,7 +3,7 @@
 | Campo | Valor |
 |---|---|
 | Fecha | 2026-10-13 |
-| Rama / estado git | `main`, **cambios sin commitear** (ver §3). Nada pusheado ni publicado |
+| Rama / estado git | `main`, **todo commiteado y publicado** en `origin/main` (revisado 2026-10-14). npm: `0.2.0` publicado; `0.3.0` en `package.json`, sin publicar |
 | Spec vinculante | [PRD-phase3.md](PRD-phase3.md) (v1.0 CONFIRMED, D-33..D-42, FR-36..FR-47) |
 | Este documento | Estado real de implementación + trabajo restante + decisiones nuevas a registrar |
 | Regla heredada | No hay autorización de publicar a npm ni de commit/push sin petición expresa del usuario (D-10/D-11) |
@@ -18,7 +18,7 @@ Fase 3 = tres bloques priorizados por el usuario (orden de ejecución acordado):
 2. **Secretos** (`fromEnv` / `fromCommand`) — sintaxis tipada Zod (D-39), stateless (D-42).
 3. **MCP Resources** con esquemas de entidad exhaustivos (cardinalidad, D-40).
 
-**Backlog (NO tocar en esta fase):** MCP Prompts HR, detección Custom MDF avanzada, resolución de Picklists, OData v4.
+**Backlog (NO tocar en esta fase):** MCP Prompts HR, detección Custom MDF avanzada, resolución de Picklists, OData v4. **Actualización (2026-10-14):** los cuatro ya tienen PRD propio — `PRD-feature-hr-prompts.md`, `PRD-feature-custom-mdf.md`, `PRD-feature-picklists.md` y `PRD-feature-odata-v4.md` — y el de MDF quedó además verificado empíricamente contra PROD/DEV/TEST.
 
 ## 2. Decisiones nuevas tomadas tras PRD-phase3 v1.0 (REGISTRAR en el PRD)
 
@@ -40,11 +40,11 @@ Fase 3 = tres bloques priorizados por el usuario (orden de ejecución acordado):
 | [src/tools.ts](src/tools.ts) | `ServerDeps.cacheDir/disableDiskCache`; 3 `ResourceTemplate`: `sf://{environment}/overview`, `/entities` (con `isCustom` por prefijo `cust_`, filtrado por allowlist), `/entities/{entitySet}` (allowlist → `ENTITY_NOT_ALLOWED`, inexistente → `RESOURCE_NOT_FOUND`) | Hecho |
 | `test/config.test.ts`, `metadata.test.ts`, `tools.test.ts` | +10 tests config (win32/posix, fromEnv, fromCommand, timeout, oauth), +2 metadata (parser exhaustivo, caché disco TTL), +5 resources | Hecho |
 
-**Estado de tests:** `pnpm test` → 208 tests, **208 OK, 0 FALLAN**.
+**Estado de tests (2026-10-14):** `npm test` → **236 tests, 236 OK, 0 FALLAN**. (208 al cerrar la fase; el resto son de fases posteriores.)
 
 ### Estado: Fase 3 completada
 
-Todos los tests pasan en verde (**208/208**). Se implementaron y verificaron todos los puntos acordados:
+Todos los tests pasan en verde (**236/236** hoy; 208 al cerrar la fase). Se implementaron y verificaron los puntos acordados:
 1. **Prefijos de códigos en errores de resources**: `ENTITY_NOT_ALLOWED: ...`, `RESOURCE_NOT_FOUND: ...` per acuerdo A5.
 2. **Resolución lazy de secretos**: `resolveSecretsFor` por alias de entorno en herramientas y recursos (acuerdo A3).
 3. **Decisiones D-43 y D-44**: Consolidadas en PRD-phase3.md (v1.1) y documentadas en README.md.
@@ -52,31 +52,34 @@ Todos los tests pasan en verde (**208/208**). Se implementaron y verificaron tod
 
 ## 4. Estado de los Bloques (Checklist de Fase 3)
 
+> **Revisado y verificado contra el repo el 2026-10-14.** Las casillas marcadas se
+> comprobaron con evidencia directa; se añaden marcas de estado al resto.
+
 **Bloque 1 — Multiplataforma**
-- [ ] Decidir/ajustar aviso Windows: hoy se emite en **cada** carga de config (spam por tool call); valorar emitirlo una sola vez por proceso.
-- [ ] README: quitar "Linux-only", documentar rutas macOS/Windows y ubicación de caché (`CONFIG_TILDE_PATH` sigue siendo `~/.config/...`; en Windows `os.homedir()`).
-- [ ] CI: matriz GitHub Actions `ubuntu/macos/windows-latest` (hoy no hay workflow en el repo).
-- [ ] FR-44: test explícito de CRLF en el transporte STDIO / cursores HMAC (no implementado ni testeado).
-- [ ] Revisar que ningún test dependa de `chmod`/`0o600` en Windows.
+- [ ] **ABIERTO** — Decidir/ajustar aviso Windows: hoy se emite en **cada** carga de config (spam por tool call). Verificado: `src/config.ts:492-495` no tiene bandera de "una vez por proceso". **Ojo:** `PRD-phase3.md` v1.1 lo daba por hecho; era falso y ya está corregido allí.
+- [x] **HECHO** — README: quitar "Linux-only". Verificado: ya no contiene "Linux-only" ni equivalente.
+- [ ] **ABIERTO** — CI: matriz GitHub Actions `ubuntu/macos/windows-latest`. Verificado: **no existe `.github/workflows`** en el repo.
+- [x] **HECHO** — FR-44: test explícito de CRLF en el transporte STDIO / cursores. Verificado: `test/cursor.test.ts:220`.
+- [ ] **ABIERTO** — Revisar que ningún test dependa de `chmod`/`0o600` en Windows. Verificado: hay `0o600` en 5 ficheros de `test/` (`cli-init`, `tools`, `batch`, `helpers`, `config`), sin guarda `win32` confirmada.
 
 **Bloque 2 — Secretos**
-- [ ] FR-47: test de que el valor resuelto no aparece en logs ni errores (`CONFIG_SECRET_*`).
-- [ ] Test de inyección: argumentos con `& | ;` no ejecutan shell (con `execFile` real, no mock).
-- [ ] Mensaje de `CONFIG_SECRET_TIMEOUT` hardcodea "5000ms": derivar de una constante.
-- [ ] Actualizar `config.template.json` y README (sección Configuración + Security disclosures: ya no todo es texto plano).
-- [ ] Comprobar que `loadConfig` resuelve secretos de **todos** los entornos en cada llamada (coste: un `fromCommand` por entorno por tool call; valorar resolver solo el entorno solicitado — decisión abierta, afecta D-42).
+- [ ] **DUDA** — FR-47: test de que el **valor resuelto** no aparece en logs ni errores. Los tests existentes (`test/config.test.ts:391,405,482`) comprueban el **código** de error, no la ausencia del valor.
+- [ ] **DUDA** — Test de inyección: argumentos con `& | ;` no ejecutan shell. Hay tests de `fromCommand` (`test/config.test.ts:412,440,482`), pero no consta que cubran la inyección ni que usen `execFile` real.
+- [ ] **DUDA** — Mensaje de `CONFIG_SECRET_TIMEOUT` derivado de constante. Verificado que existe `SECRET_COMMAND_TIMEOUT_MS = 5000` (`src/config.ts:225`); **sin verificar** que el mensaje derive de ella.
+- [x] **HECHO** — `config.template.json`: verificado que existe.
+- [x] **HECHO** — Resolver secretos solo del entorno solicitado: implementado (`src/config.ts:522`, opción `resolveSecretsFor`).
 
 **Bloque 3 — Resources**
-- [x] `get_metadata`/descripciones de tool: apuntar a los resources como vía preferida. **CERRADO (2026-10-14)**: se fue más allá — `get_metadata` se **retira** (D-76/D-77, `archive/PRD-feature-remove-get-metadata.md`); el esquema queda solo por los recursos.
-- [ ] Test de caché de disco a nivel `createMcpServer` con `cacheDir` temporal (hoy solo a nivel `MetadataService`).
-- [ ] Tamaño real: validar contra tenant real que `/entities` < 50 KB (658 entidades con `keyProperties` puede excederlo) y `/entities/{name}` < 10 KB; si no, paginar o recortar.
-- [ ] `resources/list` solo lista overview y entities por entorno; los schemas por entidad quedan como template (`list: undefined`): confirmar que es suficiente.
-- [ ] Verificar `isCustom` (`cust_`/`Cust_`) contra convención real de MDF; es heurística (el detalle completo de MDF está en backlog).
+- [x] **HECHO** — `get_metadata`/descripciones de tool: **CERRADO (2026-10-14)**. Se fue más allá: `get_metadata` se **retira** (D-76/D-77, `archive/PRD-feature-remove-get-metadata.md`); el esquema queda solo por los recursos.
+- [x] **HECHO** — Test de caché de disco a nivel `createMcpServer` con `cacheDir` temporal. Verificado: existe en `test/tools.test.ts`.
+- [ ] **ABIERTO** — Tamaño real: validar que `/entities` < 50 KB y `/entities/{name}` < 10 KB. **Sin medir.** Dato disponible hoy: PROD tiene **658** entidades y el catálogo lleva `keyProperties` por entidad.
+- [ ] **ABIERTO** — `resources/list` solo lista overview y entities; los schemas por entidad quedan como template. Verificado: `sf://{env}/entities/{entitySet}` sigue con `list: undefined` (`src/tools.ts:834`). Confirmar que es suficiente.
+- [x] **HECHO** — Verificar `isCustom` (`cust_`/`Cust_`) contra convención real de MDF: **verificado empíricamente**. 79/79 (PROD), 87/87 (DEV) y 91/91 (TEST) usan `cust_`; **cero** `Cust_`. Ver `PRD-feature-custom-mdf.md` §0.3 (A-MDF-01).
 
 **Cierre**
-- [ ] Actualizar PRD-phase3.md con D-43/D-44 y las enmiendas a D-09/D-34; versión v1.1.
-- [ ] Bump de versión (propuesta 0.2.0) **solo si el usuario lo pide**; publicar a npm lo hace el usuario.
-- [ ] `mem_save` de decisiones (disco, secretos) y `mem_session_summary`.
+- [x] **HECHO** — `PRD-phase3.md` con D-43/D-44 y las enmiendas a D-09/D-34; versión v1.1 (con la corrección del aviso ACL de 2026-10-14).
+- [x] **HECHO** — Bump de versión: 0.2.0 publicado; hoy `package.json` está en **0.3.0** (sin publicar a npm).
+- [ ] **DUDA** — `mem_save` de decisiones (disco, secretos) y `mem_session_summary`: no verificable desde el repo.
 
 ## 5. Contexto técnico útil
 
@@ -89,4 +92,4 @@ Todos los tests pasan en verde (**208/208**). Se implementaron y verificaron tod
 
 ## 6. Prompt sugerido para el nuevo chat
 
-> Lee `PRD-phase3.md` y `PRD-phase3-handoff.md` en `/home/bruno/Code/personal/ssff-mcp`. Arregla primero el test fallido de resources (opción A del §3), luego recorre el checklist del §4 bloque a bloque (multiplataforma → secretos → resources), manteniendo `pnpm test` en verde. No hagas commit, push ni publish sin que te lo pida.
+> Lee `PRD-phase3.md` y `PRD-phase3-handoff.md` en `/home/bruno/Code/personal/ssff-mcp`. La Fase 3 está entregada; lo que queda es el checklist del §4. Ataca **solo las casillas ABIERTO**, en este orden: (1) CI — no existe `.github/workflows`; (2) aviso Windows una vez por proceso; (3) tamaño real de los recursos de catálogo (`/entities` contra 658 entidades); (4) guarda `win32` en los tests que usan `0o600`; (5) los tres tests de secretos marcados como DUDA. Mantén `pnpm test` en verde (hoy 236/236). No hagas commit, push ni publish sin que te lo pida.

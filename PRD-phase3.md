@@ -12,7 +12,7 @@
 |---|---|
 | v0.1 | Especificación inicial de Fase 3: Recursos MCP, multiplataforma y gestión de credenciales. |
 | v1.0 | Cierre de grill-me: esquema exhaustivo con cardinalidad para recursos (D-40), tipado estricto Zod para secretos (D-39), validación tolerante en Windows (D-41) y resolución stateless para fromCommand (D-42). |
-| v1.1 | Adopción de caché en disco local con TTL 24h (D-43/D-44), resolución lazy de secretos por alias (A3/D-42), permisos de caché 0700/0600 (A1), aviso ACL Windows una vez por proceso (A4) y prefijos de código en errores de recursos (A5). |
+| v1.1 | Adopción de caché en disco local con TTL 24h (D-43/D-44), resolución lazy de secretos por alias (A3/D-42), permisos de caché 0700/0600 (A1), prefijos de código en errores de recursos (A5). **Corrección (2026-10-14)**: el «aviso ACL Windows **una vez por proceso**» (A4) **NO está implementado** — `src/config.ts:492-495` emite el aviso en **cada** carga de configuración, y la config se relee en cada tool call. Queda como pendiente abierto en `PRD-phase3-handoff.md` §4. |
 
 Este documento consolida las especificaciones y contratos de la Fase 3. Ninguna parte autoriza a escribir código, publicar o cambiar licencia (D-10/D-11 siguen vigentes). **MUST / MUST NOT / SHOULD / MAY** según RFC 2119.
 
