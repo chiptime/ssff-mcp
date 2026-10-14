@@ -1,6 +1,6 @@
 # ssff-mcp
 
-A local, **read-only** MCP (Model Context Protocol) server for **SAP SuccessFactors OData v2**, communicating with the MCP host exclusively over **STDIO**. It exposes four tools (`list_environments`, `get_metadata`, `query_entity`, `batch_get`); data reads dispatch exactly one HTTPS GET per call, and `batch_get` dispatches exactly one HTTPS POST to the fixed `$batch` endpoint with a GET-only multipart envelope — with the read-only frontier enforced in server code, never in prompts.
+A local, **read-only** MCP (Model Context Protocol) server for **SAP SuccessFactors OData v2**, communicating with the MCP host exclusively over **STDIO**. It exposes three tools (`list_environments`, `query_entity`, `batch_get`); data reads dispatch exactly one HTTPS GET per call, and `batch_get` dispatches exactly one HTTPS POST to the fixed `$batch` endpoint with a GET-only multipart envelope — with the read-only frontier enforced in server code, never in prompts.
 
 **Status:** MIT licensed and **published on npm** ([ssff-mcp](https://www.npmjs.com/package/ssff-mcp)). Cross-platform (Linux, macOS, Windows); OpenCode is the first target client.
 
@@ -110,7 +110,7 @@ Semantics:
 - **`[]` (empty array)** — a configured deny-all: every `query_entity` call is rejected. Deliberate fail-closed behavior, not "no allowlist".
 - **`protocols`** — omitted = both protocols; `["v2"]` = v2 only. This phase is v2-only, so an entry whose `protocols` exclude `"v2"` (for example `["v4"]`) is **denied** — without v4 there is no available protocol for that entity.
 - **Navigation** — only the first path segment is checked: once a query starts from a listed entity, navigation segments after it (`User('123')/navProperty`) are not re-checked.
-- **`get_metadata` is never filtered** by the allowlist; it always returns the raw, complete `$metadata` document.
+- **Every metadata path visible to the model is allowlist-filtered**: the entity catalog and the per-entity schema resources apply the allowlist exactly like a data read.
 
 ```json
 {
@@ -204,10 +204,6 @@ In addition to tools, `ssff-mcp` exposes read-only MCP resources for inspecting 
 
 Returns `{ environments: [{ alias, authType }] }` — aliases and auth type only. No URLs, no credentials. No network access.
 
-### `get_metadata` — arguments: `{ environment }`
-
-Fetches `{serviceRoot}/$metadata` (GET, `Accept: application/xml`, 60s timeout) and returns the **raw, unfiltered XML document** as text. **Warning:** the full metadata can be very large (thousands of entity types); prefer `query_entity` for targeted data.
-
 ### `query_entity` — arguments
 
 | Argument | Maps to | Constraints |
@@ -282,8 +278,8 @@ Resolutions of the PRD open points, as recorded in the feature decision log:
 
 - **Q-1 (config schema + template name):** MVP schema is the illustrative skeleton from PRD C.1 — `environments.<alias>.baseUrl` plus `auth { type, username, password }`, with `defaultEnvironment` required to be null/absent. Template file name: `config.template.json`.
 - **Q-2 (MVP query option subset):** `$filter`, `$orderby`, `$select`, `$expand`, `$top`, `$skip` are exposed as typed tool fields (`filter`, `orderby`, `select`, `expand`, `top`, `skip`). Unknown option names are structurally rejected (schema-typed input, no passthrough map). Raw values pass through unmodified.
-- **A-1 (tool names):** `list_environments` (read-only, aliases only — helps fail-closed environment UX), `get_metadata`, `query_entity`.
-- **Metadata caching (D-43 / D-44):** 10-minute in-memory cache plus 24-hour local disk cache storing parsed JSON schema indices under the OS cache directory (`~/.cache/ssff-mcp`, `~/Library/Caches/ssff-mcp`, `%LOCALAPPDATA%\ssff-mcp\cache`). `get_metadata` itself always hits the source fresh and never uses this cache.
+- **A-1 (tool names):** `list_environments` (read-only, aliases only — helps fail-closed environment UX), `query_entity`, `batch_get`. `get_metadata` was **retired** (see `PRD-feature-remove-get-metadata.md`): it returned the raw EDMX to the model and was the only path that bypassed the metadata cache.
+- **Metadata caching (D-43 / D-44):** 10-minute in-memory cache plus 24-hour local disk cache storing parsed JSON schema indices under the OS cache directory (`~/.cache/ssff-mcp`, `~/Library/Caches/ssff-mcp`, `%LOCALAPPDATA%\ssff-mcp\cache`). Every metadata path visible to the model reads through this cache; the retired `get_metadata` tool was the only exception.
 - **Ceiling semantics:** `$top` above 1000 is clamped to 1000 (flagged in the response); responses are truncated to 1000 records if a service ever returns more (DS-10 defense in depth). Exactly one page / one data fetch per call; `__next` is never followed, only reported as `hasMore`.
 
 ## Testing

@@ -1,6 +1,5 @@
 /**
- * MCP tool registrations: list_environments, get_metadata, query_entity,
- * batch_get.
+ * MCP tool registrations: list_environments, query_entity, batch_get.
  *
  * Contract enforced here:
  * - Explicit environment per request, fail-closed (ENVIRONMENT_REQUIRED /
@@ -35,17 +34,10 @@ import {
   validateEntityPath,
 } from "./odata.js";
 
-const METADATA_TOOL_TIMEOUT_MS = 60_000;
 const QUERY_TOOL_TIMEOUT_MS = 30_000;
 const BATCH_TOOL_TIMEOUT_MS = 120_000;
 /** SAP $batch hard limit: max embedded requests per batch (D-28/R9). */
 export const MAX_BATCH_REQUESTS = 180;
-
-export const GET_METADATA_DESCRIPTION = [
-  "Retrieves the raw OData v2 $metadata XML document for the selected environment.",
-  "WARNING: the full metadata document can be very large (thousands of entity types);",
-  "prefer query_entity for targeted data and use this tool only when the schema itself is needed.",
-].join(" ");
 
 export const QUERY_ENTITY_DESCRIPTION = [
   "Reads entity data from SAP SuccessFactors OData v2 for the selected environment.",
@@ -102,12 +94,6 @@ const EFFECTIVE_AS_OF_DESCRIPTION =
   "(not $-prefixed). Cannot be combined with fromDate or toDate.";
 
 const environmentArg = z.string().optional();
-
-const getMetadataSchema = z
-  .object({
-    environment: environmentArg,
-  })
-  .strict();
 
 const queryEntitySchema = z
   .object({
@@ -407,31 +393,6 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           .map((alias) => ({ alias, authType: environments[alias]!.auth.type }));
         const structured = { environments: list };
         return { structured, text: JSON.stringify(structured, null, 2) };
-      }),
-  );
-
-  server.registerTool(
-    "get_metadata",
-    {
-      title: "Get OData v2 $metadata",
-      description: GET_METADATA_DESCRIPTION,
-      inputSchema: getMetadataSchema,
-    },
-    async (args) =>
-      await executeTool("get_metadata", args.environment, async () => {
-        const { environments, inline } = await loadFreshConfig(args.environment);
-        const { alias, env } = resolveEnvironment(environments, args.environment, inline);
-        // Always fresh from the source; the metadata cache is never used here.
-        const result = await dispatchGet(envTargetFor(env, alias), "$metadata", {
-          accept: "application/xml",
-          timeoutMs: METADATA_TOOL_TIMEOUT_MS,
-          fetchImpl,
-          now: deps.now,
-        });
-        return {
-          structured: { environment: alias, contentType: "xml" },
-          text: result.body,
-        };
       }),
   );
 

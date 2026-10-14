@@ -86,7 +86,7 @@ Este cambio **contradice un requisito vigente**, y hay que enmendarlo explícita
 | **FR-88** (MUST) | El esquema DEBE seguir siendo accesible por los recursos `sf://{env}/entities` y `sf://{env}/entities/{entitySet}`, leyendo de la caché de D-43/D-44 y **sin** provocar una descarga fresca cuando la caché es válida. La allowlist DEBE seguir aplicándose como hoy (`src/tools.ts:839-841`, `:879-884`). |
 | **FR-89** (MUST) | Los tests de `get_metadata` (`test/tools.test.ts:70`, `:800`; `test/inline-tools.test.ts:65`) DEBEN eliminarse y sustituirse por un test que verifique que la tool **no** está registrada y que `tools/list` no la incluye. |
 | **FR-90** (MUST) | La documentación DEBE actualizarse: se retira la sección del README, se anota la derogación de FR-04 en `PRD.md` y se marca como cerrado el pendiente de `PRD-phase3-handoff.md:70`. |
-| **FR-91** (SHOULD) | El cambio DEBE acompañarse de un bump de versión **rupturista** (0.2.0 → 0.3.0) y una nota de changelog que diga explícitamente que la tool se retiró y cuál es la vía sustituta. |
+| **FR-91** (SHOULD) | El cambio DEBE acompañarse de un bump de versión **rupturista** (0.2.0 → 0.3.0) y una nota de changelog que diga explícitamente que la tool se retiró y cuál es la vía sustituta. **Cumplido (2026-10-14)**: `package.json` en `0.3.0` y `CHANGELOG.md` creado con la nota de ruptura, la vía sustituta y una nota de reconstrucción (el repo no tiene tags, así que las versiones anteriores son inferidas). |
 
 ---
 
@@ -137,5 +137,13 @@ Scenario: La allowlist sigue fail-closed en los recursos (FR-88) [V1]
 
 ## 9. Preguntas abiertas
 
-- **OPEN QUESTION**: ¿bump a **0.3.0** (rupturista en semver 0.x) o directo a **1.0.0**? Recomendación por defecto: 0.3.0.
+- **RESUELTO (2026-10-14)**: versión **0.3.0** (rupturista en semver 0.x). `CHANGELOG.md` creado; el gap de FR-91 queda cerrado.
 - **ASSUMPTION**: ningún consumidor externo publicado invoca `get_metadata`. Verificado solo contra la skill local y el propio repositorio; no hay telemetría de uso del paquete npm.
+
+## 10. Cierre
+
+Implementado y verificado (2026-10-14):
+- Retirada aplicada en `src/tools.ts` y comentario de `src/metadata.ts`; tests adaptados (3 eliminados, 1 añadido que fija el conjunto exacto de tools).
+- **Verificación independiente: `approved-with-advisories`, cero blockers.** `tools/list` devuelve exactamente `[batch_get, list_environments, query_entity]`; llamar a `get_metadata` da error; sin huérfanos; los recursos de esquema siguen aplicando allowlist y, con caché caliente, hacen cero peticiones de red.
+- 236 tests en verde, `tsc --noEmit` limpio.
+- El advisory de FR-91 (no existía changelog) queda **cerrado** con la creación de `CHANGELOG.md`.

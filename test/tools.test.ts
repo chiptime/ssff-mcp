@@ -67,19 +67,13 @@ test("configuration is re-read on every call (stateless)", async () => {
   });
 });
 
-test("get_metadata returns the raw XML document from the source (no cache)", async () => {
+test("get_metadata is no longer registered", async () => {
   const configPath = await writeStandardConfig();
-  const { fetch, requests } = recordingFetch(() => xmlResponse(SAMPLE_METADATA_XML));
-  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
-    const result = await callTool(client, "get_metadata", { environment: "tenant-a" });
-    assert.equal(result.isError, undefined);
-    assert.equal(result.content[0]!.type, "text");
-    assert.equal((result.content[0] as { text: string }).text, SAMPLE_METADATA_XML);
-    assert.deepEqual(result.structuredContent, { environment: "tenant-a", contentType: "xml" });
-    assert.equal(requests.length, 1);
-    assert.ok(requests[0]!.url.endsWith("/$metadata"));
-    assert.equal(requests[0]!.headers.Accept, "application/xml");
-    assert.equal(requests[0]!.method, "GET");
+  await withTestServer({ configPath }, async (client) => {
+    const { tools } = await client.listTools();
+    const names = tools.map((tool) => tool.name).sort();
+    assert.deepEqual(names, ["batch_get", "list_environments", "query_entity"]);
+    assert.equal(names.includes("get_metadata"), false);
   });
 });
 
@@ -977,18 +971,6 @@ test("an empty allowlist array is a configured deny-all for query_entity", async
       assert.equal(errorPayload(result).code, "ENTITY_NOT_ALLOWED", entityPath);
     }
     assert.equal(requests.length, 0);
-  });
-});
-
-test("get_metadata is never filtered by the allowlist, even a deny-all one", async () => {
-  const configPath = await writeConfigFile(allowlistConfigJson([]), { mode: 0o600 });
-  const { fetch, requests } = recordingFetch((url) => xmlResponse(SAMPLE_METADATA_XML));
-  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
-    const result = await callTool(client, "get_metadata", { environment: "tenant-a" });
-    assert.equal(result.isError, undefined);
-    assert.equal((result.content[0] as { text: string }).text, SAMPLE_METADATA_XML);
-    assert.equal(requests.length, 1);
-    assert.ok(requests[0]!.url.endsWith("/$metadata"));
   });
 });
 

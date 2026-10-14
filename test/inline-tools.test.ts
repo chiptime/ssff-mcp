@@ -62,19 +62,6 @@ test("inline: query_entity accepts an omitted environment and resolves the inlin
   });
 });
 
-test("inline: get_metadata accepts an omitted environment and resolves the inline alias", async () => {
-  await withEnv({ ...INLINE_ENV }, async () => {
-    const { fetch } = recordingFetch(standardSfResponder({ d: {} }));
-    await withTestServer({ configPath: missingPath(), fetchImpl: fetch }, async (client) => {
-      const omitted = await callTool(client, "get_metadata", {});
-      const explicit = await callTool(client, "get_metadata", { environment: "default" });
-      assert.equal(omitted.isError ?? false, false);
-      assert.deepEqual(omitted.structuredContent, explicit.structuredContent);
-      assert.equal((omitted.structuredContent as { environment?: string }).environment, "default");
-    });
-  });
-});
-
 test("inline: batch_get accepts an omitted environment and resolves the inline alias", async () => {
   await withEnv({ ...INLINE_ENV }, async () => {
     const { fetch } = recordingFetch(standardSfResponder({ d: {} }));
