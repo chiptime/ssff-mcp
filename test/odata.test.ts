@@ -357,6 +357,83 @@ test("empty skiptoken is not appended", () => {
   assert.equal(buildQuery("User", { skiptoken: "" }).pathAndQuery, "User");
 });
 
+// --- effective-dating options: bare fromDate/toDate/asOfDate (FR-81 / S5) ------
+// SuccessFactors silently ignores `$fromDate`/`$toDate`/`$asOfDate`; only the
+// bare names are honoured, so these assertions inspect the RAW string.
+
+test("fromDate and toDate are emitted bare, never with a $ prefix", () => {
+  const built = buildQuery("EmpJob", { fromDate: "1970-01-12", toDate: "9999-12-31" });
+  assert.equal(built.pathAndQuery, "EmpJob?fromDate=1970-01-12&toDate=9999-12-31");
+  assert.ok(!built.pathAndQuery.includes("$fromDate"));
+  assert.ok(!built.pathAndQuery.includes("$toDate"));
+});
+
+test("asOfDate is emitted bare, never with a $ prefix", () => {
+  const built = buildQuery("EmpJob", { asOfDate: "2024-06-30" });
+  assert.equal(built.pathAndQuery, "EmpJob?asOfDate=2024-06-30");
+  assert.ok(!built.pathAndQuery.includes("$asOfDate"));
+});
+
+test("effective-dating options are valid on a key-predicate path", () => {
+  const path = "EmpJob(seqNumber=1L,startDate=datetime'2013-01-01T00:00:00',userId='1000001')";
+  const built = buildQuery(path, { fromDate: "1970-01-12", toDate: "9999-12-31" });
+  assert.equal(built.pathAndQuery, `${path}?fromDate=1970-01-12&toDate=9999-12-31`);
+});
+
+test("empty-string effective-dating values are omitted", () => {
+  assert.equal(buildQuery("EmpJob", { fromDate: "", toDate: "", asOfDate: "" }).pathAndQuery, "EmpJob");
+  // An empty fromDate does not conflict with asOfDate.
+  assert.equal(buildQuery("EmpJob", { fromDate: "", asOfDate: "2024-06-30" }).pathAndQuery, "EmpJob?asOfDate=2024-06-30");
+});
+
+for (const option of ["fromDate", "toDate", "asOfDate"] as const) {
+  for (const submitted of ["1970-1-12", "01-01-1970", "19700112"]) {
+    test(`${option} "${submitted}" is rejected with OPTION_INVALID without echoing the value`, () => {
+      assert.throws(() => buildQuery("EmpJob", { [option]: submitted }), (error: unknown) => {
+        if (!isSanitizedError(error)) {
+          return false;
+        }
+        assert.equal(error.code, "OPTION_INVALID");
+        assert.ok(error.message.includes("YYYY-MM-DD"));
+        assert.ok(!error.message.includes(submitted));
+        return true;
+      });
+    });
+  }
+}
+
+test("asOfDate combined with fromDate is rejected with OPTION_INVALID", () => {
+  assert.throws(() => buildQuery("EmpJob", { asOfDate: "2024-06-30", fromDate: "1970-01-12" }), optionInvalid());
+});
+
+test("asOfDate combined with toDate is rejected with OPTION_INVALID", () => {
+  assert.throws(() => buildQuery("EmpJob", { asOfDate: "2024-06-30", toDate: "9999-12-31" }), optionInvalid());
+});
+
+test("effective-dating options are validated before assembly even when other options are fine", () => {
+  assert.throws(() => buildQuery("User", { filter: "a eq 1", top: 5, fromDate: "bad" }), optionInvalid());
+});
+
+test("option order places fromDate, toDate and asOfDate between $expand and $top", () => {
+  const built = buildQuery("User", {
+    skiptoken: "t",
+    inlinecount: "allpages",
+    skip: 1,
+    top: 2,
+    asOfDate: "2024-06-30",
+    expand: "e",
+    select: "s",
+    orderby: "o",
+    filter: "f",
+  });
+  assert.equal(
+    built.pathAndQuery,
+    "User?$filter=f&$orderby=o&$select=s&$expand=e&asOfDate=2024-06-30&$top=2&$skip=1&$inlinecount=allpages&$skiptoken=t",
+  );
+  const both = buildQuery("User", { toDate: "9999-12-31", fromDate: "1970-01-12", expand: "e", top: 2 });
+  assert.equal(both.pathAndQuery, "User?$expand=e&fromDate=1970-01-12&toDate=9999-12-31&$top=2");
+});
+
 for (const [label, control] of [
   ["CR", "\r"],
   ["LF", "\n"],

@@ -40,6 +40,9 @@ const SEGMENT = new RegExp(`^${NAME_PATTERN}(?:${PREDICATE})?$`, "i");
 // CR, LF and NUL are never legal in a query option value (FR-80).
 const CONTROL_CHARACTERS = /[\r\n\0]/;
 
+// Effective-dating option values (fromDate/toDate/asOfDate) are plain dates.
+const EFFECTIVE_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
 export interface ValidatedPath {
   segments: string[];
   firstSegmentName: string;
@@ -112,6 +115,12 @@ export interface QueryOptions {
   orderby?: string;
   select?: string;
   expand?: string;
+  /** Effective-dating window start (`YYYY-MM-DD`). Emitted BARE (`fromDate=`), never `$fromDate`. */
+  fromDate?: string;
+  /** Effective-dating window end (`YYYY-MM-DD`). Emitted BARE (`toDate=`), never `$toDate`. */
+  toDate?: string;
+  /** Effective-dating point in time (`YYYY-MM-DD`). Emitted BARE; mutually exclusive with fromDate/toDate. */
+  asOfDate?: string;
   top?: number;
   skip?: number;
   /** Adds `$inlinecount=allpages` (the only accepted value, D-31). */
@@ -150,6 +159,23 @@ export function buildQuery(entityPath: string, options: QueryOptions): BuiltQuer
     }
   }
 
+  // Effective-dating options are validated before anything is assembled. The
+  // messages state the expected format and never echo the submitted value.
+  for (const name of ["fromDate", "toDate", "asOfDate"] as const) {
+    const value = options[name];
+    if (value !== undefined && value.length > 0 && !EFFECTIVE_DATE.test(value)) {
+      throw new SanitizedError("OPTION_INVALID", `${name} must be a date in YYYY-MM-DD format`);
+    }
+  }
+  if (
+    options.asOfDate !== undefined &&
+    options.asOfDate.length > 0 &&
+    ((options.fromDate !== undefined && options.fromDate.length > 0) ||
+      (options.toDate !== undefined && options.toDate.length > 0))
+  ) {
+    throw new SanitizedError("OPTION_INVALID", "asOfDate cannot be combined with fromDate or toDate");
+  }
+
   const topClamped = top !== undefined && top > RECORD_CEILING;
   const pairs: string[] = [];
   // $filter/$orderby/$select/$expand bypass URLSearchParams (which would turn
@@ -159,6 +185,14 @@ export function buildQuery(entityPath: string, options: QueryOptions): BuiltQuer
   addRawIfPresent(pairs, "$orderby", options.orderby);
   addRawIfPresent(pairs, "$select", options.select);
   addRawIfPresent(pairs, "$expand", options.expand);
+  // Effective-dating options are BARE names: SuccessFactors silently ignores
+  // `$fromDate`/`$toDate`/`$asOfDate` and falls back to the active slice. The
+  // values are already restricted to YYYY-MM-DD above, so no encoding is needed.
+  // Full emission order (deterministic): $filter, $orderby, $select, $expand,
+  // fromDate, toDate, asOfDate, $top, $skip, $inlinecount, $skiptoken.
+  addRawIfPresent(pairs, "fromDate", options.fromDate);
+  addRawIfPresent(pairs, "toDate", options.toDate);
+  addRawIfPresent(pairs, "asOfDate", options.asOfDate);
   if (top !== undefined) {
     pairs.push(`$top=${topClamped ? RECORD_CEILING : top}`);
   }
