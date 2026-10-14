@@ -7,7 +7,7 @@
  * - Caches parsed metadata in memory (10 min TTL) and on local disk with TTL
  *   (24 hours default) under the OS cache directory (~/.cache/ssff-mcp on Linux).
  * - No tool bypasses this cache: the former `get_metadata` tool was retired
- *   (PRD-feature-remove-get-metadata.md), so every LLM-facing path reads here.
+ *   (archive/PRD-feature-remove-get-metadata.md), so every LLM-facing path reads here.
  */
 
 import { promises as fs } from "node:fs";

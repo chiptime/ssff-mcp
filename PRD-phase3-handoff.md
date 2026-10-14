@@ -67,7 +67,7 @@ Todos los tests pasan en verde (**208/208**). Se implementaron y verificaron tod
 - [ ] Comprobar que `loadConfig` resuelve secretos de **todos** los entornos en cada llamada (coste: un `fromCommand` por entorno por tool call; valorar resolver solo el entorno solicitado — decisión abierta, afecta D-42).
 
 **Bloque 3 — Resources**
-- [x] `get_metadata`/descripciones de tool: apuntar a los resources como vía preferida. **CERRADO (2026-10-14)**: se fue más allá — `get_metadata` se **retira** (D-76/D-77, `PRD-feature-remove-get-metadata.md`); el esquema queda solo por los recursos.
+- [x] `get_metadata`/descripciones de tool: apuntar a los resources como vía preferida. **CERRADO (2026-10-14)**: se fue más allá — `get_metadata` se **retira** (D-76/D-77, `archive/PRD-feature-remove-get-metadata.md`); el esquema queda solo por los recursos.
 - [ ] Test de caché de disco a nivel `createMcpServer` con `cacheDir` temporal (hoy solo a nivel `MetadataService`).
 - [ ] Tamaño real: validar contra tenant real que `/entities` < 50 KB (658 entidades con `keyProperties` puede excederlo) y `/entities/{name}` < 10 KB; si no, paginar o recortar.
 - [ ] `resources/list` solo lista overview y entities por entorno; los schemas por entidad quedan como template (`list: undefined`): confirmar que es suficiente.

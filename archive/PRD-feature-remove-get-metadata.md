@@ -4,7 +4,7 @@
 |---|---|
 | **Documento** | PRD-feature-remove-get-metadata.md |
 | **Versión** | v0.1 |
-| **Estado** | BORRADOR (DRAFT) — pendiente de aprobación; no autoriza implementación |
+| **Estado** | **ARCHIVADO** — implementado, verificado de forma independiente y mergeado en `main` (v0.3.0). Se conserva como registro histórico. |
 | **Fecha** | 2026-10-14 |
 | **Motivo** | `get_metadata` devuelve el `$metadata` XML crudo (~7,5 MB) al LLM y además **se salta la caché** de metadatos (D-43/D-44). Es el mayor footgun de contexto del servidor y su valor real para un modelo es nulo. |
 | **Alineación previa** | `PRD.md` (D-01..D-25), `PRD-phase2.md` (D-26..D-32), `PRD-phase3.md` (D-33..D-44), `PRD-phase4.md` (D-45..D-52), `PRD-feature-picklists.md` (D-53..D-61), `PRD-feature-custom-mdf.md` (D-62..D-70, D-75), `PRD-feature-odata-query-fidelity.md` (D-71..D-74). Este documento arranca en **D-76 / FR-87**. |

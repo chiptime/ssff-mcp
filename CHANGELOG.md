@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **Migration:** read the schema from the `sf://{env}/entities` catalog resource or the
   `sf://{env}/entities/{entitySet}` resource instead. Both read through the cache and
   apply the `entityAllowlist`.
-  See `PRD-feature-remove-get-metadata.md` (D-76/D-77).
+  See `archive/PRD-feature-remove-get-metadata.md` (D-76/D-77).
 
 ### Changed
 
