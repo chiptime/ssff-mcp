@@ -96,6 +96,25 @@ test("the listing also states the active locale", async () => {
   });
 });
 
+test("S9: employeeLinkedOnly is rejected when entitySet is given instead of being silently ignored", async () => {
+  const { fetch } = responder();
+  await withTestServer({ configPath: await configPathFor(), fetchImpl: fetch }, async (client) => {
+    const result = await callTool(client, "inspect_custom_mdf", {
+      environment: "tenant-a",
+      entitySet: "cust_Catalogo",
+      employeeLinkedOnly: true,
+    });
+    assert.equal(errorPayload(result).code, "OPTION_INVALID");
+    // Explicit false is the default and stays harmless.
+    const ok = await callTool(client, "inspect_custom_mdf", {
+      environment: "tenant-a",
+      entitySet: "cust_Catalogo",
+      employeeLinkedOnly: false,
+    });
+    assert.ok(!ok.isError);
+  });
+});
+
 test("a denied entity is ENTITY_NOT_ALLOWED and an empty allowlist denies everything", async () => {
   const { fetch } = responder();
   await withTestServer({ configPath: await configPathFor({ entityAllowlist: [{ entity: "User" }] }), fetchImpl: fetch }, async (client) => {

@@ -405,6 +405,14 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         const locale = resolveLocale({ tool: args.locale, config: defaultLocale, env: envVars.SF_DEFAULT_LOCALE });
 
         if (args.entitySet !== undefined) {
+          // employeeLinkedOnly only filters the listing; rejecting it here avoids
+          // silently ignoring an explicitly provided option.
+          if (args.employeeLinkedOnly === true) {
+            throw new SanitizedError(
+              "OPTION_INVALID",
+              "employeeLinkedOnly only applies to the entity listing; omit entitySet or drop the option",
+            );
+          }
           const details = await metadataService.getCustomMdfDetails(target, alias, args.entitySet, entityAllowlist, locale);
           if (details === undefined) {
             throw new SanitizedError("RESOURCE_NOT_FOUND", "the entity set is not a Custom MDF object of this environment");
@@ -692,10 +700,12 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         const results: Array<Record<string, unknown>> = [];
         let recordsReturned = 0;
         // Per-request size guard (D-75/FR-86): each inner response is measured on
-        // its own, never the batch as a whole. An oversized part becomes a sanitized
-        // per-item failure and stops counting toward the aggregate record ceiling.
+        // its own, never the batch as a whole. What is measured is the serialized
+        // per-item result, which is what actually reaches the model (an XML body
+        // is JSON-escaped inside the batch payload). An oversized part becomes a
+        // sanitized per-item failure and stops counting toward the aggregate ceiling.
         const pushGuarded = (entry: Record<string, unknown>, index: number, path: string): void => {
-          const measured = typeof entry.body === "string" ? entry.body : JSON.stringify(entry);
+          const measured = JSON.stringify(entry);
           if (entry.success === true && exceedsResponseCap(measured)) {
             const error = responseTooLargeError(measured);
             recordsReturned -= typeof entry.recordCount === "number" ? entry.recordCount : 0;

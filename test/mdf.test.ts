@@ -267,3 +267,23 @@ test("summarizeCustomMdf is flat and compact", () => {
     linkType: "UNLINKED_STANDALONE",
   });
 });
+
+// --- corrections after independent verification --------------------------------
+
+test("S5: an effective-dated entity with no employee link still uses top=1 for the current record", () => {
+  const s = schema("cust_Jerarquia", ["externalCode", "effectiveStartDate"]);
+  const guidance = classifyEntity(s, all(s)).guidance;
+  assert.equal(guidance.suggestedFilter, undefined);
+  assert.equal(guidance.recommendedOrderBy, "effectiveStartDate desc");
+  assert.equal(guidance.exampleQuery.filter, undefined);
+  assert.equal(guidance.exampleQuery.orderby, "effectiveStartDate desc");
+  assert.equal(guidance.exampleQuery.top, 1);
+});
+
+test("S5: a non effective-dated entity keeps a list-oriented example (no orderby, top 10)", () => {
+  const s = schema("cust_Catalogo", ["externalCode"]);
+  const guidance = classifyEntity(s, all(s)).guidance;
+  assert.equal(guidance.recommendedOrderBy, undefined);
+  assert.equal(guidance.exampleQuery.orderby, undefined);
+  assert.equal(guidance.exampleQuery.top, 10);
+});

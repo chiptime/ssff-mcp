@@ -182,3 +182,44 @@ test("batch_get xml part over the cap fails that item only", async () => {
     assert.equal(results[0]!.error.code, "RESPONSE_TOO_LARGE");
   });
 });
+
+// --- corrections after independent verification --------------------------------
+
+test("S12: a batch XML part whose JSON-escaped result exceeds the cap fails that item", async () => {
+  const configPath = await writeStandardConfig();
+  // Raw XML below the cap; JSON-escaping the quotes doubles it in the payload.
+  const quotes = `<feed xmlns="http://www.w3.org/2005/Atom"><entry><content>${'"'.repeat(140000)}</content></entry></feed>`;
+  assert.ok(Buffer.byteLength(quotes) < MAX_RESPONSE_BYTES);
+  const small = `<feed xmlns="http://www.w3.org/2005/Atom"><entry><content>ok</content></entry></feed>`;
+  const base: FetchImpl = async (url, init) =>
+    url.endsWith("/$metadata")
+      ? xmlResponse(SAMPLE_METADATA_XML)
+      : batchResponse(boundaryOf(init), [quotes, small], "application/atom+xml");
+  const { fetch } = recordingFetch(base);
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const result = await callTool(client, "batch_get", {
+      environment: "tenant-a",
+      output: "xml",
+      requests: [{ entityPath: "User" }, { entityPath: "FOOBar" }],
+    });
+    const { results } = result.structuredContent as { results: Array<Record<string, any>> };
+    assert.deepEqual(results.map((r) => r.success), [false, true]);
+    assert.equal(results[0]!.error.code, "RESPONSE_TOO_LARGE");
+    assert.equal(results[0]!.body, undefined);
+  });
+});
+
+test("S12: a batch JSON item is measured on its serialized result", async () => {
+  const configPath = await writeStandardConfig();
+  // Records whose raw JSON is under the cap produce an under-cap serialized item.
+  const under = JSON.stringify({ d: { results: [{ id: 1, note: "ok" }] } });
+  const base: FetchImpl = async (url, init) =>
+    url.endsWith("/$metadata") ? xmlResponse(SAMPLE_METADATA_XML) : batchResponse(boundaryOf(init), [under]);
+  const { fetch } = recordingFetch(base);
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const result = await callTool(client, "batch_get", { environment: "tenant-a", requests: [{ entityPath: "User" }] });
+    const { results } = result.structuredContent as { results: Array<Record<string, any>> };
+    assert.equal(results[0]!.success, true);
+    assert.equal(results[0]!.recordCount, 1);
+  });
+});

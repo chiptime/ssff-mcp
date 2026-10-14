@@ -215,7 +215,9 @@ function buildGuidance(
   if (orderby !== undefined) {
     exampleQuery.orderby = orderby;
   }
-  exampleQuery.top = dateKey !== undefined && expression !== undefined ? 1 : 10;
+  // Effective-dated: the current record is the top after ordering by the date
+  // key, with or without an employee filter (D-67).
+  exampleQuery.top = dateKey !== undefined ? 1 : 10;
 
   const guidance: MdfQueryGuidance = { locale, warnings, exampleQuery };
   if (suggestedFilter !== undefined) {
