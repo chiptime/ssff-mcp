@@ -80,6 +80,90 @@ test("path longer than 512 characters is rejected", () => {
   assertInvalidPath("User".padEnd(513, "a"));
 });
 
+test("real tenant composite keys with typed literals validate (FR-79)", () => {
+  assertValidPath(
+    "PaymentInformationDetailV3(PaymentInformationV3_effectiveStartDate=datetime'2013-01-01T00:00:00',PaymentInformationV3_worker='1000001',externalCode=860259L)",
+    "PaymentInformationDetailV3",
+  );
+  assertValidPath("EmpJob(seqNumber=1L,startDate=datetime'2013-01-01T00:00:00',userId='1000001')", "EmpJob");
+});
+
+test("typed prefixes validate in lower, upper and mixed case", () => {
+  assertValidPath("E(k=datetime'2013-01-01T00:00:00')", "E");
+  assertValidPath("E(k=DATETIME'2013-01-01T00:00:00')", "E");
+  assertValidPath("E(k=datetimeoffset'2013-01-01T00:00:00Z')", "E");
+  assertValidPath("E(k=DateTimeOffset'2013-01-01T00:00:00+01:00')", "E");
+  assertValidPath("E(k=time'PT12H30M')", "E");
+  assertValidPath("E(k=Time'PT12H30M')", "E");
+  assertValidPath("E(k=guid'01234567-89ab-cdef-0123-456789abcdef')", "E");
+  assertValidPath("E(k=Guid'01234567-89ab-cdef-0123-456789abcdef')", "E");
+  assertValidPath("E(k=binary'0A0B')", "E");
+  assertValidPath("E(k=X'0A0B')", "E");
+  assertValidPath("E(k=x'0a0b')", "E");
+  assertValidPath("E(k=decimal'1.5')", "E");
+  assertValidPath("E(k=float'1.5')", "E");
+  assertValidPath("E(k=Double'1.5')", "E");
+});
+
+test("typed literal bodies keep the doubled-quote rule and allow ':' and '-'", () => {
+  assertValidPath("E(k=datetime'it''s:a-b')", "E");
+  assertValidPath("E(datetime'2013-01-01T00:00:00')", "E");
+  assertValidPath("E(k=datetime'2013-01-01T00:00:00')/nav", "E");
+  assertValidPath("E(k=datetime'a/b')/nav", "E");
+});
+
+test("boolean and null literals validate in any case", () => {
+  assertValidPath("E(k=true)", "E");
+  assertValidPath("E(k=false)", "E");
+  assertValidPath("E(k=null)", "E");
+  assertValidPath("E(k=TRUE,j=False,i=NULL)", "E");
+  assertValidPath("E(true)", "E");
+});
+
+test("numeric type suffixes validate, including negative and decimal values", () => {
+  assertValidPath("E(k=1L)", "E");
+  assertValidPath("E(k=-1L)", "E");
+  assertValidPath("E(k=860259L)", "E");
+  assertValidPath("E(k=1.5f)", "E");
+  assertValidPath("E(k=1.5F)", "E");
+  assertValidPath("E(k=2d)", "E");
+  assertValidPath("E(k=2D)", "E");
+  assertValidPath("E(k=3m)", "E");
+  assertValidPath("E(k=3M)", "E");
+  assertValidPath("E(k=3.25m)", "E");
+});
+
+test("malformed typed, boolean, null and numeric literals stay invalid", () => {
+  assertInvalidPath("E(k=datetime)");
+  assertInvalidPath("E(k=datetime2013)");
+  assertInvalidPath("E(k=datetime'2013-01-01T00:00:00)");
+  assertInvalidPath("E(k=unknown'x')");
+  assertInvalidPath("E(k=truex)");
+  assertInvalidPath("E(k=nullable)");
+  assertInvalidPath("E(k=1Lx)");
+  assertInvalidPath("E(k=1LL)");
+  assertInvalidPath("E(k=1.L)");
+  assertInvalidPath("E(k=L)");
+  assertInvalidPath("E(k=1e5)");
+});
+
+test("negatives still reject after the grammar extension (FR-79)", () => {
+  assertInvalidPath("$batch");
+  assertInvalidPath("%20");
+  assertInvalidPath("User('123");
+  assertInvalidPath("User".padEnd(513, "a"));
+  assertInvalidPath("User(bad=xx)");
+  assertInvalidPath("User(abc");
+  assertInvalidPath("User()x");
+});
+
+test("raw '%' outside a quoted literal stays PATH_INVALID", () => {
+  assertInvalidPath("User%20x");
+  assertInvalidPath("E(k=1%20)");
+  assertInvalidPath("E(k=datetime%27x%27)");
+  assertInvalidPath("E(k=true%20)");
+});
+
 test("buildQuery maps options to OData system query options", () => {
   const built = buildQuery("User", {
     filter: "userId eq 'x'",

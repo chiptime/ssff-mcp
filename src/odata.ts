@@ -18,13 +18,24 @@ export const MAX_SEGMENTS = 4;
 const NAME_PATTERN = "[A-Za-z_][A-Za-z0-9_]*";
 const SEGMENT_NAME = new RegExp(`^${NAME_PATTERN}$`);
 
-// OData v2 key predicate values: single-quoted strings ('It''s' doubling
-// allowed), integers/decimals, optionally signed.
-const LITERAL = `(?:'(?:[^']|'')*'|-?\\d+(?:\\.\\d+)?)`;
+// OData v2 key predicate values (matched case-insensitively, see SEGMENT):
+// - a single-quoted string body ('It''s' doubling allowed; `:`, `-`, `/` etc.
+//   are plain body characters), optionally preceded by a type prefix such as
+//   datetime'2013-01-01T00:00:00', guid'...' or X'0A0B';
+// - true, false or null;
+// - an optionally signed integer/decimal with an optional numeric type suffix
+//   (860259L, 1.5f, 2D, 3m).
+// Raw `%` is still only legal inside a quoted body, never elsewhere (FR-77).
+const QUOTED = `'(?:[^']|'')*'`;
+const TYPE_PREFIX = `(?:datetimeoffset|datetime|time|guid|binary|X|decimal|float|double)`;
+const LITERAL = `(?:${TYPE_PREFIX}?${QUOTED}|true|false|null|-?\\d+(?:\\.\\d+)?[LfFdDmM]?)`;
 const PAIR = `${NAME_PATTERN}\\s*=\\s*${LITERAL}`;
 const PREDICATE_ITEM = `(?:${PAIR}|${LITERAL})`;
 const PREDICATE = `\\(\\s*(?:${PREDICATE_ITEM}(?:\\s*,\\s*${PREDICATE_ITEM})*)?\\s*\\)`;
-const SEGMENT = new RegExp(`^${NAME_PATTERN}(?:${PREDICATE})?$`);
+// The `i` flag makes type prefixes, true/false/null and numeric suffixes
+// case-insensitive (real $metadata and callers use both cases); NAME_PATTERN
+// already covers both cases, so it is unaffected.
+const SEGMENT = new RegExp(`^${NAME_PATTERN}(?:${PREDICATE})?$`, "i");
 
 // CR, LF and NUL are never legal in a query option value (FR-80).
 const CONTROL_CHARACTERS = /[\r\n\0]/;
