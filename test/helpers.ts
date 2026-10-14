@@ -180,3 +180,75 @@ export function errorPayload(result: CallResult): { code: string; message: strin
   }
   return result.structuredContent as { code: string; message: string; httpStatus?: number };
 }
+
+// --- Custom MDF metadata fixture (PRD-feature-custom-mdf) ---------------------
+
+export interface MdfFixtureEntity {
+  name: string;
+  keys: string[];
+  /** Navigation properties as [navName, targetEntitySet]. */
+  navs?: Array<[string, string]>;
+}
+
+/** Default fixture: standard entities plus one entity per Custom MDF link type. */
+export const MDF_FIXTURE_ENTITIES: MdfFixtureEntity[] = [
+  { name: "User", keys: ["userId"] },
+  { name: "EmpEmployment", keys: ["personIdExternal", "userId"] },
+  { name: "FOOBar", keys: ["id"] },
+  // DIRECT_USER_KEY, effective-dated
+  { name: "cust_Equipo", keys: ["externalCode", "effectiveStartDate"], navs: [["externalCodeNav", "User"]] },
+  // USER_FIELD_NAVIGATION, not effective-dated
+  { name: "cust_Prendas", keys: ["externalCode"], navs: [["cust_UsuarioNav", "User"]] },
+  // UNLINKED_STANDALONE
+  { name: "cust_Catalogo", keys: ["externalCode"] },
+  // COMPOSITE_CHILD of cust_Equipo
+  { name: "cust_Equipo_Detalle", keys: ["cust_Equipo_externalCode", "externalCode"] },
+  // DIRECT_USER_KEY via userId key, mdfSystemEffectiveStartDate variant
+  { name: "cust_Social", keys: ["userId", "mdfSystemEffectiveStartDate"], navs: [["userIdNav", "User"]] },
+];
+
+/** Build an EDMX document; every entity also gets the audit navs to `User`. */
+export function mdfMetadataXml(entities: MdfFixtureEntity[] = MDF_FIXTURE_ENTITIES): string {
+  const isCustom = (name: string) => /^[cC]ust_/.test(name);
+  const types: string[] = [];
+  const associations: string[] = [];
+  const associationSets: string[] = [];
+  const sets: string[] = [];
+  for (const entity of entities) {
+    const navs: Array<[string, string]> = [...(entity.navs ?? [])];
+    if (isCustom(entity.name)) {
+      navs.unshift(["createdByNav", "User"], ["lastModifiedByNav", "User"]);
+    }
+    const navXml = navs
+      .map(([navName], index) => `<NavigationProperty Name="${navName}" Relationship="SFOData.A_${entity.name}_${index}" FromRole="From" ToRole="To"/>`)
+      .join("");
+    navs.forEach(([, target], index) => {
+      const assoc = `A_${entity.name}_${index}`;
+      associations.push(
+        `<Association Name="${assoc}"><End Role="From" Type="SFOData.${entity.name}" Multiplicity="*"/><End Role="To" Type="SFOData.${target}" Multiplicity="0..1"/></Association>`,
+      );
+      associationSets.push(
+        `<AssociationSet Name="${assoc}" Association="SFOData.${assoc}"><End Role="From" EntitySet="${entity.name}"/><End Role="To" EntitySet="${target}"/></AssociationSet>`,
+      );
+    });
+    const keyXml = entity.keys.map((key) => `<PropertyRef Name="${key}"/>`).join("");
+    const propXml = entity.keys.map((key) => `<Property Name="${key}" Type="Edm.String" Nullable="false"/>`).join("");
+    types.push(`<EntityType Name="${entity.name}"><Key>${keyXml}</Key>${propXml}${navXml}</EntityType>`);
+    sets.push(`<EntitySet Name="${entity.name}" EntityType="SFOData.${entity.name}"/>`);
+  }
+  return `<?xml version="1.0" encoding="utf-8"?>
+<edmx:Edmx xmlns:edmx="http://schemas.microsoft.com/ado/2007/06/edmx" Version="1.0">
+  <edmx:DataServices>
+    <Schema xmlns="http://schemas.microsoft.com/ado/2008/09/edm" Namespace="SFOData">
+      ${types.join("\n")}
+      ${associations.join("\n")}
+      <EntityContainer Name="EntityContainer">
+        ${sets.join("\n")}
+        ${associationSets.join("\n")}
+        <FunctionImport Name="doThing" ReturnType="Edm.String"/>
+      </EntityContainer>
+    </Schema>
+  </edmx:DataServices>
+</edmx:Edmx>
+`;
+}

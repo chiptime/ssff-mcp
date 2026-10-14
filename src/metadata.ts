@@ -14,8 +14,26 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { XMLParser } from "fast-xml-parser";
+import { isEntityAllowed, type AllowlistEntry } from "./allowlist.js";
 import { SanitizedError } from "./errors.js";
 import { dispatchGet, type EnvTarget, type FetchImpl } from "./http.js";
+import type { SupportedLocale } from "./i18n.js";
+import {
+  classifyEntity,
+  isCustomMdfEntity,
+  isEmployeeLinkedType,
+  summarizeCustomMdf,
+  type CustomMdfDetails,
+  type CustomMdfSummary,
+} from "./mdf.js";
+
+export type {
+  CustomMdfDetails,
+  CustomMdfSummary,
+  MdfEmployeeLink,
+  MdfEmployeeLinkType,
+  MdfQueryGuidance,
+} from "./mdf.js";
 
 export const METADATA_TTL_MS = 10 * 60 * 1000;
 export const METADATA_DISK_TTL_MS = 24 * 60 * 60 * 1000;
@@ -447,5 +465,57 @@ export class MetadataService {
   async getEntitySchema(env: EnvTarget, alias: string, entitySet: string): Promise<EntitySchema | undefined> {
     const data = await this.getParsedMetadata(env, alias);
     return data.entitySchemas[entitySet];
+  }
+
+  /**
+   * Allowed Custom MDF entities, classified from the cached `$metadata` only
+   * (D-62/DS-MDF-02: no data-endpoint request). Entities excluded by the
+   * allowlist are never listed (D-68); `[]` therefore lists nothing.
+   */
+  async listCustomMdf(
+    env: EnvTarget,
+    alias: string,
+    allowlist?: AllowlistEntry[],
+    employeeLinkedOnly = false,
+  ): Promise<CustomMdfSummary[]> {
+    const data = await this.getParsedMetadata(env, alias);
+    const summaries: CustomMdfSummary[] = [];
+    for (const name of [...data.entitySets].sort()) {
+      const schema = data.entitySchemas[name];
+      if (schema === undefined || !isCustomMdfEntity(name) || !isEntityAllowed(allowlist, name)) {
+        continue;
+      }
+      const summary = summarizeCustomMdf(schema, data.entitySchemas);
+      if (!employeeLinkedOnly || isEmployeeLinkedType(summary.linkType)) {
+        summaries.push(summary);
+      }
+    }
+    return summaries;
+  }
+
+  /**
+   * Full classification + guidance of one Custom MDF entity. Throws
+   * `ENTITY_NOT_ALLOWED` (fail-closed, before touching metadata) when the
+   * allowlist excludes it; returns `undefined` for unknown or non-custom names.
+   */
+  async getCustomMdfDetails(
+    env: EnvTarget,
+    alias: string,
+    entitySet: string,
+    allowlist?: AllowlistEntry[],
+    locale?: SupportedLocale,
+  ): Promise<CustomMdfDetails | undefined> {
+    if (!isEntityAllowed(allowlist, entitySet)) {
+      throw new SanitizedError(
+        "ENTITY_NOT_ALLOWED",
+        "the entity is not permitted by the configured entityAllowlist",
+      );
+    }
+    const data = await this.getParsedMetadata(env, alias);
+    const schema = data.entitySchemas[entitySet];
+    if (schema === undefined || !isCustomMdfEntity(entitySet)) {
+      return undefined;
+    }
+    return classifyEntity(schema, data.entitySchemas, locale);
   }
 }
