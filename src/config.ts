@@ -67,6 +67,8 @@ export interface SsffConfig {
    * and means deny-all (fail-closed).
    */
   entityAllowlist?: AllowlistEntry[];
+  /** Preferred language for guidance prose (FR-76); absent when not configured. */
+  defaultLocale?: string;
   /**
    * True when the config was synthesized from inline SF_* environment
    * variables (no config.json). Only in this mode may a tool call omit
@@ -163,6 +165,15 @@ const configSchema = z
     defaultEnvironment: z.null().optional(),
     // Optional entity allowlist (FR-28/D-30): absent => no restriction.
     entityAllowlist: entityAllowlistSchema.optional(),
+    // Optional language preference for guidance prose (FR-76/D-70). Lax BCP-47
+    // (`es`, `es_ES`, `es-ES`): the format is validated, not whether a catalog
+    // exists for it (an untranslated locale falls back to en_US at use time).
+    defaultLocale: z
+      .string()
+      .regex(/^[A-Za-z]{2}([-_][A-Za-z]{2})?$/, {
+        message: "defaultLocale must be a language or language_REGION code such as es or es_ES",
+      })
+      .optional(),
   })
   .strict();
 
@@ -543,10 +554,13 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<SsffC
   }
   // entityAllowlist stays absent (key not set) when not configured; an empty
   // array is a configured deny-all allowlist and is preserved as-is.
-  const config: SsffConfig =
-    result.data.entityAllowlist === undefined
-      ? { environments }
-      : { environments, entityAllowlist: result.data.entityAllowlist };
+  const config: SsffConfig = { environments };
+  if (result.data.entityAllowlist !== undefined) {
+    config.entityAllowlist = result.data.entityAllowlist;
+  }
+  if (result.data.defaultLocale !== undefined) {
+    config.defaultLocale = result.data.defaultLocale;
+  }
 
   // A present config.json always wins; make a silently-ignored inline mode explicit.
   if (inlineRequested(env)) {

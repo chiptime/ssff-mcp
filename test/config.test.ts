@@ -652,3 +652,54 @@ test("lazy secret resolution (D-42 / A3) resolves only requested environment", a
 });
 
 
+
+// --- defaultLocale (FR-76, D-70) --------------------------------------------
+
+function withDefaultLocale(value: unknown): string {
+  return JSON.stringify({
+    environments: { a: { baseUrl: "https://a.example.com", auth: { type: "basic", username: "u", password: "p" } } },
+    defaultLocale: value,
+  });
+}
+
+test("defaultLocale accepts lax BCP-47 forms (es, es_ES, es-ES) and is preserved verbatim", async () => {
+  for (const value of ["es", "es_ES", "es-ES", "en_US"]) {
+    const config = await loadConfig({ configPath: await writeConfigRaw(withDefaultLocale(value)) });
+    assert.equal(config.defaultLocale, value);
+  }
+});
+
+test("defaultLocale absent leaves config.defaultLocale undefined (not an error)", async () => {
+  const config = await loadConfig({
+    configPath: await writeConfigRaw(
+      JSON.stringify({
+        environments: { a: { baseUrl: "https://a.example.com", auth: { type: "basic", username: "u", password: "p" } } },
+      }),
+    ),
+  });
+  assert.equal(config.defaultLocale, undefined);
+  assert.ok(!("defaultLocale" in config));
+});
+
+test("defaultLocale rejects malformed values with CONFIG_INVALID", async () => {
+  for (const value of ["", "e", "english", "es_ESP", "es__ES", 5, null]) {
+    await rejectsCode(
+      () => loadConfig({ readFile: async () => withDefaultLocale(value) }),
+      "CONFIG_INVALID",
+    );
+  }
+});
+
+test("unknown top-level keys are still rejected after adding defaultLocale (strict schema)", async () => {
+  await rejectsCode(
+    () =>
+      loadConfig({
+        readFile: async () =>
+          JSON.stringify({
+            environments: { a: { baseUrl: "https://a.example.com", auth: { type: "basic", username: "u", password: "p" } } },
+            defaultLocal: "es_ES",
+          }),
+      }),
+    "CONFIG_INVALID",
+  );
+});
