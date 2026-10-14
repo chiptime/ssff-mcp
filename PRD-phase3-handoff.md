@@ -31,7 +31,7 @@ Fase 3 = tres bloques priorizados por el usuario (orden de ejecución acordado):
 | **D-44** | TTL de disco = **24 h** (`METADATA_DISK_TTL_MS`); TTL memoria = 10 min (`METADATA_TTL_MS`). Se guarda **JSON parseado** (`{fetchedAt, data}`), nunca el XML crudo. Ruta: Linux `$XDG_CACHE_HOME`/`~/.cache/ssff-mcp`, macOS `~/Library/Caches/ssff-mcp`, Windows `%LOCALAPPDATA%\ssff-mcp\cache`; fichero `metadata-<alias codificado>.json`. Escritura best-effort (un fallo de disco no rompe la llamada). | Implementación |
 
 > [!WARNING]
-> D-43 **enmienda D-09 de PRD.md** ("sin persistencia en disco") y DS-P2-02/D-34 de PRD-phase3 ("ningún esquema se persiste en disco"). **Actualizado (2026-10-14)**: los textos ya están enmendados en `PRD-phase3.md` v1.1. De las dos cuestiones pendientes, **permisos quedó cerrada** (D-44/A1: `0700` directorio, `0600` fichero); **invalidación manual sigue sin decisión registrada** — el TTL de 24 h es el único mecanismo previsto.
+> D-43 **enmienda D-09 de PRD.md** ("sin persistencia en disco") y DS-P2-02/D-34 de PRD-phase3 ("ningún esquema se persiste en disco"). **Actualizado (2026-10-14)**: los textos ya están enmendados en `PRD-phase3.md` v1.1. De las dos cuestiones pendientes, **permisos quedó cerrada** (D-44/A1: `0700` directorio, `0600` fichero); **invalidación**: **DECIDIDO (2026-10-14)** que se resuelve con un **comando de CLI por entorno** (`ssff-mcp cache invalidate <alias>`), **no** con una tool del MCP — descartado porque daría al modelo la capacidad de forzar descargas de ~7,5 MB contra el tenant. Hoy no existe ningún mecanismo. Spec en `PRD-feature-metadata-cache-invalidation.md` (D-78/D-79, FR-92..FR-98); no se resuelve en este handoff.
 
 ## 3. Estado de implementación al cerrar la fase (revisado 2026-10-14)
 
