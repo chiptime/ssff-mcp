@@ -7,7 +7,7 @@
 | **Estado** | PROPUESTO / EVALUADO (Recomendación: NO-GO para implementación inmediata; Arquitectura y Gates definidos) |
 | **Fecha** | 2026-10-14 |
 | **Autores** | Subagente de Investigación & Arquitectura ssff-mcp |
-| **Alineación previa** | PRD.md (v0.4, D-01..D-25), PRD-phase2.md (D-26..D-32), PRD-phase3.md (D-33..D-44), PRD-phase4.md (D-45..D-52) |
+| **Alineación previa** | archive/PRD.md (v0.4, D-01..D-25), archive/PRD-phase2.md (D-26..D-32), archive/PRD-phase3.md (D-33..D-44), archive/PRD-phase4.md (D-45..D-52) |
 
 ---
 

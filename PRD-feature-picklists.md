@@ -7,7 +7,7 @@
 | Autor | Research & Architecture Team (ssff-mcp) |
 | Fuente de decisiones | Requerimiento de usabilidad para agentes LLM en SuccessFactors OData v2; superación de la opacidad de Option IDs numéricos y códigos de selección |
 | Idioma | Español neutro profesional; identificadores y términos de código en inglés |
-| Relación con PRD anteriores | **Extiende** `PRD.md` (Fase 1), `PRD-phase2.md` (Fase 2), `PRD-phase3.md` (Fase 3) y `PRD-phase4.md` (Fase 4). Incorpora decisiones **D-53..D-61**, requisitos funcionales **FR-56..FR-66** e implicaciones de seguridad/arquitectura **DS-PL-01..DS-PL-06** |
+| Relación con PRD anteriores | **Extiende** `archive/PRD.md` (Fase 1), `archive/PRD-phase2.md` (Fase 2), `archive/PRD-phase3.md` (Fase 3) y `archive/PRD-phase4.md` (Fase 4). Incorpora decisiones **D-53..D-61**, requisitos funcionales **FR-56..FR-66** e implicaciones de seguridad/arquitectura **DS-PL-01..DS-PL-06** |
 | Palabras clave normativas | **MUST / MUST NOT / SHOULD / MAY** según RFC 2119 |
 
 ---
@@ -23,7 +23,7 @@
 | **D-57** | **Enriquecimiento No Destructivo con Metadatos Aditivos `_picklistLabels`**: El enriquecimiento automático en `query_entity` y `batch_get` preserva estrictamente el valor y tipo nativo de cada propiedad original (garantizando D-24 y D-32). Añade un subobjeto aditivo `_picklistLabels` por registro con `{ label, externalCode, picklistId, resolved: true/false }`. | Evita romper parsers o pipelines existentes que esperen el ID numérico nativo, proporcionando a la vez el contexto semántico completo al LLM. |
 | **D-58** | **Independencia de `entityAllowlist` para Catálogos Internos del Servidor**: Las consultas internas ejecutadas por `PicklistService` para hidratar la caché se consideran operaciones de metadatos de sistema (análogas a `$metadata` según FR-19) y están exentas del filtro de `entityAllowlist`. Si un usuario consulta `query_entity("PicklistOption")` directamente, la allowlist sí se aplica. | Permite que una allowlist orientada a negocio (ej. `["User", "PerPersonal"]`) resuelva etiquetas de género o estado civil sin obligar al usuario a incluir tablas técnicas en su configuración. |
 | **D-59** | **Resiliencia Fail-Safe y Ausencia de Errores Destructivos**: Si un ID o código no existe en el catálogo (dato histórico, huérfano o valor obsoleto), o si la resolución de picklist falla temporalmente por conectividad, la consulta principal NUNCA se aborta; se devuelve el registro nativo con `resolved: false` en `_picklistLabels`. | Principio de fail-safe: una falla en una etiqueta descriptiva jamás debe interrumpir el acceso a datos empresariales críticos. |
-| **D-60** | **Cadena de Fallback Multilingüe BCP-47**: Prioridad de locale: Parámetro de llamada `locale` > Variable de entorno `SF_DEFAULT_LOCALE` > Fallback global `"en_US"`. El nivel de configuración `defaultLocale` **no lo define este PRD**: lo introduce `PRD-feature-custom-mdf.md` (D-70/FR-76) como campo **global** de `config.json`, y esta feature lo reutilizará si llega a implementarse. Degradación de etiqueta: `locale solicitado` > `en_US` > `defaultValue / label_localized` > `externalCode` > `raw ID`. | Garantiza legibilidad en español, portugués, alemán, etc., con degradación suave a inglés si no hay traducción disponible. |
+| **D-60** | **Cadena de Fallback Multilingüe BCP-47**: Prioridad de locale: Parámetro de llamada `locale` > Variable de entorno `SF_DEFAULT_LOCALE` > Fallback global `"en_US"`. El nivel de configuración `defaultLocale` **no lo define este PRD**: lo introduce `archive/PRD-feature-custom-mdf.md` (D-70/FR-76) como campo **global** de `config.json`, y esta feature lo reutilizará si llega a implementarse. Degradación de etiqueta: `locale solicitado` > `en_US` > `defaultValue / label_localized` > `externalCode` > `raw ID`. | Garantiza legibilidad en español, portugués, alemán, etc., con degradación suave a inglés si no hay traducción disponible. |
 | **D-61** | **Búsqueda Inversa y Asistencia en Construcción de `$filter`**: `resolve_picklist` permite buscar por texto libre o etiqueta en un idioma para obtener el `optionId` o `externalCode` correspondiente. | Resuelve la incapacidad del LLM de filtrar entidades por campos restringidos (ej. saber que "Casado" equivale a `maritalStatus eq '10119'`). |
 
 ### 0.1 Implicaciones Derivadas (Obligatorias)
@@ -328,7 +328,7 @@ Si el cliente solicita `output: "xml"` (D-32), el cuerpo XML Atom se devuelve **
    - Nivel 2: Variable de entorno del proceso `SF_DEFAULT_LOCALE`.
    - Nivel 3: Valor predeterminado global del sistema: `"en_US"`.
 
-   > **Nota (2026-10-14)**: el antiguo «Nivel 2» —`defaultLocale` en `config.json`, **dentro del bloque del entorno**— se elimina de este PRD. El campo lo introduce `PRD-feature-custom-mdf.md` (D-70/FR-76) como propiedad **global** de `config.json`, no por entorno. Definirlo dos veces, y además con dos formas distintas, era el camino directo a la divergencia.
+   > **Nota (2026-10-14)**: el antiguo «Nivel 2» —`defaultLocale` en `config.json`, **dentro del bloque del entorno**— se elimina de este PRD. El campo lo introduce `archive/PRD-feature-custom-mdf.md` (D-70/FR-76) como propiedad **global** de `config.json`, no por entorno. Definirlo dos veces, y además con dos formas distintas, era el camino directo a la divergencia.
 3. **Cadena de Fallback Lingüístico**:
    Si una opción de picklist carece de traducción en el locale solicitado:
    `Locale solicitado` ➔ `"en_US"` (idioma base internacional de SAP) ➔ `defaultValue / label_localized` ➔ `externalCode` ➔ `ID numérico crudo`.
@@ -368,7 +368,7 @@ Si el cliente solicita `output: "xml"` (D-32), el cuerpo XML Atom se devuelve **
   * Extiende la interfaz `EntityProperty` para incluir `picklistId?: string`.
   * Asocia propiedades de navegación que apunten a `PicklistOption` o `PickListValueV2`.
 * **`src/config.ts`** *(Sin cambios por parte de esta feature)*:
-  * `defaultLocale` **NO** se añade aquí. Lo introduce `PRD-feature-custom-mdf.md` (FR-76) como campo **global** de `configSchema`. Esta feature solo lo consume si llega a implementarse; añadirlo también en `EnvironmentConfig` duplicaría el campo y rompería la configuración con la validación `.strict()`.
+  * `defaultLocale` **NO** se añade aquí. Lo introduce `archive/PRD-feature-custom-mdf.md` (FR-76) como campo **global** de `configSchema`. Esta feature solo lo consume si llega a implementarse; añadirlo también en `EnvironmentConfig` duplicaría el campo y rompería la configuración con la validación `.strict()`.
   * Admite la variable de entorno `SF_DEFAULT_LOCALE`.
 * **`src/tools.ts`** *(Integración)*:
   * Registra la herramienta `resolve_picklist`.
