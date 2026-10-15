@@ -173,20 +173,10 @@ variables are referenced, not embedded, by the generator.
 
 ## Configuration
 
-The wizard writes the config file; the server re-reads it on **every** call. In
-short:
-
-- **Path:** `~/.config/ssff-mcp/config.json` (POSIX) or
-  `%USERPROFILE%\.config\ssff-mcp\config.json` (Windows).
-- **Environments:** `environments.<alias>` with `baseUrl` (https, no `/odata/v2`)
-  and `auth` — Basic or OAuth 2.0.
-- **Allowlist (optional):** `entityAllowlist` limits which entities are readable.
-- **Secrets:** plain text, or `{ "fromEnv": … }` / `{ "fromCommand": […] }` so no
-  secret sits on disk.
-- **Other:** `defaultLocale` (guidance language) and `maxResponseBytes` (output cap).
-
-Full field reference, inline mode and every option:
-**[Configuration →](docs/configuration.md)**.
+The usual way is [`ssff-mcp init`](#quick-start): it writes
+`~/.config/ssff-mcp/config.json` and prints the block for your client. To edit
+the file by hand, or for OAuth, entity allowlist, secret providers and inline
+mode, see **[Configuration →](docs/configuration.md)**.
 
 ## How it works
 
