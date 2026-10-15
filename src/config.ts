@@ -160,6 +160,9 @@ const entityAllowlistSchema = z.array(allowlistEntrySchema).superRefine((entries
   }
 });
 
+/** A4: the Windows ACL warning is informative, so one per process is enough. */
+let windowsAclWarningEmitted = false;
+
 const configSchema = z
   .object({
     environments: z.record(aliasSchema, environmentSchema),
@@ -506,12 +509,17 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<SsffC
   try {
     const stats = await statFile(filePath);
     if (platform === "win32") {
-      onWarning(
-        `ssff-mcp warning: running on Windows; ensure access to ${CONFIG_TILDE_PATH} is restricted using Windows ACLs`,
-      );
+      // Once per process: the config is re-read on every tool call, so this
+      // would otherwise repeat on each one (A4, PRD-phase3-handoff §4).
+      if (!windowsAclWarningEmitted) {
+        windowsAclWarningEmitted = true;
+        onWarning(
+          `ssff-mcp warning: running on Windows; ensure access to ${filePath} is restricted using Windows ACLs`,
+        );
+      }
     } else if ((stats.mode & 0o077) !== 0) {
       onWarning(
-        `ssff-mcp warning: permissions of ${CONFIG_TILDE_PATH} are broader than owner-only; recommend chmod 600 ${CONFIG_TILDE_PATH}`,
+        `ssff-mcp warning: permissions of ${filePath} are broader than owner-only; recommend chmod 600 ${filePath}`,
       );
     }
   } catch {
