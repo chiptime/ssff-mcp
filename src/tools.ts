@@ -966,21 +966,12 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         allowedSets = allowedSets.filter((name) => isEntityAllowed(entityAllowlist, name));
       }
 
-      const entityList = allowedSets.map((name) => {
-        const schema = parsed.entitySchemas[name];
-        const isCustom = isCustomMdfEntity(name);
-        return {
-          name,
-          entityType: schema?.entityType ?? name,
-          isCustom,
-          isEmployeeLinked:
-            isCustom && schema !== undefined
-              ? isEmployeeLinkedType(classifyEmployeeLink(schema, parsed.entitySchemas).type)
-              : false,
-          isEffectiveDated: schema !== undefined && effectiveDateKey(schema) !== undefined,
-          keyProperties: schema?.keys ?? [],
-        };
-      });
+      // Names only (decision 2026-10-14). Measured against PROD's 658 entities:
+      // 142 KB with entityType, isCustom, isEmployeeLinked, isEffectiveDated and
+      // keyProperties, versus ~19 KB with names alone. The heavier fields belong
+      // to the per-entity detail (sf://{env}/entities/{entitySet}) and to
+      // sf://{env}/mdf/custom, so discoverability is preserved.
+      const entityList = allowedSets.map((name) => ({ name }));
 
       const catalog = {
         environment: resolved.alias,
