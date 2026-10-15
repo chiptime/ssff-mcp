@@ -154,7 +154,10 @@ test("valid multi-environment config parses with normalized baseUrls", async () 
   assert.equal(config.environments.prod!.auth.username, "user@company");
 });
 
-test("broader-than-owner file permissions produce a warning but not a failure", async () => {
+test(
+  "broader-than-owner file permissions produce a warning but not a failure",
+  { skip: process.platform === "win32" ? "POSIX permission bits only" : false },
+  async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ssff-mcp-perm-"));
   const filePath = path.join(dir, "config.json");
   const contents = JSON.stringify({
@@ -477,6 +480,81 @@ test("secret resolution via fromCommand fails on error or empty output", async (
       return true;
     },
   );
+});
+
+test("a resolved secret never leaks into warnings or error messages (FR-47)", async () => {
+  const secret = "s3cr3t-from-cli-9f3a1c";
+  const filePath = await writeConfigRaw(
+    JSON.stringify({
+      environments: {
+        prod: {
+          baseUrl: "https://a.example.com",
+          auth: { type: "basic", username: "u", password: { fromCommand: ["op", "read", "vault/item"] } },
+        },
+      },
+    }),
+  );
+
+  // Success path: it resolves, and nothing emitted alongside it carries it.
+  const warnings: string[] = [];
+  const config = await loadConfig({
+    configPath: filePath,
+    onWarning: (m) => warnings.push(m),
+    secretOptions: { execCommand: async () => ({ stdout: `${secret}\n` }) },
+  });
+  const env = config.environments.prod!;
+  assert.equal(env.auth.type, "basic");
+  if (env.auth.type === "basic") {
+    assert.equal(env.auth.password, secret);
+  }
+  assert.equal(warnings.join("\n").includes(secret), false, "the secret leaked into a warning");
+
+  // Failure path: a command that echoes the secret while failing must not leak it.
+  await assert.rejects(
+    () =>
+      loadConfig({
+        configPath: filePath,
+        onWarning: (m) => warnings.push(m),
+        secretOptions: {
+          execCommand: async () => {
+            throw new Error(`command failed: ${secret}`);
+          },
+        },
+      }),
+    (error: unknown) => {
+      const err = expectSanitized(error, "CONFIG_SECRET_COMMAND_FAILED");
+      assert.equal(err.message.includes(secret), false, "the secret leaked into the error message");
+      return true;
+    },
+  );
+  assert.equal(warnings.join("\n").includes(secret), false, "the secret leaked into a warning");
+});
+
+test("fromCommand arguments reach execFile literally, with no shell interpretation", async () => {
+  // Through a shell, `;` would split this and the second half would execute.
+  // execFile({ shell: false }) passes the argument verbatim. Payload is harmless.
+  const payload = "hello; echo pwned";
+  const filePath = await writeConfigRaw(
+    JSON.stringify({
+      environments: {
+        prod: {
+          baseUrl: "https://a.example.com",
+          auth: {
+            type: "basic",
+            username: "u",
+            password: { fromCommand: ["node", "-e", "process.stdout.write(process.argv[1])", payload] },
+          },
+        },
+      },
+    }),
+  );
+  // No secretOptions: this really spawns the process.
+  const config = await loadConfig({ configPath: filePath });
+  const env = config.environments.prod!;
+  assert.equal(env.auth.type, "basic");
+  if (env.auth.type === "basic") {
+    assert.equal(env.auth.password, payload);
+  }
 });
 
 test("secret resolution via fromCommand fails with CONFIG_SECRET_TIMEOUT on timeout", async () => {
