@@ -73,7 +73,8 @@ const inspectEntitySchema = z.object({
   environment: z.string().optional(),   // omitible en modo inline (D-49)
   entitySet: z.string().min(1).optional(),
   customOnly: z.boolean().optional(),   // por defecto false
-  query: z.string().optional(),         // filtro de texto libre sobre el nombre
+  employeeLinkedOnly: z.boolean().optional(), // exige customOnly
+  query: z.string().min(1).optional(),  // filtro de texto libre sobre el nombre
   locale: z.string().optional(),        // idioma de la prosa de `guidance` (D-70)
 }).strict();
 ```
@@ -84,6 +85,7 @@ const inspectEntitySchema = z.object({
 |---|---|
 | `inspect_entity({})` | Listado: `{ environment, totalCount, entities: [{ name, isCustom }] }` |
 | `inspect_entity({ customOnly: true })` | Solo Custom MDF, con los campos del resumen MDF: `{ name, isEffectiveDated, linkType, targetEntity, matchField }` + `employeeLinkedCount` |
+| `inspect_entity({ customOnly: true, employeeLinkedOnly: true })` | Igual, pero solo las entidades vinculadas a un empleado |
 | `inspect_entity({ query: "emp" })` | Igual que el listado, filtrando por subcadena del nombre (sin distinguir mayúsculas) |
 | `inspect_entity({ entitySet: "User" })` | Detalle: el schema (`entitySet`, `entityType`, `keys`, `properties`, `navigationProperties`) con `isCustom: false` |
 | `inspect_entity({ entitySet: "cust_Prendas" })` | Detalle **más** los aditamentos MDF: `isCustom: true`, `isEffectiveDated`, `employeeLink`, `guidance` |
@@ -93,6 +95,7 @@ const inspectEntitySchema = z.object({
 - El detalle de una entidad **estándar** conserva **exactamente** el contrato del recurso `sf://{env}/entities/{entitySet}`: sin campos MDF añadidos.
 - El detalle de una entidad **custom** devuelve el mismo contrato **más** `isCustom`, `isEffectiveDated`, `employeeLink` y `guidance` — idéntico al payload que ya expone el recurso.
 - El listado general marca `isCustom` para que el modelo pueda distinguirlas sin una segunda llamada.
+- **Combinaciones inválidas**: `customOnly`, `employeeLinkedOnly` y `query` son exclusivas con `entitySet`, y `employeeLinkedOnly` exige `customOnly: true`. En ambos casos se responde `OPTION_INVALID` en vez de ignorar la opción en silencio — misma política que ya aplicaba `inspect_custom_mdf`.
 
 ---
 
@@ -118,6 +121,7 @@ const inspectEntitySchema = z.object({
 | **FR-104** (MUST) | Con `entityAllowlist` configurada, una entidad excluida DEBE responder `ENTITY_NOT_ALLOWED` y NO DEBE aparecer en ningún listado; una entidad inexistente, `RESOURCE_NOT_FOUND`. |
 | **FR-105** (SHOULD) | La salida DEBE respetar el tope de tamaño (D-75/FR-86) y, de superarlo, devolver el error saneado que ya existe, indicando cómo acotar con `query` o `entitySet`. |
 | **FR-106** (MUST) | La herramienta DEBE aceptar `locale` opcional y resolver la prosa de `guidance` con la misma precedencia que D-70 (`locale` > `defaultLocale` > `SF_DEFAULT_LOCALE` > `"en_US"`), exponiendo el locale efectivo. Sin esto, retirar `inspect_custom_mdf` **perdería la guía multilingüe**. |
+| **FR-107** (MUST) | La herramienta DEBE conservar `employeeLinkedOnly`, válido **solo** junto a `customOnly: true`; combinado con `entitySet` o sin `customOnly` DEBE responder `OPTION_INVALID`. Retirar `inspect_custom_mdf` no debe perder la capacidad de filtrar por vínculo con empleado. |
 
 ---
 
