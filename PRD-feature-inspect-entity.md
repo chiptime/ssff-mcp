@@ -111,7 +111,7 @@ const inspectEntitySchema = z.object({
 | ID | Requisito |
 |---|---|
 | **FR-99** (MUST) | El servidor DEBE registrar la herramienta `inspect_entity` con los argumentos `{ environment?, entitySet?, customOnly?, query? }`, estrictos ante claves desconocidas. |
-| **FR-100** (MUST) | Sin `entitySet`, DEBE devolver el listado `{ environment, totalCount, entities: [{ name, isCustom }] }`. Con `customOnly: true` DEBE devolver solo Custom MDF y añadir los campos del resumen MDF más `employeeLinkedCount`. Con `query`, DEBE filtrar por subcadena del nombre sin distinguir mayúsculas. |
+| **FR-100** (MUST) | Sin `entitySet`, DEBE devolver el listado `{ environment, totalCount, entities: [{ name, isCustom }] }`. Con `customOnly: true` DEBE devolver solo Custom MDF y añadir los campos del resumen MDF más `employeeLinkedCount`. Con `query`, DEBE filtrar por subcadena del nombre sin distinguir mayúsculas. **El listado NO DEBE truncarse ni paginarse:** devuelve todas las entidades que pasen el filtro. `query` es la vía para acotarlo. |
 | **FR-101** (MUST) | Con `entitySet`, DEBE devolver el mismo contrato de detalle que `sf://{env}/entities/{entitySet}`, incluyendo los aditamentos MDF **solo** cuando la entidad sea Custom MDF. |
 | **FR-102** (MUST) | La herramienta `inspect_custom_mdf` DEBE dejar de registrarse. Su nombre NO DEBE aparecer en `tools/list`. |
 | **FR-103** (MUST) | La herramienta NO DEBE realizar ninguna petición de red distinta del `$metadata` ya cacheado (D-62/DS-MDF-02). |
@@ -155,5 +155,5 @@ Scenario: La herramienta vieja ya no existe (FR-102) [V1]
 ## 9. Preguntas abiertas
 
 - **RESUELTA (2026-10-14): `locale` se conserva.** `inspect_entity` acepta `locale` y la prosa de `guidance` mantiene la precedencia de D-70. Retirar una herramienta no debe borrar una decisión ya tomada. Ver FR-106.
-- **OPEN QUESTION**: el listado general con 658 entidades pesa ~33 KB (nombres + `isCustom`). Recomendación registrada: **devolverlo completo hoy**; revisar si algún entorno supera ~1.500 entidades. Descartado un `limit` con truncado silencioso, porque convierte un problema de tamaño en uno de corrección. Medidos hasta ahora: PROD 658, DEV ~665, TEST ~671.
+- **RESUELTA (2026-10-14): sin `limit`.** El listado devuelve **todas** las entidades (FR-100). Pesa ~33 KB con 658, muy por debajo del tope de 256 KB, y los tres entornos medidos están en el mismo orden (PROD 658, DEV ~665, TEST ~671). Se **descarta** el truncado silencioso, porque convierte un problema de tamaño en uno de corrección. Único disparador de revisión: que un entorno supere ~1.500 entidades.
 - **ASSUMPTION**: los clientes objetivo exponen `tools/list` de forma fiable. Es el supuesto que sostiene todo el PRD; si algún cliente no lo hiciera, el hueco seguiría abierto por otra vía.
