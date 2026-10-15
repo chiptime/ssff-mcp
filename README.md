@@ -7,89 +7,67 @@
 
 A local, **read-only** MCP (Model Context Protocol) server for **SAP
 SuccessFactors OData v2**. It lets an AI assistant — OpenCode, Claude Desktop,
-Cursor, Codex, Pi, or any MCP client — read your SuccessFactors data safely:
-read-only by construction, one page per call, and with no way to write anything.
-
-- **Tools:** `list_environments`, `inspect_entity`, `query_entity`, `batch_get`
-- **Resources:** environment overview, entity catalog, per-entity schema, Custom MDF catalog
-- **Auth:** Basic or OAuth 2.0, per environment, over HTTPS only
-- **Platforms:** Linux, macOS, Windows · **License:** MIT
-
-The server talks to the client over **STDIO** only (no HTTP port anywhere) and
-dispatches reads as `HTTPS GET`, exactly one fetch per call. The single
-sanctioned `POST` is the fixed, GET-only `$batch` envelope used by `batch_get`
-(plus the two fixed OAuth token endpoints). The read-only frontier lives in
-server code, never in a prompt.
+Cursor, Codex, Pi, or any MCP client — read your SuccessFactors data through
+natural language, safely: read-only by construction, one page per call, and with
+no way to write anything.
 
 > **Release status.** The published npm version is **0.3.0**. The `inspect_entity`
 > tool, the `ssff-mcp cache invalidate` command, the configurable response-size
 > cap and the Custom MDF improvements are on `main` and land in the next release.
-> If you need them today, run [from source](#from-source-development).
+> If you need them today, [build from source](docs/development.md#build-and-test).
+
+## ssff-mcp vs calling OData directly
+
+You could write your own SuccessFactors client, but you would handle auth and
+token refresh, effective dating, `$batch` envelopes, cursor pagination, error
+sanitization and — above all — the read-only boundary yourself. `ssff-mcp` is
+exactly that layer, packaged for any MCP client, and it refuses to write by
+construction. See the full [comparison](docs/faq.md#how-it-compares).
+
+## Key features
+
+- **Read-only by construction.** No tool can write; the boundary lives in server
+  code, never in a prompt.
+- **Schema-aware.** `inspect_entity` and MCP resources browse the data model
+  without spending a data query.
+- **Safe by default.** HTTPS-only, sanitized errors, metadata-only stderr logs,
+  secrets never logged.
+- **Efficient reads.** One page per call, signed cursor continuation, and one
+  GET-only `$batch` for up to 180 reads.
+- **Any MCP client.** A local STDIO server — no HTTP port, no third-party proxy.
+- **Cross-platform.** Linux, macOS and Windows; Basic or OAuth 2.0 per
+  environment.
 
 ## Requirements
 
 - **Node.js >= 20** (Linux, macOS, Windows).
-- **pnpm** — only if you develop from source. The installed CLI needs nothing beyond Node.
+- Any MCP client: OpenCode, Claude Desktop, Cursor, Codex, Pi, or another.
+- **pnpm** — only if you build from source. The installed CLI needs nothing
+  beyond Node.
 
-## Install
+## Getting started
 
-### From npm (recommended)
-
-Run on demand with `npx`:
-
-```bash
-npx -y ssff-mcp@latest
-```
-
-Or install globally and call `ssff-mcp`:
-
-```bash
-npm install -g ssff-mcp
-ssff-mcp
-```
-
-With no arguments, `ssff-mcp` starts the MCP server on stdin/stdout. Most people
-never run it by hand — the MCP client launches it **as a subprocess** (see
-[Connecting your MCP client](#connecting-your-mcp-client)).
-
-### From source (development)
-
-```bash
-git clone https://github.com/chiptime/ssff-mcp.git
-cd ssff-mcp
-pnpm install
-pnpm build
-pnpm start          # runs: node dist/src/index.js
-```
-
-## Quick start
-
-Three steps, about five minutes.
-
-**1. Run the configuration wizard.** It asks for your tenant URL and credentials,
-validates them live against `$metadata`, optionally lets you pick an entity
-allowlist, writes `~/.config/ssff-mcp/config.json`, and prints the block to paste
-into your MCP client.
+Run the configuration wizard — it asks for your tenant URL and credentials,
+validates them live against `$metadata`, writes `~/.config/ssff-mcp/config.json`
+and prints the block for your client:
 
 ```bash
 npx -y ssff-mcp@latest init
 ```
 
-**2. Paste the printed block** into your client's config (see
-[Connecting your MCP client](#connecting-your-mcp-client)).
+Then paste that block into your client and restart it. Already have a
+configuration file? The **standard config** works in most tools:
 
-**3. Restart the client and ask it something**, for example *"List my
-SuccessFactors environments."*
-
-> Prefer no config file at all? Use [inline mode](docs/configuration.md#inline-mode-no-config-file)
-> and put `SF_*` environment variables straight into the client block.
-
-## Connecting your MCP client
-
-The server is a local stdio MCP server, so each client launches it as a
-subprocess. The wizard prints the exact block for the client you pick; the five
-supported shapes are below. With the configuration file holding your
-credentials, the block itself carries no secrets.
+```json
+{
+  "mcpServers": {
+    "ssff-mcp": {
+      "command": "npx",
+      "args": ["-y", "ssff-mcp@latest"]
+    }
+  }
+}
+```
 
 <details>
 <summary><b>OpenCode</b> — <code>opencode.json</code></summary>
@@ -167,35 +145,15 @@ args = ["-y", "ssff-mcp@latest"]
 ```
 </details>
 
-For inline mode (credentials in the block, no config file), the `env` /
-`environment` object carries the `SF_*` variables instead of being empty; secret
-variables are referenced, not embedded, by the generator.
+Install globally instead of with `npx` (`npm install -g ssff-mcp`, then run
+`ssff-mcp`), or [build from source](docs/development.md#build-and-test).
 
 ## Configuration
 
-The usual way is [`ssff-mcp init`](#quick-start): it writes
+The usual way is [`ssff-mcp init`](#getting-started): it writes
 `~/.config/ssff-mcp/config.json` and prints the block for your client. To edit
 the file by hand, or for OAuth, entity allowlist, secret providers and inline
 mode, see **[Configuration →](docs/configuration.md)**.
-
-## How it works
-
-Your assistant speaks **MCP** to `ssff-mcp` over **STDIO**; `ssff-mcp` speaks
-**OData v2** to SuccessFactors over **HTTPS**. Nothing is proxied through a third
-party, and there is no write path anywhere.
-
-```text
-   Assistant (MCP host)          ssff-mcp (local)            SAP SuccessFactors
-   ─────────────────────  MCP   ─────────────────  HTTPS   ─────────────────────
-   "read EmpJob for ..."  ────►   validate + build  ─────►   OData v2 endpoint
-   answer                 ◄────   sanitize + page   ◄─────   one page per call
-```
-
-Every call is one **`HTTPS GET`** (plus a fixed, GET-only `$batch` POST for
-`batch_get`). The server validates the request, enforces your
-[entity allowlist](docs/configuration.md#entity-allowlist), caches only the
-`$metadata` schema, and returns at most one page. Not sure whether it fits your
-case? See the [FAQ and comparison](docs/faq.md).
 
 ## What you can ask
 
@@ -207,9 +165,6 @@ You drive the assistant in natural language; it picks the tool.
 - "Read the current job info for employee `1000001`."
 - "Get the employees in `PerPersonal` whose last name is García, with id, name and email."
 - "Fetch these five entities at once: …" *(one `$batch` request)*
-
-See [Examples](docs/tools.md#examples-what-you-ask-what-happens) for what each
-prompt triggers under the hood.
 
 ## Demo
 
@@ -235,6 +190,26 @@ Assistant  calls query_entity ->
 ```
 
 <!-- To show a recorded GIF instead: add docs/assets/demo.gif and replace the transcript above with ![demo](docs/assets/demo.gif). -->
+
+## Security
+
+`ssff-mcp` is read-only by construction: no POST/PUT/PATCH/DELETE can come from
+tool input, credentials travel over HTTPS only (or not at all, in inline mode),
+errors are sanitized and logs are metadata-only on stderr. Use a
+least-privileged, read-only SuccessFactors account. Details in
+[Security](docs/security.md).
+
+## Tools
+
+| Tool | What it does |
+|---|---|
+| `list_environments` | Lists the configured environments (aliases and auth type). |
+| `inspect_entity` | Reads the data model: entity catalog, schema and Custom MDF classification. |
+| `query_entity` | Reads one entity with `$filter`/`$orderby`/`$select`/`$expand`/`$top`/`$skip` and effective dating. |
+| `batch_get` | Runs up to 180 read-only GETs in one GET-only `$batch` request. |
+
+Plus read-only [MCP resources](docs/tools.md#mcp-resources) for browsing the
+schema. Full argument reference: **[Tools & Resources →](docs/tools.md)**.
 
 ## Documentation
 
