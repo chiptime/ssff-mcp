@@ -37,6 +37,7 @@
     "prepack": "npm run build",
     "test": "pnpm build && node --test dist/test/",
     "typecheck": "tsc --noEmit",
+    "docs:gen": "pnpm build && node scripts/generate-tools-doc.mjs",
     "start": "node dist/src/index.js"
   },
   "dependencies": {
