@@ -133,28 +133,38 @@ const queryEntitySchema = z
 
 const listEnvironmentsSchema = z.object({}).strict();
 
-export const INSPECT_CUSTOM_MDF_DESCRIPTION = [
-  "Discovers Custom MDF objects (cust_* entity sets) of the selected environment from the cached $metadata;",
-  "no data request is made. Without entitySet it returns the compact catalog of allowed Custom MDF entities",
-  "(name, isEffectiveDated, linkType, targetEntity, matchField); employeeLinkedOnly keeps only the entities",
-  "tied to a User or EmpEmployment. With entitySet it returns the schema plus employeeLink and query guidance",
-  "(suggested $filter, $orderby for effective-dated objects, warnings, and a ready query_entity example).",
-  "Always query the custom entity as the root with $filter and $top; expanding it from User returns the whole child collection.",
-  "locale selects the language of the guidance warnings (the user's language, e.g. es_ES).",
+export const INSPECT_ENTITY_DESCRIPTION = [
+  "Reads the data model from the cached $metadata; no data request is made.",
+  "Without entitySet it lists entities as { name, isCustom }; customOnly narrows to Custom MDF objects",
+  "(adding isEffectiveDated, linkType, targetEntity, matchField, plus employeeLinkedCount), employeeLinkedOnly",
+  "narrows that list further to the ones tied to a User or EmpEmployment, and query filters names by substring.",
+  "With entitySet it returns that entity's schema; Custom MDF entities also carry isCustom, isEffectiveDated,",
+  "employeeLink and query guidance (suggested $filter, $orderby, warnings, and a ready query_entity example).",
+  "Always query a custom entity as the root with $filter and $top; expanding it from User returns the whole child collection.",
+  "locale selects the language of the guidance prose (the user's language, e.g. es_ES).",
 ].join(" ");
 
-const inspectCustomMdfSchema = z
+const inspectEntitySchema = z
   .object({
     environment: environmentArg,
     entitySet: z
       .string()
       .min(1)
       .optional()
-      .describe("Specific Custom MDF entity set (e.g. 'cust_EmployeeEquipment'). If omitted, lists all Custom MDF entities."),
+      .describe("Entity set to detail (e.g. 'User', 'cust_EmployeeEquipment'). If omitted, lists entities."),
+    customOnly: z
+      .boolean()
+      .optional()
+      .describe("When listing, keep only Custom MDF objects and add their classification fields. Default: false."),
     employeeLinkedOnly: z
       .boolean()
       .optional()
-      .describe("When listing, keep only entities linked to User or EmpEmployment. Default: false."),
+      .describe("When listing Custom MDF objects, keep only those tied to a User or EmpEmployment. Requires customOnly."),
+    query: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("When listing, keep entities whose name contains this text (case-insensitive)."),
     locale: z
       .string()
       .optional()
@@ -438,44 +448,93 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
   );
 
   server.registerTool(
-    "inspect_custom_mdf",
+    "inspect_entity",
     {
-      title: "Inspect Custom MDF objects",
-      description: INSPECT_CUSTOM_MDF_DESCRIPTION,
-      inputSchema: inspectCustomMdfSchema,
+      title: "Inspect the data model",
+      description: INSPECT_ENTITY_DESCRIPTION,
+      inputSchema: inspectEntitySchema,
     },
     async (args) =>
-      await executeTool("inspect_custom_mdf", args.environment, async () => {
+      await executeTool("inspect_entity", args.environment, async () => {
         const { environments, entityAllowlist, defaultLocale, inline } = await loadFreshConfig(args.environment);
         const { alias, env } = resolveEnvironment(environments, args.environment, inline);
         const target: EnvTarget = envTargetFor(env, alias);
         const locale = resolveLocale({ tool: args.locale, config: defaultLocale, env: envVars.SF_DEFAULT_LOCALE });
 
         if (args.entitySet !== undefined) {
-          // employeeLinkedOnly only filters the listing; rejecting it here avoids
-          // silently ignoring an explicitly provided option.
-          if (args.employeeLinkedOnly === true) {
+          // The listing options are meaningless with a single entity; rejected
+          // rather than silently ignored.
+          if (args.customOnly === true || args.employeeLinkedOnly === true || args.query !== undefined) {
             throw new SanitizedError(
               "OPTION_INVALID",
-              "employeeLinkedOnly only applies to the entity listing; omit entitySet or drop the option",
+              "customOnly, employeeLinkedOnly and query only apply to the entity listing; omit entitySet or drop them",
             );
           }
-          const details = await metadataService.getCustomMdfDetails(target, alias, args.entitySet, entityAllowlist, locale);
-          if (details === undefined) {
-            throw new SanitizedError("RESOURCE_NOT_FOUND", "the entity set is not a Custom MDF object of this environment");
+          if (entityAllowlist !== undefined && !isEntityAllowed(entityAllowlist, args.entitySet)) {
+            throw new SanitizedError(
+              "ENTITY_NOT_ALLOWED",
+              `ENTITY_NOT_ALLOWED: entity "${args.entitySet}" is not permitted by the configured allowlist`,
+            );
           }
-          const structured = details as unknown as Record<string, unknown>;
+          // Same contract as sf://{env}/entities/{entitySet} (FR-101): Custom MDF
+          // entities get additive MDF fields; any other entity keeps the plain schema.
+          if (isCustomMdfEntity(args.entitySet)) {
+            const details = await metadataService.getCustomMdfDetails(
+              target,
+              alias,
+              args.entitySet,
+              entityAllowlist,
+              locale,
+            );
+            if (details !== undefined) {
+              const structured = details as unknown as Record<string, unknown>;
+              return { structured, text: JSON.stringify(structured) };
+            }
+          }
+          const schema = await metadataService.getEntitySchema(target, alias, args.entitySet);
+          if (schema === undefined) {
+            throw new SanitizedError(
+              "RESOURCE_NOT_FOUND",
+              "the requested entity set was not found in the metadata of this environment",
+            );
+          }
+          const structured = schema as unknown as Record<string, unknown>;
           return { structured, text: JSON.stringify(structured) };
         }
 
-        const entities = await metadataService.listCustomMdf(target, alias, entityAllowlist, args.employeeLinkedOnly === true);
-        const structured: Record<string, unknown> = {
-          environment: alias,
-          locale,
-          totalCount: entities.length,
-          employeeLinkedCount: entities.filter((entity) => isEmployeeLinkedType(entity.linkType)).length,
-          entities,
-        };
+        if (args.employeeLinkedOnly === true && args.customOnly !== true) {
+          throw new SanitizedError("OPTION_INVALID", "employeeLinkedOnly requires customOnly: true");
+        }
+
+        if (args.customOnly === true) {
+          const entities = await metadataService.listCustomMdf(
+            target,
+            alias,
+            entityAllowlist,
+            args.employeeLinkedOnly === true,
+          );
+          const structured: Record<string, unknown> = {
+            environment: alias,
+            locale,
+            totalCount: entities.length,
+            employeeLinkedCount: entities.filter((entity) => isEmployeeLinkedType(entity.linkType)).length,
+            entities,
+          };
+          return { structured, text: JSON.stringify(structured), recordCount: entities.length };
+        }
+
+        // Full listing (FR-100): every entity that passes the allowlist and the
+        // optional name filter, never truncated.
+        const parsed = await metadataService.getParsedMetadata(target, alias);
+        const allowed =
+          entityAllowlist === undefined
+            ? parsed.entitySets
+            : parsed.entitySets.filter((name) => isEntityAllowed(entityAllowlist, name));
+        const needle = args.query?.toLowerCase();
+        const entities = allowed
+          .filter((name) => needle === undefined || name.toLowerCase().includes(needle))
+          .map((name) => ({ name, isCustom: isCustomMdfEntity(name) }));
+        const structured = { environment: alias, totalCount: entities.length, entities };
         return { structured, text: JSON.stringify(structured), recordCount: entities.length };
       }),
   );
