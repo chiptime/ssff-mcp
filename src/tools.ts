@@ -24,7 +24,7 @@ import { SanitizedError, toSanitizedError } from "./errors.js";
 import { dispatchGet, envTargetFor, type EnvTarget, type FetchImpl } from "./http.js";
 import { resolveLocale } from "./i18n.js";
 import { makeLogger, type LogSink, type Logger } from "./logger.js";
-import { classifyEmployeeLink, effectiveDateKey, isCustomMdfEntity, isEmployeeLinkedType } from "./mdf.js";
+import { isCustomMdfEntity, isEmployeeLinkedType } from "./mdf.js";
 import { MetadataService } from "./metadata.js";
 import { exceedsResponseCap, responseTooLargeError, setMaxResponseBytes } from "./size-guard.js";
 import {
