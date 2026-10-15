@@ -59,24 +59,24 @@ Todos los tests pasan en verde (**236/236** hoy; 208 al cerrar la fase). Se impl
 > comprobaron con evidencia directa; se añaden marcas de estado al resto.
 
 **Bloque 1 — Multiplataforma**
-- [ ] **ABIERTO** — Decidir/ajustar aviso Windows: hoy se emite en **cada** carga de config (spam por tool call). Verificado: `src/config.ts:492-495` no tiene bandera de "una vez por proceso". **Ojo:** `PRD-phase3.md` v1.1 lo daba por hecho; era falso y ya está corregido allí.
+- [x] **HECHO (2026-10-14)** — Aviso Windows: se emite **una vez por proceso** (flag `windowsAclWarningEmitted` en `src/config.ts`). Commit `63555b6`. Además, los dos avisos de permisos nombran ahora la **ruta real** en vez de `CONFIG_TILDE_PATH`.
 - [x] **HECHO** — README: quitar "Linux-only". Verificado: ya no contiene "Linux-only" ni equivalente.
 - [x] **HECHO (2026-10-14)** — CI: `.github/workflows/ci.yml` con matriz `ubuntu-latest / macos-latest / windows-latest` y Node 20, ejecutando `pnpm install --frozen-lockfile`, `typecheck` y `test`. Commit `6c2f7c6`. **Sin estrenar**: GitHub lo validará en el primer push.
 - [x] **HECHO** — FR-44: test explícito de CRLF en el transporte STDIO / cursores. Verificado: `test/cursor.test.ts:220`.
-- [ ] **ABIERTO** — Revisar que ningún test dependa de `chmod`/`0o600` en Windows. Verificado: hay `0o600` en 5 ficheros de `test/` (`cli-init`, `tools`, `batch`, `helpers`, `config`), sin guarda `win32` confirmada.
+- [x] **HECHO (2026-10-14)** — Guardas `win32`: solo **una** aserción necesitaba guarda (el test del aviso `chmod 600`, ahora con `{ skip: platform === "win32" }`). La del wizard **ya estaba** protegida por una condición envolvente — lo demostró el compilador al rechazar la guarda redundante. El resto de `0o600` son opciones de `writeConfigFile` que Windows ignora sin romper nada.
 
 **Bloque 2 — Secretos**
-- [ ] **DUDA** — FR-47: test de que el **valor resuelto** no aparece en logs ni errores. Los tests existentes (`test/config.test.ts:391,405,482`) comprueban el **código** de error, no la ausencia del valor.
-- [ ] **DUDA** — Test de inyección: argumentos con `& | ;` no ejecutan shell. Hay tests de `fromCommand` (`test/config.test.ts:412,440,482`), pero no consta que cubran la inyección ni que usen `execFile` real.
-- [ ] **DUDA** — Mensaje de `CONFIG_SECRET_TIMEOUT` derivado de constante. Verificado que existe `SECRET_COMMAND_TIMEOUT_MS = 5000` (`src/config.ts:225`); **sin verificar** que el mensaje derive de ella.
+- [x] **HECHO (2026-10-14)** — FR-47: test añadido. El valor resuelto no aparece ni en avisos ni en el mensaje de error, comprobado en la ruta de éxito **y** en la de fallo.
+- [x] **HECHO (2026-10-14)** — Test de inyección añadido, con **subproceso real** (no mock): un argumento con `;` llega literal, lo que prueba sobre el terreno que `execFile({ shell: false })` no interpreta nada.
+- [x] **HECHO (2026-10-14)** — No requería cambio: el mensaje **ya derivaba** de la constante (`src/config.ts:292`: `timed out after ${SECRET_COMMAND_TIMEOUT_MS}ms`). La duda era una suposición mía sin comprobar.
 - [x] **HECHO** — `config.template.json`: verificado que existe.
 - [x] **HECHO** — Resolver secretos solo del entorno solicitado: implementado (`src/config.ts:522`, opción `resolveSecretsFor`).
 
 **Bloque 3 — Resources**
 - [x] **HECHO** — `get_metadata`/descripciones de tool: **CERRADO (2026-10-14)**. Se fue más allá: `get_metadata` se **retira** (D-76/D-77, `archive/PRD-feature-remove-get-metadata.md`); el esquema queda solo por los recursos.
 - [x] **HECHO** — Test de caché de disco a nivel `createMcpServer` con `cacheDir` temporal. Verificado: existe en `test/tools.test.ts`.
-- [x] **HECHO — medido (2026-10-14)** — Tamaño real, medido contra los metadatos cacheados de PROD: `/entities` = **142 KB** con 658 entidades; `/entities/{entitySet}` máximo = **41 KB** (`User`). **Límites reajustados por el usuario a 150 KB y 50 KB**, así que **cumple** en ambos. **Pendiente derivado**: los recursos **NO** pasan por el tope de `src/size-guard.ts`, que solo cubre tools — el catálogo llega al modelo sin recorte (decisión abierta).
-- [ ] **ABIERTO** — `resources/list` solo lista overview y entities; los schemas por entidad quedan como template. Verificado: `sf://{env}/entities/{entitySet}` sigue con `list: undefined` (`src/tools.ts:834`). Confirmar que es suficiente.
+- [x] **HECHO — medido (2026-10-14)** — Tamaño real, medido contra los metadatos cacheados de PROD: `/entities` = **142 KB** con 658 entidades; `/entities/{entitySet}` máximo = **41 KB** (`User`). **Límites reajustados por el usuario a 150 KB y 50 KB**, así que **cumple** en ambos. **Pendiente derivado — DECIDIDO (2026-10-14)**: los recursos **NO** llevan tope. `size-guard` cubre solo tools y se mantiene así a propósito: si el catálogo fallara por tamaño perderíamos la única vía de descubrimiento desde que se retiró `get_metadata`. Lo correcto es que quepa por diseño, y hoy cabe: **33 KB** tras el recorte del catálogo a nombres.
+- [ ] **DECISIÓN PENDIENTE** — `resources/list` solo lista overview y entities; los schemas por entidad quedan como template (`list: undefined`). **Recomendación registrada (2026-10-14): dejarlo como está.** Enumerar las 658 entidades por alias llenaría el índice sin aportar información — los nombres ya están en `sf://{env}/entities`, y `inspect_entity` cubre el descubrimiento por tool.
 - [x] **HECHO** — Verificar `isCustom` (`cust_`/`Cust_`) contra convención real de MDF: **verificado empíricamente**. 79/79 (PROD), 87/87 (DEV) y 91/91 (TEST) usan `cust_`; **cero** `Cust_`. Ver `PRD-feature-custom-mdf.md` §0.3 (A-MDF-01).
 
 **Cierre**
