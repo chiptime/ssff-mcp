@@ -32,7 +32,8 @@
     "config.template.json"
   ],
   "scripts": {
-    "build": "tsc",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "pnpm clean && tsc",
     "prepack": "npm run build",
     "test": "pnpm build && node --test dist/test/",
     "typecheck": "tsc --noEmit",
