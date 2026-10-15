@@ -1,0 +1,64 @@
+# Security & privacy
+
+> Part of [ssff-mcp](../README.md). The read-only guarantees, how secrets and
+> logs are handled, and the scope limits.
+
+## Read-only by construction
+
+- **No writes of any kind.** No POST/PUT/PATCH/DELETE/MERGE can come from tool
+  input, and there is no header input surface at all. The only sanctioned POST is
+  the fixed, GET-only `$batch` envelope (plus the two fixed OAuth token
+  endpoints).
+- **One GET per call.** Data reads dispatch exactly one `HTTPS GET`; next links
+  are never followed automatically.
+- **HTTPS only.** Basic credentials are sent only over TLS; redirects are
+  followed only to the same https host configured for the environment (otherwise
+  `REDIRECT_BLOCKED`).
+
+## Use a least-privileged account
+
+This server enforces read-only behavior client-side, but the tenant account is an
+acceptance condition: use a **read-only, least-privileged** API user. What the
+account can read, this server can read. Verify the account's roles in the tenant.
+
+## Errors and logs
+
+- **Errors are sanitized.** Errors returned to the model are `{ code, message }`
+  (plus optional `httpStatus`) with URLs redacted from service messages and
+  generic wording for network failures (no hostnames).
+- **Logs are metadata-only, on stderr.** One JSON line per call:
+  `{ ts, tool, environment, outcome, code?, durationMs, recordCount? }`. No URLs,
+  no entity paths, no query values, no bodies, no credentials. stdout carries
+  only the MCP protocol.
+
+## Secrets
+
+- **Tokens stay in memory.** OAuth tokens never touch disk, logs or error
+  messages, and die with the process.
+- **Config secrets are read on demand.** Passwords and OAuth private keys can be
+  plain text or resolved per call via [`fromEnv` / `fromCommand`](configuration.md#secret-providers).
+- **File permissions.** Restrict `config.json` to owner-only (`chmod 600` on
+  POSIX, ACLs on Windows). The server warns on stderr (once per process) when the
+  file is readable by others.
+
+## Metadata cache
+
+Parsed `$metadata` schemas are cached on disk under the OS cache directory with a
+**24h TTL**, plus a 10-minute in-memory layer. **No person records or sensitive
+data are ever cached.** Force a reload with [`ssff-mcp cache invalidate`](configuration.md#cli).
+
+| OS | Cache path |
+|---|---|
+| Linux | `~/.cache/ssff-mcp` |
+| macOS | `~/Library/Caches/ssff-mcp` |
+| Windows | `%LOCALAPPDATA%\ssff-mcp\cache` |
+
+## Limits & scope
+
+- **OData v2 only.** OData v4 is deferred until a tenant with a verified v4
+  endpoint exists.
+- **No function imports / custom service operations** (`FUNCTION_IMPORT_UNSUPPORTED`).
+- **One page per call**, 1,000-record ceiling, 256 KiB default response cap,
+  cursor-based continuation.
+- **Cross-platform STDIO only**; there is no HTTP listener anywhere in the
+  server.

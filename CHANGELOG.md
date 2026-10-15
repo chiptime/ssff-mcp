@@ -94,6 +94,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rejected with `OPTION_INVALID` before any dispatch, since they could inject extra HTTP
   request lines into the `$batch` multipart envelope. The error never echoes the value.
 - Added regression tests for secret redaction and the POSIX-only permission check.
+
+### Documentation
+
+- Rebuilt the documentation: the **README is now a hub** (badges, a "How it
+  works" diagram, an ask/answer demo, a documentation index and per-client blocks)
+  and the deep reference moved to `docs/` — `configuration`, `tools`, `security`,
+  `troubleshooting`, `faq` and `development`.
+- The tools reference in `docs/tools.md` is **generated** from
+  `src/tool-catalog.ts` (single source for tool names, titles, descriptions and
+  input schemas) via `pnpm docs:gen`; `test/docs-tools-sync.test.ts` fails when the
+  committed document drifts.
+- Implemented PRDs moved to `archive/` (indexed in `archive/README.md`); the
+  repository root keeps only the pending ones.
+
 ## [0.3.0] — 2026-10-14
 
 ### Breaking
