@@ -74,6 +74,7 @@ const inspectEntitySchema = z.object({
   entitySet: z.string().min(1).optional(),
   customOnly: z.boolean().optional(),   // por defecto false
   query: z.string().optional(),         // filtro de texto libre sobre el nombre
+  locale: z.string().optional(),        // idioma de la prosa de `guidance` (D-70)
 }).strict();
 ```
 
@@ -116,6 +117,7 @@ const inspectEntitySchema = z.object({
 | **FR-103** (MUST) | La herramienta NO DEBE realizar ninguna petición de red distinta del `$metadata` ya cacheado (D-62/DS-MDF-02). |
 | **FR-104** (MUST) | Con `entityAllowlist` configurada, una entidad excluida DEBE responder `ENTITY_NOT_ALLOWED` y NO DEBE aparecer en ningún listado; una entidad inexistente, `RESOURCE_NOT_FOUND`. |
 | **FR-105** (SHOULD) | La salida DEBE respetar el tope de tamaño (D-75/FR-86) y, de superarlo, devolver el error saneado que ya existe, indicando cómo acotar con `query` o `entitySet`. |
+| **FR-106** (MUST) | La herramienta DEBE aceptar `locale` opcional y resolver la prosa de `guidance` con la misma precedencia que D-70 (`locale` > `defaultLocale` > `SF_DEFAULT_LOCALE` > `"en_US"`), exponiendo el locale efectivo. Sin esto, retirar `inspect_custom_mdf` **perdería la guía multilingüe**. |
 
 ---
 
@@ -152,6 +154,6 @@ Scenario: La herramienta vieja ya no existe (FR-102) [V1]
 
 ## 9. Preguntas abiertas
 
-- **OPEN QUESTION**: el listado general con 658 entidades pesa ~33 KB (nombres + `isCustom`). ¿Basta, o conviene un `limit` explícito con aviso de que use `query`?
-- **OPEN QUESTION**: ¿la herramienta debe aceptar `locale` para la prosa de `guidance`, igual que hacía `inspect_custom_mdf` (D-70)? Recomendación: sí, para no perder la funcionalidad al retirarla.
+- **RESUELTA (2026-10-14): `locale` se conserva.** `inspect_entity` acepta `locale` y la prosa de `guidance` mantiene la precedencia de D-70. Retirar una herramienta no debe borrar una decisión ya tomada. Ver FR-106.
+- **OPEN QUESTION**: el listado general con 658 entidades pesa ~33 KB (nombres + `isCustom`). Recomendación registrada: **devolverlo completo hoy**; revisar si algún entorno supera ~1.500 entidades. Descartado un `limit` con truncado silencioso, porque convierte un problema de tamaño en uno de corrección. Medidos hasta ahora: PROD 658, DEV ~665, TEST ~671.
 - **ASSUMPTION**: los clientes objetivo exponen `tools/list` de forma fiable. Es el supuesto que sostiene todo el PRD; si algún cliente no lo hiciera, el hueco seguiría abierto por otra vía.
