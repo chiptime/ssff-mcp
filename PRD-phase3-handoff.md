@@ -61,7 +61,7 @@ Todos los tests pasan en verde (**236/236** hoy; 208 al cerrar la fase). Se impl
 **Bloque 1 — Multiplataforma**
 - [ ] **ABIERTO** — Decidir/ajustar aviso Windows: hoy se emite en **cada** carga de config (spam por tool call). Verificado: `src/config.ts:492-495` no tiene bandera de "una vez por proceso". **Ojo:** `PRD-phase3.md` v1.1 lo daba por hecho; era falso y ya está corregido allí.
 - [x] **HECHO** — README: quitar "Linux-only". Verificado: ya no contiene "Linux-only" ni equivalente.
-- [ ] **ABIERTO** — CI: matriz GitHub Actions `ubuntu/macos/windows-latest`. Verificado: **no existe `.github/workflows`** en el repo.
+- [x] **HECHO (2026-10-14)** — CI: `.github/workflows/ci.yml` con matriz `ubuntu-latest / macos-latest / windows-latest` y Node 20, ejecutando `pnpm install --frozen-lockfile`, `typecheck` y `test`. Commit `6c2f7c6`. **Sin estrenar**: GitHub lo validará en el primer push.
 - [x] **HECHO** — FR-44: test explícito de CRLF en el transporte STDIO / cursores. Verificado: `test/cursor.test.ts:220`.
 - [ ] **ABIERTO** — Revisar que ningún test dependa de `chmod`/`0o600` en Windows. Verificado: hay `0o600` en 5 ficheros de `test/` (`cli-init`, `tools`, `batch`, `helpers`, `config`), sin guarda `win32` confirmada.
 
