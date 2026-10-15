@@ -1,341 +1,733 @@
 # ssff-mcp
 
-A local, **read-only** MCP (Model Context Protocol) server for **SAP SuccessFactors OData v2**, communicating with the MCP host exclusively over **STDIO**. It exposes three tools (`list_environments`, `query_entity`, `batch_get`); data reads dispatch exactly one HTTPS GET per call, and `batch_get` dispatches exactly one HTTPS POST to the fixed `$batch` endpoint with a GET-only multipart envelope — with the read-only frontier enforced in server code, never in prompts.
+A local, **read-only** MCP (Model Context Protocol) server for **SAP
+SuccessFactors OData v2**. It lets an AI assistant (OpenCode, Claude Desktop,
+Cursor, Codex, Pi, or any MCP client) read your SuccessFactors data — safely,
+one page at a time, and without any possibility of writing.
 
-**Status:** MIT licensed and **published on npm** ([ssff-mcp](https://www.npmjs.com/package/ssff-mcp)). Cross-platform (Linux, macOS, Windows); OpenCode is the first target client.
+The server talks to the MCP client over **STDIO** only (no HTTP port anywhere)
+and dispatches data reads as `HTTPS GET`, exactly one fetch per call. The single
+sanctioned `POST` is the fixed, GET-only `$batch` envelope used by `batch_get`
+(plus the two fixed OAuth token endpoints). The read-only frontier lives in
+server code, never in a prompt.
+
+- **Tools:** `list_environments`, `inspect_entity`, `query_entity`, `batch_get`
+- **Resources:** environment overview, entity catalog, per-entity schema, Custom
+  MDF catalog
+- **Auth:** Basic or OAuth 2.0, per environment, over HTTPS only
+- **Platforms:** Linux, macOS, Windows
+- **License:** MIT
+
+> **Release status.** The published npm version is **0.3.0**. The
+> `inspect_entity` tool, the `ssff-mcp cache invalidate` command, the
+> configurable response-size cap and the Custom MDF improvements are on `main`
+> and land in the next release. If you need them today, run from source (see
+> [Install](#install)).
+
+---
+
+## What is this?
+
+`ssff-mcp` is a small bridge between an AI assistant and SAP SuccessFactors. The
+assistant asks MCP questions ("which environments are configured?", "list the
+entities", "read `User` filtered by …"); the server validates every request,
+enforces your local rules, and returns only the data you allowed.
+
+You get:
+
+- A **safe** way to let a model read SF data: read-only by construction, with a
+  hard pagination ceiling, a response-size cap and sanitized errors.
+- **Several ways to ask:** a data model inspector, a single-entity query tool
+  with `$filter/$orderby/$select/$expand/$top/$skip` and effective dating, and a
+  batch tool that packs up to 180 reads into one request.
+- **MCP resources** for browsing the schema without spending a data query.
+- **Your choice of credentials:** a config file, or inline environment variables
+  injected by the client (no file at all).
+
+It is a **local** server: you run it on your machine, with your credentials, and
+nothing is proxied through a third party.
+
+---
 
 ## Requirements
 
-- Node.js >= 20 (Linux, macOS, Windows)
-- pnpm — **only for developing from source**; the installed CLI needs nothing beyond Node
+- **Node.js >= 20** (Linux, macOS, Windows).
+- **pnpm** — only if you develop from source. The installed CLI needs nothing
+  beyond Node.
+
+---
 
 ## Install
 
-### From source (development)
+### From npm (recommended)
 
-```bash
-pnpm install
-pnpm build
-```
-
-Run manually (it speaks MCP on stdin/stdout):
-
-```bash
-pnpm start
-```
-
-### Installed CLI (npm)
+Run it on demand with `npx`:
 
 ```bash
 npx -y ssff-mcp@latest
 ```
 
-or install globally (`npm install -g ssff-mcp`) and run `ssff-mcp`. The
-installed CLI requires only Node >= 20.
+Or install it globally and call `ssff-mcp`:
 
-**Fastest setup:** run the interactive wizard — it writes `config.json` (mode
-`0600`) and prints the ready-to-paste block for your MCP client:
+```bash
+npm install -g ssff-mcp
+ssff-mcp
+```
+
+With no arguments, `ssff-mcp` starts the MCP server on stdin/stdout. Most people
+never run it by hand — the MCP client launches it **as a subprocess** (see
+[Connecting your MCP client](#connecting-your-mcp-client)).
+
+### From source (development)
+
+```bash
+git clone https://github.com/chiptime/ssff-mcp.git
+cd ssff-mcp
+pnpm install
+pnpm build
+pnpm start          # runs: node dist/src/index.js
+```
+
+---
+
+## Quick start
+
+Three steps, about five minutes.
+
+**1. Run the configuration wizard.** It asks for your tenant URL and
+credentials, validates them live against `$metadata`, optionally lets you pick an
+entity allowlist, writes `~/.config/ssff-mcp/config.json`, and prints the block
+to paste into your MCP client.
 
 ```bash
 npx -y ssff-mcp@latest init
 ```
 
-Otherwise, configure manually as described below, or use
-[inline mode](#inline-mode-no-config-file) and skip the file entirely.
+**2. Paste the printed block** into your client's config (see
+[Connecting your MCP client](#connecting-your-mcp-client)).
 
-## Configuration
+**3. Restart the client and ask it something**, for example:
 
-The configuration lives at the path **`~/.config/ssff-mcp/config.json`** (POSIX: Linux/macOS) or **`%USERPROFILE%\.config\ssff-mcp\config.json`** (Windows). `XDG_CONFIG_HOME` is deliberately not honored.
+> "List my SuccessFactors environments."
+> "Inspect the `User` entity and tell me its key and main fields."
+> "Read the first 5 `PerPersonal` rows for user `1000001`."
 
-1. Create the directory: `mkdir -p ~/.config/ssff-mcp` (or `mkdir "%USERPROFILE%\.config\ssff-mcp"` on Windows)
-2. Copy the template: `cp config.template.json ~/.config/ssff-mcp/config.json`
-   (for a packaged install, copy it from the installed package instead:
-   `cp "$(npm root -g)/ssff-mcp/config.template.json" ~/.config/ssff-mcp/config.json`
-   for a global install — `node_modules/ssff-mcp/config.template.json` relative
-   to the install for anything else — or fetch it from the repository). The
-   template ships inside the npm package with safe placeholders.
-3. Fill in the placeholders.
-4. Restrict permissions: `chmod 600 ~/.config/ssff-mcp/config.json` on POSIX systems (Linux/macOS). On Windows, restrict access via Windows ACLs (e.g. `icacls`).
+The assistant will call the matching tool and answer from the real data.
 
-The file is re-read and re-validated on **every tool call** (stateless). Secrets are never logged and never persisted elsewhere by the server.
+> Prefer no config file at all? Use [inline mode](#inline-mode-no-config-file)
+> and put `SF_*` environment variables straight into the client block.
 
-### Inline mode (no config file)
+---
 
-If `~/.config/ssff-mcp/config.json` does **not** exist, the server can synthesize a single environment from `SF_*` environment variables injected by your MCP client:
+## Connecting your MCP client
 
-| Variable | Meaning |
-|---|---|
-| `SF_BASE_URL` | Tenant API origin (required to enable inline mode) |
-| `SF_USERNAME`, `SF_PASSWORD` | Basic auth credentials |
-| `SF_CLIENT_ID`, `SF_COMPANY_ID`, `SF_USER_ID`, `SF_TOKEN_URL`, `SF_PRIVATE_KEY` | OAuth 2.0 credentials (`SF_PRIVATE_KEY` accepts `\n` escapes or base64) |
-| `SF_ENVIRONMENT` | Environment alias (default: `default`) |
-| `SF_ENTITY_ALLOWLIST` | Comma-separated entity allowlist, for example `User,PerPersonal,EmpJob` |
-| `SF_DEFAULT_LOCALE` | Language of the Custom MDF guidance text (for example `es_ES`); see [Guidance language](#guidance-language-locale) |
+The server is a local stdio MCP server, so each client launches it as a
+subprocess. The wizard prints the exact block for the client you pick. The five
+supported shapes are below (with the configuration file holding your
+credentials, so the block itself carries no secrets).
 
-In inline mode a tool call may omit `environment` (there is exactly one). If a `config.json` exists it always wins, and the `SF_*` variables are ignored with a warning on stderr.
+| Client | Config file | Format |
+|---|---|---|
+| OpenCode | `opencode.json` | JSON |
+| Claude Desktop | `claude_desktop_config.json` | JSON |
+| Cursor | `~/.cursor/mcp.json` | JSON |
+| Pi | `~/.pi/agent/mcp.json` | JSON |
+| Codex | `~/.codex/config.toml` | TOML |
 
-### Wizard: `ssff-mcp init`
-
-```bash
-npx -y ssff-mcp@latest init
-```
-
-Guides you through the authentication type, validates the credentials live against `$metadata`, lets you pick the `entityAllowlist` with a filterable multiselect, writes `~/.config/ssff-mcp/config.json` atomically (mode `0600`, `.bak` backup if one existed) and prints the ready-to-paste block for Codex, Pi, OpenCode, Claude Desktop or Cursor. It requires an interactive terminal; a non-TTY run exits with code 2.
-
-### Fields
-
-| Field | Meaning |
-|---|---|
-| `environments` | Required object; may be empty. Keys are environment aliases you choose (for example `prod`, `staging`). |
-| `environments.<alias>.baseUrl` | Tenant API origin, for example `https://api4.successfactors.com`. Must be `https`, no credentials/userinfo, no query string or fragment. A path prefix is allowed. The server appends `/odata/v2` — do not include it yourself. |
-| `environments.<alias>.auth.type` | `"basic"` or `"oauth"` (see the OAuth section below). |
-| `environments.<alias>.auth.username` | Basic auth API username. SuccessFactors API users are often of the form `user@companyId`. |
-| `environments.<alias>.auth.password` | Basic auth API password. Can be a plain string, an environment variable `{ "fromEnv": "VAR_NAME" }`, or a CLI command `{ "fromCommand": ["op", "read", "item"] }`. |
-| `defaultEnvironment` | Optional. If present it MUST be `null`. Any non-null value is rejected: implicit environment selection is forbidden. |
-| `entityAllowlist` | Optional array. See [Entity allowlist](#entity-allowlist-optional) below. |
-| `defaultLocale` | Optional language preference for the Custom MDF guidance text, for example `"es"` or `"es_ES"` (`-` is accepted too). Only the format is validated; a language without translations falls back to `en_US`. See [Guidance language](#guidance-language-locale). |
-
-### Entity allowlist (optional)
-
-`entityAllowlist` restricts which entity sets `query_entity` may read. It is a
-local, explicit scope control on top of the tenant account's permissions.
-
-| Field | Meaning |
-|---|---|
-| `entity` | OData entity set name (for example `User`). Matched case-sensitively and exactly against the FIRST path segment of the query. |
-| `protocols` | Optional. Array of `"v2"` and/or `"v4"`, without duplicates. Omitted means both protocols. |
-
-Semantics:
-
-- **Absent** — no allowlist: every entity the account can read is reachable (default behavior).
-- **Present** — only the listed entities are queryable; any other entity is rejected with `ENTITY_NOT_ALLOWED` before any network request (not even `$metadata` is fetched for a denied query).
-- **`[]` (empty array)** — a configured deny-all: every `query_entity` call is rejected. Deliberate fail-closed behavior, not "no allowlist".
-- **`protocols`** — omitted = both protocols; `["v2"]` = v2 only. This phase is v2-only, so an entry whose `protocols` exclude `"v2"` (for example `["v4"]`) is **denied** — without v4 there is no available protocol for that entity.
-- **Navigation** — only the first path segment is checked: once a query starts from a listed entity, navigation segments after it (`User('123')/navProperty`) are not re-checked.
-- **Every metadata path visible to the model is allowlist-filtered**: the entity catalog and the per-entity schema resources apply the allowlist exactly like a data read.
+**OpenCode** (`opencode.json`):
 
 ```json
 {
-  "environments": {
-    "prod": {
-      "baseUrl": "https://api4.successfactors.com",
-      "auth": { "type": "basic", "username": "integration@mycompany", "password": "<secret>" }
-    }
-  },
-  "entityAllowlist": [
-    { "entity": "User" },
-    { "entity": "JobRequisition", "protocols": ["v2"] }
-  ]
-}
-```
-
-The key is deliberately NOT part of `config.template.json`: a copied template
-must not silently activate an allowlist. Invalid allowlists (bad entity names,
-empty/duplicate/unknown `protocols`, duplicate entities, unknown keys) are
-rejected with `CONFIG_INVALID`.
-
-### OAuth 2.0 (alternative to Basic, per environment)
-
-Set `auth.type` to `"oauth"` to use the SAP SuccessFactors OAuth 2.0 flow
-(grant `urn:ietf:params:oauth:grant-type:saml2-bearer` via SAP's IdP helper — no local
-SAML signing, no extra dependencies):
-
-| Field | Meaning |
-|---|---|
-| `auth.clientId` | OAuth2 client **API key** generated when the client was registered in SF Admin Center (Manage OAuth2 Client Applications). |
-| `auth.companyId` | Tenant company id; sent as `company_id` to the token endpoint. |
-| `auth.userId` | Technical user id **WITHOUT** the `@companyId` suffix (configurations containing `@` are rejected with a hint). |
-| `auth.privateKey` | The private key value **exactly as exported/stored** (a single line; it may be a composite value such as `<base64>/<base64>`). Paste it **verbatim: never decode, re-encode or retype it** (copy it programmatically if it is long). Inline plain text — see security disclosures. |
-| `auth.tokenUrl` | Fixed token endpoint, e.g. `https://<host>/oauth/token`. Must be `https`. Must match exactly what SAP expects (SAP embeds it in the assertion audience). |
-| `auth.idpUrl` | Optional. SAP IdP helper endpoint; defaults to the `tokenUrl` origin + `/oauth/idp`. |
-
-Flow (automatic, per tool call when needed): `POST {idpUrl}` with
-`{client_id, user_id, token_url, private_key}` returns a signed SAML assertion;
-`POST {tokenUrl}` with `{client_id, grant_type, company_id, assertion}` returns the
-bearer token (`expires_in` ≈ 24h). Tokens are cached **in memory per environment
-only** (until the process restarts), refreshed with a 60s/10% safety margin, and a
-401 on a data read triggers exactly one invalidation + retry. These two POSTs are the
-only non-GET requests the server can ever issue.
-
-**Prerequisite:** the client machine's IP must be whitelisted in SF Admin Center
-(Password & Login Policy Settings → API login exceptions) or the token endpoints will
-reject the connection.
-
-### Multiple environments example
-
-```json
-{
-  "environments": {
-    "prod": {
-      "baseUrl": "https://api4.successfactors.com",
-      "auth": { "type": "basic", "username": "integration@mycompany", "password": "<secret>" }
-    },
-    "staging": {
-      "baseUrl": "https://custom-staging.example.com/api",
-      "auth": { "type": "basic", "username": "integration@mycompany", "password": "<secret>" }
+  "mcp": {
+    "servers": {
+      "ssff-mcp": {
+        "type": "local",
+        "command": ["npx", "-y", "ssff-mcp@latest"],
+        "environment": {}
+      }
     }
   }
 }
 ```
 
-Every tool call names its environment explicitly. Unknown or missing environment ⇒ the call is rejected (fail-closed); the server never picks an implicit environment and never retries against another one. The only exception is **inline mode**, where exactly one environment exists and `environment` may be omitted.
+**Claude Desktop / Cursor / Pi**:
 
-- **Secret providers (`fromEnv` / `fromCommand`)**: Passwords and OAuth private keys can be resolved dynamically via environment variables (`{ "fromEnv": "VAR_NAME" }`) or CLI commands (`{ "fromCommand": ["op", "read", "item"] }`), avoiding plain text on disk. Executed directly via `execFile` (no shell, 5s timeout).
-- **The configuration file permissions:** Restrict it with `chmod 600 ~/.config/ssff-mcp/config.json` on Linux/macOS or restrict ACLs on Windows.
-- **OAuth private keys**: Can be plain text or resolved via secret providers. With SAP's IdP-helper flow the resolved key transits HTTPS to the configured `idpUrl` on each assertion acquisition (endpoints are fixed per environment in your config).
-- **OAuth tokens never touch disk, logs, or error messages.** They live in process memory only and die with the process.
-- **The tenant account MUST be least-privileged and read-only.** This MCP enforces read-only behavior client-side, but source-side permissions are an acceptance condition: verify the account's roles in the tenant. What the account can read, this server can read.
-- **All traffic to the tenant uses HTTPS.** Basic Auth credentials are only ever sent over TLS, and redirects are followed only to the same https host configured for the environment.
-- **Errors are sanitized.** Errors returned to the model are `{ code, message }` (plus optional `httpStatus`) with URLs redacted from service messages and generic wording for network failures (no hostnames).
-- **Logs are metadata-only, on stderr.** One JSON line per tool call: `{ ts, tool, environment, outcome, code?, durationMs, recordCount? }`. No URLs, no entity paths, no query values, no bodies, no credentials. stdout carries only the MCP protocol.
-- **Metadata caching:** Entity schemas parsed from `$metadata` are cached locally on disk under the OS cache directory (`~/.cache/ssff-mcp` on Linux, `~/Library/Caches/ssff-mcp` on macOS, `%LOCALAPPDATA%\ssff-mcp\cache` on Windows) with a 24h TTL. No person records or sensitive data are ever cached.
+```json
+{
+  "mcpServers": {
+    "ssff-mcp": {
+      "command": "npx",
+      "args": ["-y", "ssff-mcp@latest"],
+      "env": {}
+    }
+  }
+}
+```
 
-## MCP Resources
+**Codex** (`~/.codex/config.toml`):
 
-In addition to tools, `ssff-mcp` exposes read-only MCP resources for inspecting the schema and entity catalog without executing large `$metadata` queries:
+```toml
+[mcp_servers.ssff-mcp]
+command = "npx"
+args = ["-y", "ssff-mcp@latest"]
+```
+
+For the inline mode (credentials in the block, no config file), the `env` /
+`environment` object carries the `SF_*` variables instead of being empty. Secret
+variables are referenced, not embedded, by the generator.
+
+---
+
+## Configuration
+
+The configuration file lives at a **fixed** path:
+
+- **Linux / macOS:** `~/.config/ssff-mcp/config.json`
+- **Windows:** `%USERPROFILE%\.config\ssff-mcp\config.json`
+
+`XDG_CONFIG_HOME` is deliberately **not** honored. The file is re-read and
+re-validated on **every tool call** (the server is stateless), so you can edit it
+without restarting. Secrets are never logged and never written elsewhere.
+
+### Manual setup
+
+1. Create the directory: `mkdir -p ~/.config/ssff-mcp` (Windows:
+   `mkdir "%USERPROFILE%\.config\ssff-mcp"`).
+2. Copy the template shipped in the package:
+
+   ```bash
+   cp "$(npm root -g)/ssff-mcp/config.template.json" ~/.config/ssff-mcp/config.json
+   ```
+
+   (adjust the path for a non-global install, or grab `config.template.json`
+   from the repository).
+3. Fill in the placeholders.
+4. Restrict permissions: `chmod 600 ~/.config/ssff-mcp/config.json` on POSIX.
+   On Windows, restrict access with ACLs (`icacls`). The server warns on stderr
+   (once) if the file is readable by others.
+
+### Full example
+
+```json
+{
+  "environments": {
+    "prod": {
+      "baseUrl": "https://api4.successfactors.com",
+      "auth": {
+        "type": "basic",
+        "username": "integration@mycompany",
+        "password": { "fromEnv": "SF_PROD_PASSWORD" }
+      }
+    },
+    "staging": {
+      "baseUrl": "https://custom-staging.example.com/api",
+      "auth": {
+        "type": "oauth",
+        "clientId": "<oauth-client-api-key>",
+        "companyId": "mycompany",
+        "userId": "sf_api_user",
+        "privateKey": { "fromCommand": ["op", "read", "op://Personal/sf-key/key"] },
+        "tokenUrl": "https://api4.successfactors.com/oauth/token"
+      }
+    }
+  },
+  "entityAllowlist": [
+    { "entity": "User" },
+    { "entity": "PerPersonal" },
+    { "entity": "EmpJob", "protocols": ["v2"] }
+  ],
+  "defaultLocale": "es_ES",
+  "maxResponseBytes": 262144
+}
+```
+
+### Fields
+
+| Field | Required | Meaning |
+|---|---|---|
+| `environments` | Yes | Object; may be empty. Keys are environment aliases you choose (for example `prod`, `staging`). |
+| `environments.<alias>.baseUrl` | Yes | Tenant API origin, for example `https://api4.successfactors.com`. Must be `https`, with no credentials/userinfo, no query string and no fragment. A path prefix is allowed. **Do not append `/odata/v2`** — the server adds it. |
+| `environments.<alias>.auth` | Yes | `{"type":"basic", …}` or `{"type":"oauth", …}` (see below). |
+| `defaultEnvironment` | No | If present it **MUST be `null`**. Implicit environment selection is forbidden; any non-null value is rejected. |
+| `entityAllowlist` | No | Array of `{ entity, protocols? }`. Restricts what `query_entity` and the metadata resources may read. See [Entity allowlist](#entity-allowlist). |
+| `defaultLocale` | No | Preferred language for Custom MDF guidance prose, for example `"es"` or `"es_ES"` (`-` also accepted). Only the format is validated; an untranslated language falls back to `en_US`. See [Guidance language](#guidance-language). |
+| `maxResponseBytes` | No | Optional cap, in bytes, for what a single tool call returns to the model. Positive integer. Takes precedence over `SF_MAX_RESPONSE_BYTES`; default **256 KiB**. See [Response size cap](#response-size-cap). |
+
+The configuration object is **strict**: unknown keys are rejected with
+`CONFIG_INVALID`. A missing file is only an error if inline mode is not
+configured — the server starts anyway and reports `CONFIG_MISSING` on the first
+call.
+
+### Authentication
+
+**Basic Auth** (`auth.type: "basic"`):
+
+| Field | Meaning |
+|---|---|
+| `username` | API username. SuccessFactors API users are often of the form `user@companyId`. |
+| `password` | API password. A plain string, or a [secret provider](#secret-providers). |
+
+**OAuth 2.0** (`auth.type: "oauth"`) — grant
+`urn:ietf:params:oauth:grant-type:saml2-bearer` via SAP's IdP helper (no local
+SAML signing, no extra dependencies):
+
+| Field | Meaning |
+|---|---|
+| `clientId` | OAuth2 client **API key** from Manage OAuth2 Client Applications in SF Admin Center. |
+| `companyId` | Tenant company id; sent as `company_id` to the token endpoint. |
+| `userId` | Technical user id **WITHOUT** the `@companyId` suffix (values containing `@` are rejected). |
+| `privateKey` | Private key **exactly as exported/stored** (a single line; may be a composite `<base64>/<base64>`). Paste it verbatim: never decode, re-encode or retype it. A plain string or a secret provider. |
+| `tokenUrl` | Fixed token endpoint, e.g. `https://<host>/oauth/token`. Must be `https` and match exactly what SAP expects (SAP embeds it in the assertion audience). |
+| `idpUrl` | Optional. SAP IdP helper endpoint; defaults to the `tokenUrl` origin + `/oauth/idp`. |
+
+Flow (automatic, per call when needed): `POST {idpUrl}` with
+`{client_id, user_id, token_url, private_key}` returns a signed SAML assertion;
+`POST {tokenUrl}` with `{client_id, grant_type, company_id, assertion}` returns
+the bearer token (`expires_in` ≈ 24h). Tokens are cached **in memory per
+environment only**, refreshed with a 60s / 10% safety margin, and a 401 on a data
+read triggers exactly one invalidation + retry. These two POSTs are the only
+non-GET requests the server can ever issue.
+
+> **Prerequisite:** the client machine's IP must be whitelisted in SF Admin
+> Center (Password & Login Policy Settings → API login exceptions) or the token
+> endpoints reject the connection.
+
+### Secret providers
+
+Any password or OAuth private key can be a plain string or resolved dynamically,
+so you never have to put the secret on disk:
+
+```json
+{ "fromEnv": "SF_PROD_PASSWORD" }
+{ "fromCommand": ["op", "read", "op://Personal/sf-key/key"] }
+```
+
+`fromCommand` is executed directly via `execFile` (no shell) with a 5s timeout.
+
+### Entity allowlist
+
+`entityAllowlist` restricts which entity sets `query_entity` may read. It is a
+local, explicit scope control **on top of** the tenant account's permissions.
+
+| Field | Meaning |
+|---|---|
+| `entity` | OData entity set name (`^[A-Za-z_][A-Za-z0-9_]*$`), matched case-sensitively and exactly against the **first** path segment. |
+| `protocols` | Optional array of `"v2"` and/or `"v4"`, without duplicates. Omitted means both protocols. This build is v2-only, so an entry that excludes `"v2"` is **denied**. |
+
+Semantics:
+
+- **Absent** — no restriction; every entity the account can read is reachable.
+- **Present** — only the listed entities are queryable; anything else is
+  rejected with `ENTITY_NOT_ALLOWED` before any network request (not even
+  `$metadata` is fetched for a denied query).
+- **`[]` (empty array)** — configured deny-all: every `query_entity` call is
+  rejected. Deliberate fail-closed behavior.
+- **Navigation** — only the first path segment is checked; segments after it
+  (`User('123')/navProperty`) are not re-checked.
+- **Metadata is filtered too** — the entity catalog, the per-entity schema
+  resource and `inspect_entity` apply the allowlist exactly like a data read.
+
+The key is deliberately **not** in `config.template.json`: a copied template must
+not silently activate an allowlist. Invalid allowlists are rejected with
+`CONFIG_INVALID`.
+
+### Inline mode (no config file)
+
+If `~/.config/ssff-mcp/config.json` does **not** exist, the server can synthesize
+a single environment from `SF_*` environment variables injected by your MCP
+client:
+
+| Variable | Meaning |
+|---|---|
+| `SF_BASE_URL` | Tenant API origin (required to enable inline mode). |
+| `SF_USERNAME`, `SF_PASSWORD` | Basic auth credentials. |
+| `SF_CLIENT_ID`, `SF_COMPANY_ID`, `SF_USER_ID`, `SF_TOKEN_URL`, `SF_PRIVATE_KEY` | OAuth 2.0 credentials (`SF_PRIVATE_KEY` accepts `\n` escapes or base64). |
+| `SF_IDP_URL` | Optional OAuth IdP helper endpoint. |
+| `SF_ENVIRONMENT` | Environment alias (default: `default`). |
+| `SF_ENTITY_ALLOWLIST` | Comma-separated entity allowlist, e.g. `User,PerPersonal,EmpJob`. |
+| `SF_DEFAULT_LOCALE` | Language of the Custom MDF guidance text, e.g. `es_ES`. |
+| `SF_MAX_RESPONSE_BYTES` | Response-size cap, in bytes (a configured `maxResponseBytes` wins). |
+
+In inline mode a tool call may omit `environment` (there is exactly one). If a
+`config.json` **exists**, it always wins and the `SF_*` variables are ignored
+with a warning on stderr.
+
+### Guidance language
+
+The Custom MDF guidance prose is written in **one** language per response, never
+several. The first value present wins:
+
+`locale` argument of the call (the user's language) > `defaultLocale` in
+`config.json` > `SF_DEFAULT_LOCALE` > `en_US`.
+
+Available catalogs: **`en_US`, `es_ES`**. The language used is reported in
+`guidance.locale`. `$filter` templates, the example query and OData identifiers
+are never translated.
+
+### Response size cap
+
+What a single call returns to the model is limited to **256 KiB** of text by
+default. A larger result is rejected with `RESPONSE_TOO_LARGE` and an actionable
+message ("narrow it with `$select`, `$top`, `$filter`, no collection
+`$expand`"). The cap is purely size-based and never consults an entity list.
+Metadata used internally for classification and caching is exempt. In
+`batch_get` it applies to **each inner request** separately: an oversized item
+fails alone and the others are returned normally.
+
+Override it with `maxResponseBytes` in `config.json` (wins), then
+`SF_MAX_RESPONSE_BYTES`, then the 256 KiB default.
+
+---
+
+## CLI reference
+
+```
+ssff-mcp                                    Start the MCP server over STDIO (default)
+ssff-mcp init                               Run the interactive configuration wizard
+ssff-mcp cache invalidate <alias|--all>     Drop cached $metadata for an environment
+ssff-mcp --help                             Show help
+```
+
+- **`init`** — interactive wizard (auth type, live validation, optional
+  filterable allowlist, atomic write with mode `0600` and a `.bak` backup). It
+  requires an interactive terminal; a non-TTY run exits with code `2`.
+- **`cache invalidate`** — deletes the cached `$metadata` of one alias, or all of
+  them with `--all`. It never touches SuccessFactors (no network). The running
+  server notices on its next metadata read. Exit codes: `0` success, `1` config
+  unreadable, `2` usage error (unknown alias deletes nothing — fail-closed).
+
+---
+
+## Examples: what you ask, what happens
+
+You drive the assistant in natural language; it picks the tool. These are the
+shapes a good assistant will use.
+
+| You ask | Tool used | What happens |
+|---|---|---|
+| "Which SuccessFactors environments do I have configured?" | `list_environments` | Returns `{ environments: [{ alias, authType }] }`. No network. |
+| "What entities can I read?" | `inspect_entity` (no `entitySet`) | Lists `{ name, isCustom }` from the cached `$metadata`; no data request. |
+| "Show me the custom MDF objects linked to employees." | `inspect_entity` with `customOnly: true, employeeLinkedOnly: true` | Filtered catalog with `isEffectiveDated`, `linkType`, `targetEntity`, `matchField`. |
+| "Give me the schema of `EmpJob`." | `inspect_entity` with `entitySet` | Keys, typed properties (nullable) and navigation properties with cardinality. |
+| "Read the current job info for employee `1000001`." | `query_entity` | One GET, e.g. `filter: "userId eq '1000001'"`, `top: 5`. |
+| "Find users whose last name is García, only id, name and email." | `query_entity` | `filter`, `select`, `top`. |
+| "Read the job history for employee `1000001` over 2024." | `query_entity` | `filter` + `fromDate`/`toDate` (bare effective-dating params). |
+| "Fetch these five entities at once: …" | `batch_get` | One GET-only `$batch` POST, up to 180 items, results in input order. |
+| "Get the next page." | `query_entity` | Re-issue the same call with the `cursor` from the previous response. |
+
+Example — a filtered query with selected fields and a page size:
+
+```json
+{
+  "environment": "prod",
+  "entityPath": "PerPersonal",
+  "filter": "userId eq '1000001'",
+  "select": "userId,firstName,lastName",
+  "top": 5
+}
+```
+
+Example — a batch of independent reads in one POST:
+
+```json
+{
+  "environment": "prod",
+  "requests": [
+    { "entityPath": "User('1000001')" },
+    { "entityPath": "EmpJob", "filter": "userId eq '1000001'", "top": 5 },
+    { "entityPath": "PerPersonal", "filter": "userId eq '1000001'", "top": 5 }
+  ]
+}
+```
+
+---
+
+## Tools reference
+
+### `list_environments` (no arguments)
+
+Returns `{ environments: [{ alias, authType }] }` — aliases and auth type only.
+No URLs, no credentials, no network access.
+
+### `inspect_entity` — read the data model
+
+Reads the model from the cached `$metadata`; **no data request** is made.
+
+| Argument | Constraints |
+|---|---|
+| `environment` | Required; must be a configured alias. Optional in [inline mode](#inline-mode-no-config-file). |
+| `entitySet` | Optional. The entity to detail (standard or custom). When omitted, `inspect_entity` lists entities. Unknown / non-existent names return `RESOURCE_NOT_FOUND`; names blocked by the allowlist return `ENTITY_NOT_ALLOWED`. |
+| `customOnly` | Optional boolean. When listing, keep only Custom MDF (`cust_*`) objects and add their classification fields. Default `false`. |
+| `employeeLinkedOnly` | Optional boolean. When listing, keep only Custom MDF objects tied to `User` or `EmpEmployment`. Requires `customOnly: true`. |
+| `query` | Optional. When listing, keep entities whose name contains this text (case-insensitive). |
+| `locale` | Optional. Language of the guidance text, normally the user's own (`es_ES`). Takes precedence over `defaultLocale` and `SF_DEFAULT_LOCALE`. |
+
+Behavior:
+
+- **Listing** (no `entitySet`): `{ environment, totalCount, entities }` with
+  `entities: [{ name, isCustom }]`. With `customOnly: true`, each item also has
+  `isEffectiveDated`, `linkType`, `targetEntity`, `matchField`, and the response
+  adds `employeeLinkedCount` and `locale`. `customOnly`, `employeeLinkedOnly`
+  and `query` only apply to the listing.
+- **Single entity** (`entitySet`): the entity schema. Custom MDF entities also
+  carry `isCustom`, `isEffectiveDated`, `employeeLink` and `guidance`
+  (suggested `$filter`, `$orderby`, warnings and a ready `query_entity`
+  example). With `entitySet`, the listing-only options
+  (`customOnly`/`employeeLinkedOnly`/`query`) are rejected with `OPTION_INVALID`
+  rather than silently ignored.
+
+### `query_entity` — read entity data
+
+| Argument | Maps to | Constraints |
+|---|---|---|
+| `environment` | — | Required; must be a configured alias. Optional in inline mode. |
+| `entityPath` | resource path | Required. Examples: `User`, `User('123')`, `Foobar(key1='a',key2=1)/navProperty`. Max 4 segments, max 512 chars; `$`-prefixed segments (`$batch`, `$value`, `$count`) are rejected. The first segment must be a declared entity set (function imports are rejected). |
+| `filter` | `$filter` | Raw value, passed through. |
+| `orderby` | `$orderby` | Raw value, passed through. |
+| `select` | `$select` | Raw value, passed through. |
+| `expand` | `$expand` | Raw value, passed through. |
+| `fromDate` | `fromDate` | Effective-dating window start, `YYYY-MM-DD`, sent **bare** (not `$fromDate`). Cannot be combined with `asOfDate`. |
+| `toDate` | `toDate` | Effective-dating window end, `YYYY-MM-DD`, sent bare. |
+| `asOfDate` | `asOfDate` | Effective-dating point in time, `YYYY-MM-DD`, sent bare. Mutually exclusive with `fromDate`/`toDate`. |
+| `top` | `$top` | Integer >= 1. Above 1000 it is clamped to 1000 (`topClamped: true`). |
+| `skip` | `$skip` | Integer 0..1,000,000. Cannot be combined with `cursor`. |
+| `cursor` | `$skiptoken` | Opaque continuation cursor from a previous response. Must be replayed with the SAME environment, `entityPath` and options; otherwise `CURSOR_INVALID`. |
+| `inlinecount` | `$inlinecount` | Only `"allpages"`. Adds `$inlinecount=allpages`; the response includes `totalCount` when the service returns `__count`. |
+| `output` | — | `"json"` (default) or `"xml"` (raw service XML body, Atom, native fields, no normalization; the `<link rel="next">` href is stripped). |
+
+Unknown option names are structurally impossible: the tool schema is typed and
+strict, so there is no passthrough map.
+
+Response (`structuredContent`, JSON):
+`{ environment, path, recordCount, records, hasMore, topClamped?, truncatedToCeiling?, totalCount?, cursor? }`.
+Records are preserved **verbatim** with native SuccessFactors fields
+(`__metadata` kept).
+
+### `batch_get` — many reads in one request
+
+Executes multiple read-only OData v2 GETs in **one** `$batch` POST. The
+multipart envelope is built exclusively by
+[`odata-batch`](https://www.npmjs.com/package/odata-batch) 2.1.0's retrieve mode
+(direct GET parts, no changesets), travels through a narrow transport that
+validates it before dispatch (fixed `$batch` URL, expected boundary, every inner
+line `GET … HTTP/1.1`, no changeset delimiter), and accepts only the outer
+headers `Authorization`, `Accept`, `Content-Type` and `User-Agent`.
+
+| Argument | Constraints |
+|---|---|
+| `environment` | Required; must be a configured alias. Optional in inline mode. |
+| `requests` | Array of **1..180 items** (SAP `$batch` hard limit). Each item uses exactly the `query_entity` GET grammar: `entityPath` (required) plus optional `filter`, `orderby`, `select`, `expand`, `fromDate`, `toDate`, `asOfDate`, `top`, `skip`, `cursor`, `inlinecount`. There is **no field** for HTTP method, URL, host, headers, body or changesets; unknown keys are rejected by the strict schema before dispatch. |
+| `output` | `"json"` (default) or `"xml"`, global for the whole call. |
+
+Behavior:
+
+- **Full preflight before the POST:** every item is validated (path grammar,
+  allowlist, option bounds, cursor binding, `$metadata` classification) before
+  the `$batch` POST is built. One invalid item rejects the whole batch; the only
+  allowed pre-batch call is the `$metadata` classification GET.
+- **One POST, one page per item:** pages are never followed or combined. Inner
+  request lines carry literal `$` option names (`$filter`, `$top`, …) because a
+  percent-encoded name (`%24filter`) is silently ignored by the service.
+- **Per-item results in input order:**
+  `{ index, path, success, httpStatus, recordCount, records|body, hasMore, cursor?, totalCount?, topClamped?, truncatedToCeiling? }`.
+  Embedded non-2xx parts become sanitized per-item errors; the call still
+  succeeds and raw embedded bodies are never returned.
+- **Aggregate ceiling:** at most **1,000 records in total** across the whole
+  response. JSON records are truncated at the remaining budget (the item is
+  flagged `truncatedToCeiling: true`). XML cannot be truncated safely, so a
+  response whose `<entry>` count would exceed 1,000 is rejected with
+  `RESPONSE_INVALID`.
+- **Auth:** identical to `query_entity`. An OAuth 401 on the batch POST
+  invalidates the cached token and replays the whole batch exactly once (safe:
+  every embedded operation is a GET). Basic 401 does not retry.
+
+### Query encoding and effective dating
+
+How `query_entity` and `batch_get` turn options into the request query string:
+
+- **Raw assembly, spaces as `%20`.** `filter`, `orderby`, `select` and `expand`
+  are assembled by raw concatenation. Only spaces are encoded (`%20`);
+  single quotes, `+`, `,`, `/`, `(`, `)`, `:`, `=` and `;` are preserved
+  literally (`URLSearchParams` produced `+`, which SuccessFactors rejects with
+  400).
+- **Control characters are rejected.** CR, LF or NUL in any of those four values
+  is rejected with `OPTION_INVALID` before dispatch (they could inject request
+  lines into the `$batch` envelope). The error never echoes the value.
+- **`$skiptoken` stays opaque** and is percent-encoded so it round-trips
+  byte-identically.
+- **Effective dating.** `fromDate`, `toDate` and `asOfDate` are `YYYY-MM-DD` and
+  sent **bare** — SuccessFactors silently ignores the `$`-prefixed forms.
+  `asOfDate` is exclusive of `fromDate`/`toDate`. Effective dating is required to
+  read historical HRIS rows: without the window, a historical `EmpJob` key
+  lookup returns 404. The options are valid on collection reads and on
+  key-predicate reads.
+
+### Pagination and continuation
+
+- **Ceiling:** at most **1,000 records** and exactly **one OData page** per call.
+  Next links are never followed automatically and never returned; `hasMore`
+  merely reports that a next page exists. A page with more than 1,000 records is
+  truncated (`truncatedToCeiling: true`).
+- **Continuation (cursor):** when `hasMore` is true **and** the service next link
+  carries a `$skiptoken`, the response includes an opaque `cursor`. Re-issue the
+  **same** call with that cursor to get the next page. The cursor is a
+  stateless HMAC-SHA256-signed envelope bound to environment + entity path + the
+  canonical query options. There is **no server-side storage and no TTL**; the
+  HMAC secret is random per process, so **every cursor is invalidated when the
+  server restarts** (just run a fresh query). An altered cursor, or one reused
+  with different arguments, is rejected with `CURSOR_INVALID` before any network
+  dispatch. Cursor errors never echo the token. `skip` and `cursor` are mutually
+  exclusive.
+
+---
+
+## MCP resources
+
+Read-only resources for inspecting the schema and catalog without spending a data
+query. Resources take no parameters (so the guidance locale uses only
+`defaultLocale` → `SF_DEFAULT_LOCALE` → `en_US`).
 
 | Resource URI | Description |
 |---|---|
-| `sf://{environment}/overview` | High-level summary of the environment (baseUrl, authType, total entity count, function imports count, allowlist status). |
-| `sf://{environment}/entities` | Lightweight catalog of all entity sets (filtered by `entityAllowlist` if active), indicating entity name, type, key properties, `isCustom` (`cust_` prefix), `isEmployeeLinked` and `isEffectiveDated`. |
-| `sf://{environment}/entities/{entitySet}` | Exhaustive entity schema containing keys, typed properties (`Edm.*`, nullable), and navigation properties with target and cardinality (`0..1`, `1`, `*`). For Custom MDF entities it also carries `isCustom`, `isEffectiveDated`, `employeeLink` and `guidance` (see [Custom MDF](#custom-mdf-discovery)). |
-| `sf://{environment}/mdf/custom` | Compact catalog of the Custom MDF (`cust_*`) entities the allowlist permits: `totalCount`, `employeeLinkedCount` and, per entity, `name`, `isEffectiveDated`, `linkType`, `targetEntity?`, `matchField?`. |
+| `sf://{environment}/overview` | Summary: `baseUrl`, `authType`, entity count, function imports count, allowlist status. |
+| `sf://{environment}/entities` | Lightweight catalog of entity **names** (`{ name }`), allowlist-filtered. |
+| `sf://{environment}/entities/{entitySet}` | Exhaustive entity schema: keys, typed properties (`Edm.*`, nullable) and navigation properties with cardinality. For Custom MDF entities it also carries `isCustom`, `isEffectiveDated`, `employeeLink` and `guidance`. |
+| `sf://{environment}/mdf/custom` | Compact catalog of the allowlisted Custom MDF (`cust_*`) entities: `totalCount`, `employeeLinkedCount`, and per entity `name`, `isEffectiveDated`, `linkType`, `targetEntity?`, `matchField?`. |
 
-### Custom MDF discovery
+---
 
-SuccessFactors Metadata Framework objects (`cust_*`, matched by `/^[cC]ust_/`) are classified **entirely from the cached `$metadata`**: no data request is made. The server decides how each object relates to an employee, ignoring the audit navigations `createdByNav` / `lastModifiedByNav` (they point to `User` on every object):
+## Custom MDF discovery
+
+SuccessFactors Metadata Framework objects (`cust_*`) are classified **entirely
+from the cached `$metadata`** — no data request. Audit navigations
+(`createdByNav` / `lastModifiedByNav`) are ignored. The `linkType` tells you how
+the object relates to an employee:
 
 | `linkType` | Meaning |
 |---|---|
-| `DIRECT_USER_KEY` | The key (`externalCode` or `userId`) is the user, through its own `externalCodeNav` / `userIdNav`. |
+| `DIRECT_USER_KEY` | The key (`externalCode` or `userId`) is the user, via its own `externalCodeNav` / `userIdNav`. |
 | `DIRECT_EMPLOYMENT_KEY` | Same, targeting `EmpEmployment`. |
 | `USER_FIELD_NAVIGATION` | Another field navigates to `User` (any name; the target entity is the signal). |
 | `EMPLOYMENT_FIELD_NAVIGATION` | Same, targeting `EmpEmployment`. |
 | `COMPOSITE_CHILD` | Key `cust_<Parent>_<field>` with an existing custom parent; no direct employee link. |
 | `UNLINKED_STANDALONE` | No employee link (master data or catalog). |
 
-An object is effective-dated (`isEffectiveDated`) when its key contains `effectiveStartDate` or `mdfSystemEffectiveStartDate`.
+An object is effective-dated (`isEffectiveDated`) when its key contains
+`effectiveStartDate` or `mdfSystemEffectiveStartDate`.
 
-`guidance` gives the suggested `$filter` (`externalCode eq '<userId>'`, `userId eq '<userId>'` or `<navProp>/userId eq '<userId>'`), the `$orderby` for effective-dated objects, warnings and a ready `query_entity` example. Always query the custom entity as the root: expanding it from `User` is possible but returns the whole child collection and cannot be bounded.
+`guidance` gives the suggested `$filter` (`externalCode eq '<userId>'`,
+`userId eq '<userId>'` or `<navProp>/userId eq '<userId>'`), the `$orderby` for
+effective-dated objects, warnings and a ready `query_entity` example. **Always
+query a custom entity as the root**: expanding it from `User` returns the whole
+child collection and cannot be bounded.
 
-#### Guidance language (`locale`)
+---
 
-The warnings are written in **one** language per response, never several. The first value present wins: the `locale` argument of `inspect_custom_mdf` (the user's own language) > `defaultLocale` in `config.json` > `SF_DEFAULT_LOCALE` > `en_US`. Resources take no parameters, so they use only the last three. The language used is reported in `guidance.locale`. Available catalogs: `en_US`, `es_ES`. `$filter` templates, the example query and OData identifiers are never translated.
+## Security & privacy
 
-## Tools reference
+- **Read-only by construction.** No POST/PUT/PATCH/DELETE/MERGE can come from
+  tool input, and there is no header input surface at all. The only sanctioned
+  POST is the fixed, GET-only `$batch` envelope (plus the two fixed OAuth token
+  endpoints).
+- **HTTPS only.** Basic credentials are sent only over TLS; redirects are
+  followed only to the same https host configured for the environment.
+- **Least-privileged account.** This server enforces read-only client-side, but
+  the tenant account is an acceptance condition: use a read-only,
+  least-privileged API user. What the account can read, this server can read.
+- **Errors are sanitized.** Errors returned to the model are `{ code, message }`
+  (plus optional `httpStatus`) with URLs redacted and generic wording for network
+  failures (no hostnames).
+- **Logs are metadata-only, on stderr.** One JSON line per call:
+  `{ ts, tool, environment, outcome, code?, durationMs, recordCount? }`. No URLs,
+  no entity paths, no query values, no bodies, no credentials. stdout carries
+  only the MCP protocol.
+- **Secrets stay in memory.** OAuth tokens never touch disk, logs or error
+  messages. Secrets in `config.json` are never cached elsewhere.
+- **Metadata cache.** Parsed `$metadata` schemas are cached on disk under the OS
+  cache directory with a 24h TTL (plus a 10-minute in-memory layer). No person
+  records or sensitive data are ever cached.
 
-### `list_environments` (no arguments)
+Cache locations:
 
-Returns `{ environments: [{ alias, authType }] }` — aliases and auth type only. No URLs, no credentials. No network access.
-
-### `inspect_custom_mdf` — arguments
-
-Discovers Custom MDF objects from the cached `$metadata` (no data request). Without `entitySet` it returns `{ environment, locale, totalCount, employeeLinkedCount, entities }`; with it, the schema plus `employeeLink` and `guidance`.
-
-| Argument | Constraints |
+| OS | Path |
 |---|---|
-| `environment` | Required; must be a configured alias. Optional in [inline mode](#inline-mode-no-config-file). |
-| `entitySet` | Optional. A Custom MDF entity set. Unknown or non-custom names return `RESOURCE_NOT_FOUND`; names excluded by `entityAllowlist` return `ENTITY_NOT_ALLOWED`. |
-| `employeeLinkedOnly` | Optional boolean (listing only). Keeps entities linked directly to `User` or `EmpEmployment`. |
-| `locale` | Optional. Language of the guidance text, normally the user's own (`es_ES`). Takes precedence over `defaultLocale` and `SF_DEFAULT_LOCALE`. |
+| Linux | `~/.cache/ssff-mcp` |
+| macOS | `~/Library/Caches/ssff-mcp` |
+| Windows | `%LOCALAPPDATA%\ssff-mcp\cache` |
 
-### `query_entity` — arguments
+---
 
-| Argument | Maps to | Constraints |
-|---|---|---|
-| `environment` | — | Required; must be a configured alias. Optional in [inline mode](#inline-mode-no-config-file). |
-| `entityPath` | resource path | Required. Examples: `User`, `User('123')`, `Foobar(key1='a',key2=1)/navProperty`. Max 4 segments, max 512 chars; `$`-prefixed segments (e.g. `$batch`, `$value`, `$count`) are rejected. The first segment must be a declared entity set in the tenant's `$metadata` (function imports are rejected). |
-| `filter` | `$filter` | Raw value, passed through unmodified. |
-| `orderby` | `$orderby` | Raw value, passed through unmodified. |
-| `select` | `$select` | Raw value, passed through unmodified. |
-| `expand` | `$expand` | Raw value, passed through unmodified. |
-| `fromDate` | `fromDate` | Effective-dating window start, `YYYY-MM-DD`. Sent as the **bare** `fromDate` parameter (NOT `$fromDate`, which SuccessFactors silently ignores). Invalid format ⇒ `OPTION_INVALID`. Cannot be combined with `asOfDate`. See [Query encoding and effective dating](#query-encoding-and-effective-dating). |
-| `toDate` | `toDate` | Effective-dating window end, `YYYY-MM-DD`. Sent bare, same rules as `fromDate`. |
-| `asOfDate` | `asOfDate` | Effective-dating point in time, `YYYY-MM-DD`. Sent bare, same format rules; mutually exclusive with `fromDate`/`toDate` (`OPTION_INVALID`). |
-| `top` | `$top` | Integer >= 1. Values above 1000 are clamped to 1000 and flagged (`topClamped: true`). |
-| `skip` | `$skip` | Integer 0..1,000,000. Cannot be combined with `cursor`. |
-| `cursor` | `$skiptoken` | Opaque continuation cursor from a previous response (see below). Must be replayed with the SAME `environment`, `entityPath` and options as the call that produced it; otherwise `CURSOR_INVALID`. |
-| `inlinecount` | `$inlinecount` | Only `"allpages"`. Adds `$inlinecount=allpages`; the response includes `totalCount` when the service provides `__count`. |
-| `output` | — | `"json"` (default) or `"xml"` (raw service XML body, Atom, `Accept: application/atom+xml`, native fields, no normalization). Data fields and raw XML are preserved, except that the `<link rel="next">` **href is stripped** from the returned body (DS-P2-06): neither the service next URL nor the raw `$skiptoken` appears in the output; continuation is exposed only as the opaque `cursor`. A body without a next link is returned byte-for-byte unchanged. |
+## Limits & scope
 
-Unknown option names are structurally impossible: the tool schema is typed and strict, so there is no passthrough map to smuggle arbitrary query options.
+- **OData v2 only.** OData v4 is deferred until a tenant with a verified v4
+  endpoint exists.
+- **No function imports / custom service operations** (`FUNCTION_IMPORT_UNSUPPORTED`).
+- **No writes of any kind.**
+- **One page per call**, 1,000-record ceiling, 256 KiB default response cap,
+  cursor-based continuation.
+- **Cross-platform STDIO only**; there is no HTTP listener anywhere in the
+  server.
 
-Response (`structuredContent`, JSON output): `{ environment, path, recordCount, records, hasMore, topClamped?, truncatedToCeiling?, totalCount?, cursor? }`. Records are preserved **verbatim** with native SuccessFactors fields (`__metadata` kept, no normalization). `totalCount` appears only when the service returns `__count`; `cursor` appears only when `hasMore` is true **and** a `$skiptoken` could be extracted from the service's next link (continuation is never invented).
+---
 
-Response (`structuredContent`, XML output): `{ environment, path, contentType: "xml", hasMore, cursor?, totalCount? }` — the tool text is the **raw XML body** with all data fields and native XML preserved **except the next-link href**: the `href` of the Atom `<link rel="next">` is stripped before the body is returned (DS-P2-06), so neither the service URL nor the raw `$skiptoken` ever appears in the output; continuation is exposed only as the opaque `cursor`. `hasMore`/`cursor`/`totalCount` are derived from the original `<link rel="next">` href and `<m:count>` elements before sanitization. XML cannot be truncated safely, so a response with more than 1,000 `<entry>` elements is rejected with `RESPONSE_INVALID` instead of being cut.
+## Troubleshooting
 
-**Response size cap:** what a call returns to the model is limited to **256 KiB** of text. A larger result is rejected with `RESPONSE_TOO_LARGE` and a message that says how to narrow it (`$select`, `$top`, `$filter`, no collection `$expand`). The cap is purely size-based (no entity list). Metadata used internally for classification and caching is exempt. In `batch_get` it is applied to **each inner request** separately: an oversized item fails alone with `RESPONSE_TOO_LARGE` and the other items are returned normally.
+Error codes you may see in a tool result:
 
-**Pagination ceiling:** at most **1,000 records** and exactly **one OData page** per call. Next links (`__next`) are never followed automatically and never returned; `hasMore` merely reports that a next page exists. If a page somehow contains more than 1,000 records, it is truncated to 1,000 (`truncatedToCeiling: true`).
-
-**Continuation (cursor):** when `hasMore` is true and the service's next link carries a `$skiptoken`, the response includes an opaque `cursor`. To fetch the exact next page, re-issue the **same** call (same `environment`, `entityPath` and options) passing that cursor in the `cursor` argument; the server appends the wrapped `$skiptoken` verbatim. The cursor is a stateless HMAC-SHA256-signed envelope (base64url payload + signature) around the service's own `$skiptoken`, bound to environment + entity path + the canonical query options (`filter`, `orderby`, `select`, `expand`, `fromDate`, `toDate`, `asOfDate`, `top`, `inlinecount`, `output` — not `skip`). There is **no server-side storage and no clock-based TTL**; the HMAC secret is random per process, so **every cursor becomes invalid when the server process restarts** — after a restart, simply run a fresh query. An altered cursor, one reused with different arguments, or one issued by a previous process run is rejected with `CURSOR_INVALID` **before any network dispatch**. `skip` and `cursor` are mutually exclusive (`OPTION_INVALID`). Cursor errors never echo the token or the skiptoken.
-
-### `batch_get` — arguments
-
-Executes multiple read-only OData v2 GETs in **one** `$batch` POST. The multipart envelope is built exclusively by [`odata-batch`](https://www.npmjs.com/package/odata-batch) 2.1.0's **retrieve mode**, which emits **direct GET parts without changesets**; the library's write API (changesets, methods, bodies) is never exposed to any input. The envelope travels through a narrow custom transport that validates it before dispatch (fixed `$batch` URL, expected boundary, every inner line `GET ... HTTP/1.1`, no changeset delimiter) and accepts only the controlled outer headers `Authorization`, `Accept`, `Content-Type` and `User-Agent`.
-
-| Argument | Constraints |
+| Code | Meaning / fix |
 |---|---|
-| `environment` | Required; must be a configured alias. Optional in [inline mode](#inline-mode-no-config-file). |
-| `requests` | Array of **1..180 items** (SAP `$batch` hard limit). Each item uses exactly the `query_entity` GET grammar: `entityPath` (required) plus optional `filter`, `orderby`, `select`, `expand`, `fromDate`, `toDate`, `asOfDate`, `top`, `skip`, `cursor`, `inlinecount`. There is **no field** for HTTP method, URL, host, headers, body or changesets; unknown keys are rejected by the strict schema before dispatch. |
-| `output` | `"json"` (default) or `"xml"`, global for the whole call. `xml` returns each item's raw Atom body (`Accept: application/atom+xml` on every embedded request). |
+| `CONFIG_MISSING` | No `config.json` and inline mode not configured. Run `ssff-mcp init`, copy the template, or set `SF_*`. |
+| `CONFIG_INVALID` | The config failed strict validation (unknown key, bad URL, bad allowlist, non-null `defaultEnvironment`, …). The message names the field. |
+| `CONFIG_SECRET_MISSING` / `CONFIG_SECRET_COMMAND_FAILED` / `CONFIG_SECRET_TIMEOUT` | A `fromEnv` / `fromCommand` secret provider failed. |
+| `ENVIRONMENT_REQUIRED` / `ENVIRONMENT_UNKNOWN` | The call omitted or named an unconfigured environment. Only inline mode may omit it. |
+| `ENTITY_NOT_ALLOWED` | Blocked by `entityAllowlist`. |
+| `PATH_INVALID` | Bad `entityPath`, unknown entity set, or a rejected `$`-segment. |
+| `OPTION_INVALID` | Bad or conflicting option (e.g. `skip` + `cursor`, `asOfDate` + `fromDate`, listing options with `entitySet`, control characters). |
+| `CURSOR_INVALID` | Cursor altered, reused with different arguments, or issued before a server restart. Re-run the query. |
+| `FUNCTION_IMPORT_UNSUPPORTED` | The path is a function import; not supported. |
+| `RESOURCE_NOT_FOUND` | Unknown entity in a resource / `inspect_entity`. |
+| `RESPONSE_TOO_LARGE` | Above the size cap; narrow with `$select`/`$top`/`$filter`. |
+| `RESPONSE_INVALID` | Unparseable service body, or XML above the 1,000-entry ceiling. |
+| `REDIRECT_BLOCKED` | A redirect to a non-configured host was blocked. |
+| `TIMEOUT` / `NETWORK_ERROR` / `HTTP_ERROR` | Transport-level failures (sanitized). |
+| `OAUTH_*` | OAuth assertion/token issues (check IP whitelisting and credentials). |
+| `INTERNAL_ERROR` | Unexpected internal error (details intentionally hidden). |
 
-Behavior:
+If a filtered query returns unfiltered-looking data, check that you are using the
+tools (not hand-built URLs): the server always sends literal `$` option names,
+which SuccessFactors requires.
 
-- **Full preflight before the POST:** every item is validated (path grammar, `entityAllowlist`, option bounds, cursor binding, `$metadata` classification — function imports and unknown entity sets rejected) **before** the `$batch` POST is built. One invalid item rejects the whole batch; the only allowed pre-batch call is the `$metadata` classification GET (cached 10 min).
-- **One POST, one page per item:** exactly one POST to `{serviceRoot}$batch`; pages are never followed or combined automatically. Every inner request line carries **literal `$` option names** (`$filter`, `$top`, `$skiptoken`, …), because a percent-encoded name (`%24filter`, `%24top`) is **silently ignored** and the part then returns **unfiltered** data (measured live: 1000 default rows instead of the filtered one). Percent-encoding inside option **values** is decoded once by the batch parser, so `%20` behaves exactly like a direct GET (`+` is not accepted there: the part answers 400). The server therefore embeds the query exactly as built, with no `%24` rewriting.
-- **Per-item results in input order:** `{ index, path, success, httpStatus, recordCount, records|body, hasMore, cursor?, totalCount?, topClamped?, truncatedToCeiling? }`. Embedded non-2xx parts become **sanitized per-item errors** (`error.code`/`error.message`, URLs redacted) — the call itself still succeeds; raw embedded error bodies are never returned.
-- **Aggregate ceiling:** at most **1,000 records in total** across the whole response (not per item). Items are processed in order; JSON records are truncated at the remaining budget and the affected item is flagged `truncatedToCeiling: true`. XML cannot be truncated safely: if the aggregate `<entry>` count would exceed 1,000, the whole response is rejected with `RESPONSE_INVALID`.
-- **Cursors:** per-item continuation cursors work exactly like `query_entity` cursors (same signed envelope, same binding rules, replay with the same environment, entityPath and options). A cursor produced by a `batch_get` item can be replayed in another `batch_get` item or in `query_entity` with identical arguments.
-- **Auth:** Basic or OAuth per environment, exactly like `query_entity`. An OAuth 401 on the batch POST invalidates the cached token and replays the **whole batch exactly once** (safe: every embedded operation is a GET); Basic 401 does not retry.
+---
 
-### Query encoding and effective dating
-
-How `query_entity` and `batch_get` turn options into the request query string:
-
-- **Raw assembly, spaces as `%20`.** `filter`, `orderby`, `select` and `expand` are assembled by raw concatenation. Only spaces are encoded, uniformly as `%20`; single quotes, `+`, `,`, `/`, `(`, `)`, `:`, `=` and `;` are preserved literally. (`URLSearchParams` produced `+` for spaces, which SuccessFactors rejects with 400.)
-- **Control characters are rejected.** CR, LF or NUL in any of those four values is rejected with `OPTION_INVALID` before dispatch, since they could inject request lines into the `$batch` multipart envelope. The error never echoes the value.
-- **`$skiptoken` stays opaque.** It is percent-encoded so it round-trips byte-identically and cannot break a `batch_get` inner request line.
-- **Effective dating.** `fromDate`, `toDate` and `asOfDate` are `YYYY-MM-DD` and are sent **bare**. SuccessFactors **silently ignores the `$`-prefixed forms** and falls back to the active slice (verified live). `asOfDate` is exclusive of `fromDate`/`toDate`. Effective dating is required to read historical HRIS rows: without the window, a historical `EmpJob` key lookup returns 404. The options are valid on collection reads and on key-predicate reads.
-- **Cursors issued before this change are invalid.** The cursor binding now includes the effective-dating options and the query assembly changed, so an older cursor is rejected with `CURSOR_INVALID` (the same as after a server restart); simply re-run the query.
-
-## Limitations & MVP scope
-
-- OData **v2 only**; OData v4 is deferred until a tenant with a verified v4 endpoint exists.
-- Optional **`entityAllowlist`** (see [Configuration](#entity-allowlist-optional)): without it, reads are bounded by the tenant account's permissions.
-- **No function imports / custom service operations** (rejected with `FUNCTION_IMPORT_UNSUPPORTED`).
-- **No writes of any kind**: no POST/PUT/PATCH/DELETE/MERGE from tool input, no method-tunneling headers (there is no input surface for headers at all). The single sanctioned POST is `batch_get`'s fixed GET-only `$batch` envelope (plus the two fixed OAuth token endpoints); nothing else can produce a POST.
-- Cursor-based continuation (`cursor`), `inlinecount` totals, `output: "xml"` and `batch_get` (max 180 items, 1,000 total records) are implemented.
-- **Basic Auth or OAuth 2.0** per environment, over HTTPS only.
-- **Cross-platform STDIO only** (Linux, macOS, Windows); no HTTP listener exists anywhere in the server.
-
-## Implementation decisions
-
-Resolutions of the PRD open points, as recorded in the feature decision log:
-
-- **Q-1 (config schema + template name):** MVP schema is the illustrative skeleton from PRD C.1 — `environments.<alias>.baseUrl` plus `auth { type, username, password }`, with `defaultEnvironment` required to be null/absent. Template file name: `config.template.json`.
-- **Q-2 (MVP query option subset):** `$filter`, `$orderby`, `$select`, `$expand`, `$top`, `$skip` are exposed as typed tool fields (`filter`, `orderby`, `select`, `expand`, `top`, `skip`). Unknown option names are structurally rejected (schema-typed input, no passthrough map). Raw values pass through unmodified.
-- **A-1 (tool names):** `list_environments` (read-only, aliases only — helps fail-closed environment UX), `query_entity`, `batch_get`, `inspect_custom_mdf` (metadata-only). `get_metadata` was **retired** (see `archive/PRD-feature-remove-get-metadata.md`): it returned the raw EDMX to the model and was the only path that bypassed the metadata cache.
-- **Metadata caching (D-43 / D-44):** 10-minute in-memory cache plus 24-hour local disk cache storing parsed JSON schema indices under the OS cache directory (`~/.cache/ssff-mcp`, `~/Library/Caches/ssff-mcp`, `%LOCALAPPDATA%\ssff-mcp\cache`). Every metadata path visible to the model reads through this cache; the retired `get_metadata` tool was the only exception.
-- **Ceiling semantics:** `$top` above 1000 is clamped to 1000 (flagged in the response); responses are truncated to 1000 records if a service ever returns more (DS-10 defense in depth). Exactly one page / one data fetch per call; `__next` is never followed, only reported as `hasMore`.
-
-## Testing
+## Development & testing
 
 ```bash
-pnpm test
+pnpm install
+pnpm build          # cleans dist, then runs tsc
+pnpm test           # builds, then runs node --test dist/test/
+pnpm typecheck      # tsc --noEmit
 ```
 
-Builds the project and runs the suite (`node --test dist/test/`). The negative suite is the point: write-shape rejection before dispatch, fail-closed environment handling, redirect blocking, error sanitization, the pagination ceiling and log-field allowlists are all covered by automated tests.
+The negative suite is the point: write-shape rejection before dispatch,
+fail-closed environment handling, redirect blocking, error sanitization, the
+pagination ceiling and log-field allowlists are all covered by automated tests.
 
 ### Opt-in integration test
 
-`test/odata-query-fidelity.integration.test.ts` runs the query-fidelity scenarios (encoding, key-predicate grammar, effective dating) against a real tenant through the real MCP tool path. It is opt-in:
+`test/odata-query-fidelity.integration.test.ts` runs the query-fidelity
+scenarios (encoding, key-predicate grammar, effective dating) against a **real**
+tenant through the real MCP tool path. It is opt-in:
 
 ```bash
 SSFF_MCP_INTEGRATION=1 pnpm test
 ```
 
-Without `SSFF_MCP_INTEGRATION=1` it is skipped, and it is skipped (not failed) when your real `~/.config/ssff-mcp/config.json` cannot be loaded or has no `TEST_basic` environment. It prints no secrets: only the environment alias, record counts, HTTP statuses and sanitized error codes.
+Without `SSFF_MCP_INTEGRATION=1` it is skipped — and it is skipped (never
+failed) when your real `~/.config/ssff-mcp/config.json` cannot be loaded or has
+no `TEST_basic` environment. It prints no secrets: only the environment alias,
+record counts, HTTP statuses and sanitized error codes.
+
+---
 
 ## License
 

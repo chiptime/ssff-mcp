@@ -14,19 +14,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Custom MDF discovery** (`PRD-feature-custom-mdf.md`, D-62..D-70). New tool
-  `inspect_custom_mdf` and resource `sf://{env}/mdf/custom` classify `cust_*` objects
-  from the cached `$metadata` (no data request) into six employee-link types, flag
-  effective-dated objects, and return `queryGuidance` with a ready `query_entity` example.
-  `sf://{env}/entities` gains `isEmployeeLinked` / `isEffectiveDated`, and
-  `sf://{env}/entities/{entitySet}` gains `isCustom`, `isEffectiveDated`, `employeeLink`
-  and `guidance` for Custom MDF entities only (additive; other entities are unchanged).
+- **Unified `inspect_entity` tool.** A single tool to inspect the data model, standard or
+  custom. Without `entitySet` it lists entities as `{ name, isCustom }` (`customOnly` narrows
+  to Custom MDF objects and adds their classification, `employeeLinkedOnly` keeps only those
+  tied to `User`/`EmpEmployment`, `query` filters names by substring); with `entitySet` it
+  returns that entity's schema, adding `isCustom`, `isEffectiveDated`, `employeeLink` and
+  guidance for Custom MDF entities. It **replaces `inspect_custom_mdf`** (never released):
+  the model keeps exactly **four tools** — `list_environments`, `inspect_entity`,
+  `query_entity`, `batch_get`.
+- **Custom MDF discovery** (`archive/PRD-feature-custom-mdf.md`, D-62..D-70). `cust_*` objects
+  are classified from the cached `$metadata` (no data request) into six employee-link types,
+  effective-dated objects are flagged, and an object carries guidance with a ready
+  `query_entity` example. Surfaced through `inspect_entity` and the resource
+  `sf://{env}/mdf/custom`; `sf://{env}/entities/{entitySet}` gains `isCustom`,
+  `isEffectiveDated`, `employeeLink` and `guidance` for Custom MDF entities only (additive;
+  other entities are unchanged).
 - **`defaultLocale`** config field and `SF_DEFAULT_LOCALE`. Guidance prose is emitted in a
   single language chosen by `locale` argument > `defaultLocale` > `SF_DEFAULT_LOCALE` > `en_US`
   (catalogs: `en_US`, `es_ES`).
-- **Response size cap** (D-75/FR-86): results returned to the model are limited to 256 KiB.
-  Larger ones fail with the new `RESPONSE_TOO_LARGE` code and an actionable message;
-  `batch_get` applies it per inner request.
+- **`ssff-mcp cache invalidate <alias|--all>` CLI** (D-78/D-79). Drops the cached `$metadata`
+  of one environment or all of them. It never touches SuccessFactors (no network); the running
+  server notices on its next metadata read. Exit codes: `0` success, `1` config unreadable,
+  `2` usage error (unknown alias deletes nothing).
+- **Configurable response size cap** (D-75/FR-86): `maxResponseBytes` in `config.json`, then
+  `SF_MAX_RESPONSE_BYTES`, then the **256 KiB** default. Results above the cap fail with the
+  new `RESPONSE_TOO_LARGE` code and an actionable message; `batch_get` applies it per inner
+  request.
 - **Effective-dating query options.** `query_entity` and `batch_get` accept optional
   `fromDate`, `toDate` and `asOfDate` (`YYYY-MM-DD`). They are sent as **bare** query
   parameters, because SuccessFactors silently ignores the `$`-prefixed forms and falls
@@ -48,9 +61,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `sf://{env}/entities` and `list` of resource templates include the new items above. Clients
-  that pin the exact list of tools or resources will see `inspect_custom_mdf` and
+- **`sf://{env}/entities` is now a names-only catalog** (`{ name }`). The heavier fields
+  (`entityType`, `keyProperties` and the custom/effective-dated/employee flags) were dropped
+  from the catalog to cut its size (measured 142 KB → ~19 KB on a 658-entity tenant); they
+  remain in the per-entity resource `sf://{env}/entities/{entitySet}` and in
   `sf://{env}/mdf/custom`.
+- `sf://{env}/mdf/custom` and the `list` of resource templates include the new items above.
+  Clients that pin the exact list of tools or resources will see `inspect_entity` and
+  `sf://{env}/mdf/custom`.
+- **CI and packaging.** `pnpm build` cleans `dist/` before every build, so stale artifacts
+  can neither run locally nor ship in the package. A GitHub Actions matrix now typechecks
+  and tests on Linux, macOS and Windows with Node 20.
 
 ### Fixed
 
@@ -59,17 +80,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `URLSearchParams`, which encodes a space as `+` and percent-encodes quotes, commas and
   parentheses; SuccessFactors answers **400** to both. They are now assembled by raw
   concatenation with spaces encoded uniformly as `%20`, preserving every other character
-  literally. See `PRD-feature-odata-query-fidelity.md` (M1/FR-77).
+  literally. See `archive/PRD-feature-odata-query-fidelity.md` (M1/FR-77).
 - **Batch inner requests keep literal `$` option names.** A `%24`-prefixed option name is
   matched verbatim by the `$batch` parser and therefore **silently ignored**, so the part
   returned unfiltered data (measured: 1000 default rows instead of the filtered one). The
   previous blind `%24 → $` rewrite is gone; the query is embedded exactly as built.
+- The Windows config-permission warning is emitted once per process instead of repeating on
+  every tool call.
 
 ### Security
 
 - Control characters (CR, LF, NUL) in `filter`, `orderby`, `select` and `expand` are
   rejected with `OPTION_INVALID` before any dispatch, since they could inject extra HTTP
   request lines into the `$batch` multipart envelope. The error never echoes the value.
+- Added regression tests for secret redaction and the POSIX-only permission check.
 ## [0.3.0] — 2026-10-14
 
 ### Breaking
