@@ -1142,14 +1142,15 @@ test("sf://{env}/entities returns lightweight catalog and respects entityAllowli
     const catalog = JSON.parse(content.text) as {
       environment: string;
       totalCount: number;
-      entities: Array<{ name: string; entityType: string; keyProperties: string[] }>;
+      entities: Array<{ name: string }>;
     };
 
     assert.equal(catalog.environment, "tenant-a");
     // Only "User" is allowed; "FOOBar" is omitted
     assert.equal(catalog.totalCount, 1);
     assert.equal(catalog.entities[0].name, "User");
-    assert.deepEqual(catalog.entities[0].keyProperties, ["userId"]);
+    // Names only (2026-10-14): the heavier fields moved to the per-entity detail.
+    assert.deepEqual(Object.keys(catalog.entities[0]), ["name"]);
   });
 });
 
