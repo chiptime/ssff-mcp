@@ -1,0 +1,219 @@
+/**
+ * Single source of truth for the MCP tools: name, title, description and input
+ * schema.
+ *
+ * `createMcpServer` (src/tools.ts) registers every tool from this catalog, and
+ * `src/tool-doc.ts` renders the tools reference in docs/tools.md from it, so the
+ * documentation cannot drift from the registered tools. Nothing here changes the
+ * registered contract: the values are the exact ones previously inlined in
+ * src/tools.ts.
+ */
+
+import { z } from "zod";
+
+/** SAP $batch hard limit: max embedded requests per batch (D-28/R9). */
+export const MAX_BATCH_REQUESTS = 180;
+
+export const LIST_ENVIRONMENTS_DESCRIPTION =
+  "Lists the environments configured for this server (aliases and auth type only; no URLs or credentials). Takes no arguments.";
+
+export const QUERY_ENTITY_DESCRIPTION = [
+  "Reads entity data from SAP SuccessFactors OData v2 for the selected environment.",
+  "entityPath examples: \"User\", \"User('123')\", \"Foobar(key1='a',key2=1)/navProperty\".",
+  "Options map 1:1 to OData system query options and their values pass through unmodified:",
+  "filter -> $filter, orderby -> $orderby, select -> $select, expand -> $expand, top -> $top,",
+  "skip -> $skip, inlinecount -> $inlinecount (allpages only).",
+  "Effective dating: fromDate, toDate and asOfDate (bare YYYY-MM-DD, NOT $-prefixed; SuccessFactors",
+  "ignores the $-prefixed forms) select the effective-dated slices; asOfDate is exclusive and cannot",
+  "be combined with fromDate or toDate.",
+  "Ceiling: at most 1000 records and exactly one OData page are returned per call;",
+  "next links are never followed automatically (hasMore indicates a next page exists).",
+  "Continuation: when hasMore is true the response may carry an opaque cursor;",
+  "to fetch the exact next page, re-issue the SAME call (same environment, entityPath and options)",
+  "passing that cursor as the cursor argument. The cursor is a signed envelope tied to this",
+  "server process: it is rejected (CURSOR_INVALID) when altered, reused with different",
+  "arguments, or after a server restart; skip cannot be combined with cursor.",
+  "inlinecount \"allpages\" returns totalCount when the service provides __count.",
+  "output selects the representation: \"json\" (default, unwrapped records) or",
+  "\"xml\" (raw service XML body, hasMore/totalCount/cursor reported in structuredContent).",
+].join(" ");
+
+export const BATCH_GET_DESCRIPTION = [
+  "Executes multiple read-only OData v2 GETs against the selected environment in ONE $batch POST.",
+  "Each item uses exactly the query_entity GET grammar (entityPath plus optional filter, orderby,",
+  "select, expand, fromDate, toDate, asOfDate, top, skip, cursor, inlinecount); there is no field for",
+  "HTTP method, URL, host, headers, body or changesets, and unknown keys are rejected before dispatch.",
+  "fromDate, toDate and asOfDate are bare YYYY-MM-DD effective-dating options (NOT $-prefixed);",
+  "asOfDate is exclusive and cannot be combined with fromDate or toDate.",
+  "Hard limits: 1 to 180 items per call (SAP $batch limit) and at most 1000 records returned in",
+  "TOTAL across all items; items are processed in input order and truncated records are flagged",
+  "(truncatedToCeiling) when the aggregate ceiling is hit.",
+  "Every item is fully validated BEFORE the batch is dispatched (path grammar, entity allowlist,",
+  "option bounds, cursor binding, $metadata classification): one invalid item rejects the whole",
+  "batch with no $batch POST issued (a metadata GET for classification is the only allowed call).",
+  "The response contains one entry per item in input order with per-item status:",
+  "{ index, path, success, httpStatus, recordCount, records|body, hasMore, cursor?, totalCount?,",
+  "truncatedToCeiling? }; per-item failures carry a sanitized error, never the raw service body.",
+  "output selects the representation for the whole call: \"json\" (default, unwrapped records) or",
+  "\"xml\" (raw Atom item bodies, Accept: application/atom+xml). Continuation cursors work exactly",
+  "like query_entity cursors and must be replayed with the same environment, entityPath and options.",
+].join(" ");
+
+export const INSPECT_ENTITY_DESCRIPTION = [
+  "Reads the data model from the cached $metadata; no data request is made.",
+  "Without entitySet it lists entities as { name, isCustom }; customOnly narrows to Custom MDF objects",
+  "(adding isEffectiveDated, linkType, targetEntity, matchField, plus employeeLinkedCount), employeeLinkedOnly",
+  "narrows that list further to the ones tied to a User or EmpEmployment, and query filters names by substring.",
+  "With entitySet it returns that entity's schema; Custom MDF entities also carry isCustom, isEffectiveDated,",
+  "employeeLink and query guidance (suggested $filter, $orderby, warnings, and a ready query_entity example).",
+  "Always query a custom entity as the root with $filter and $top; expanding it from User returns the whole child collection.",
+  "locale selects the language of the guidance prose (the user's language, e.g. es_ES).",
+].join(" ");
+
+// The date format is validated in buildQuery (not by zod) so a malformed value
+// surfaces as our sanitized OPTION_INVALID rather than a protocol validation error.
+const EFFECTIVE_FROM_DESCRIPTION =
+  "Effective-dating window start, format YYYY-MM-DD. Sent as the bare fromDate query parameter " +
+  "(not $-prefixed). Cannot be combined with asOfDate.";
+const EFFECTIVE_TO_DESCRIPTION =
+  "Effective-dating window end, format YYYY-MM-DD. Sent as the bare toDate query parameter " +
+  "(not $-prefixed). Cannot be combined with asOfDate.";
+const EFFECTIVE_AS_OF_DESCRIPTION =
+  "Effective-dating point in time, format YYYY-MM-DD. Sent as the bare asOfDate query parameter " +
+  "(not $-prefixed). Cannot be combined with fromDate or toDate.";
+
+const environmentArg = z.string().optional();
+
+export const queryEntitySchema = z
+  .object({
+    environment: environmentArg,
+    entityPath: z.string().min(1),
+    filter: z.string().optional(),
+    orderby: z.string().optional(),
+    select: z.string().optional(),
+    expand: z.string().optional(),
+    fromDate: z.string().optional().describe(EFFECTIVE_FROM_DESCRIPTION),
+    toDate: z.string().optional().describe(EFFECTIVE_TO_DESCRIPTION),
+    asOfDate: z.string().optional().describe(EFFECTIVE_AS_OF_DESCRIPTION),
+    top: z.number().int().optional(),
+    skip: z.number().int().optional(),
+    cursor: z
+      .string()
+      .optional()
+      .describe(
+        "Continuation cursor from a previous response. Repeat the SAME environment, entityPath " +
+          "and options of the call that produced it and pass the cursor to fetch the exact next " +
+          "page. Rejected (CURSOR_INVALID) if altered, reused with different arguments, or after " +
+          "a server restart. Cannot be combined with skip.",
+      ),
+    inlinecount: z
+      .enum(["allpages"])
+      .optional()
+      .describe('Adds $inlinecount=allpages; the response includes totalCount when the service provides __count.'),
+    output: z
+      .enum(["json", "xml"])
+      .optional()
+      .describe('Response representation: "json" (default, unwrapped records) or "xml" (raw service XML body).'),
+  })
+  .strict();
+
+export const listEnvironmentsSchema = z.object({}).strict();
+
+export const inspectEntitySchema = z
+  .object({
+    environment: environmentArg,
+    entitySet: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("Entity set to detail (e.g. 'User', 'cust_EmployeeEquipment'). If omitted, lists entities."),
+    customOnly: z
+      .boolean()
+      .optional()
+      .describe("When listing, keep only Custom MDF objects and add their classification fields. Default: false."),
+    employeeLinkedOnly: z
+      .boolean()
+      .optional()
+      .describe("When listing Custom MDF objects, keep only those tied to a User or EmpEmployment. Requires customOnly."),
+    query: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("When listing, keep entities whose name contains this text (case-insensitive)."),
+    locale: z
+      .string()
+      .optional()
+      .describe(
+        "Locale for the guidance text, normally the user's own language (e.g. 'es_ES'). It takes precedence over config defaultLocale, SF_DEFAULT_LOCALE and the 'en_US' fallback.",
+      ),
+  })
+  .strict();
+
+/** One batch_get item: exactly the query_entity GET grammar, nothing else. */
+const batchRequestItemSchema = z
+  .object({
+    entityPath: z.string().min(1),
+    filter: z.string().optional(),
+    orderby: z.string().optional(),
+    select: z.string().optional(),
+    expand: z.string().optional(),
+    fromDate: z.string().optional().describe(EFFECTIVE_FROM_DESCRIPTION),
+    toDate: z.string().optional().describe(EFFECTIVE_TO_DESCRIPTION),
+    asOfDate: z.string().optional().describe(EFFECTIVE_AS_OF_DESCRIPTION),
+    top: z.number().int().optional(),
+    skip: z.number().int().optional(),
+    cursor: z.string().optional(),
+    inlinecount: z.enum(["allpages"]).optional(),
+  })
+  .strict();
+
+export const batchGetSchema = z
+  .object({
+    environment: environmentArg,
+    // Hard SAP limit of 180 embedded requests per $batch (D-28/R9): enforced
+    // by the schema, so 0 or >180 is rejected before any work or network call.
+    requests: z.array(batchRequestItemSchema).min(1).max(MAX_BATCH_REQUESTS),
+    output: z
+      .enum(["json", "xml"])
+      .optional()
+      .describe('Response representation for the whole call: "json" (default) or "xml" (raw Atom item bodies).'),
+  })
+  .strict();
+
+export interface ToolCatalogEntry {
+  /** Registered MCP tool name. */
+  name: string;
+  /** Human-facing title shown by MCP clients. */
+  title: string;
+  /** Tool description shown to the model. */
+  description: string;
+  /** Strict input schema. */
+  schema: z.ZodTypeAny;
+}
+
+export const TOOL_CATALOG: readonly ToolCatalogEntry[] = [
+  {
+    name: "list_environments",
+    title: "List configured environments",
+    description: LIST_ENVIRONMENTS_DESCRIPTION,
+    schema: listEnvironmentsSchema,
+  },
+  {
+    name: "inspect_entity",
+    title: "Inspect the data model",
+    description: INSPECT_ENTITY_DESCRIPTION,
+    schema: inspectEntitySchema,
+  },
+  {
+    name: "query_entity",
+    title: "Query OData v2 entity data",
+    description: QUERY_ENTITY_DESCRIPTION,
+    schema: queryEntitySchema,
+  },
+  {
+    name: "batch_get",
+    title: "Batch multiple OData v2 GETs (read-only $batch)",
+    description: BATCH_GET_DESCRIPTION,
+    schema: batchGetSchema,
+  },
+];
