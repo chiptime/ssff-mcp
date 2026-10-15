@@ -5,6 +5,8 @@
 [![node](https://img.shields.io/node/v/ssff-mcp.svg)](package.json)
 [![CI](https://github.com/chiptime/ssff-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/chiptime/ssff-mcp/actions/workflows/ci.yml)
 
+![ssff-mcp — read-only MCP server for SAP SuccessFactors OData v2](assets/banner.svg)
+
 A local, **read-only** MCP (Model Context Protocol) server for **SAP
 SuccessFactors OData v2**. It lets an AI assistant — OpenCode, Claude Desktop,
 Cursor, Codex, Pi, or any MCP client — read your SuccessFactors data through
@@ -16,7 +18,7 @@ no way to write anything.
 > cap and the Custom MDF improvements are on `main` and land in the next release.
 > If you need them today, [build from source](docs/development.md#build-and-test).
 
-## ssff-mcp vs calling OData directly
+## 🆚 ssff-mcp vs calling OData directly
 
 You could write your own SuccessFactors client, but you would handle auth and
 token refresh, effective dating, `$batch` envelopes, cursor pagination, error
@@ -24,7 +26,7 @@ sanitization and — above all — the read-only boundary yourself. `ssff-mcp` i
 exactly that layer, packaged for any MCP client, and it refuses to write by
 construction. See the full [comparison](docs/faq.md#how-it-compares).
 
-## Key features
+## ✨ Key features
 
 - **Read-only by construction.** No tool can write; the boundary lives in server
   code, never in a prompt.
@@ -38,14 +40,14 @@ construction. See the full [comparison](docs/faq.md#how-it-compares).
 - **Cross-platform.** Linux, macOS and Windows; Basic or OAuth 2.0 per
   environment.
 
-## Requirements
+## 📋 Requirements
 
 - **Node.js >= 20** (Linux, macOS, Windows).
 - Any MCP client: OpenCode, Claude Desktop, Cursor, Codex, Pi, or another.
 - **pnpm** — only if you build from source. The installed CLI needs nothing
   beyond Node.
 
-## Getting started
+## 🚀 Getting started
 
 Run the configuration wizard — it asks for your tenant URL and credentials,
 validates them live against `$metadata`, writes `~/.config/ssff-mcp/config.json`
@@ -148,14 +150,14 @@ args = ["-y", "ssff-mcp@latest"]
 Install globally instead of with `npx` (`npm install -g ssff-mcp`, then run
 `ssff-mcp`), or [build from source](docs/development.md#build-and-test).
 
-## Configuration
+## ⚙️ Configuration
 
-The usual way is [`ssff-mcp init`](#getting-started): it writes
-`~/.config/ssff-mcp/config.json` and prints the block for your client. To edit
-the file by hand, or for OAuth, entity allowlist, secret providers and inline
-mode, see **[Configuration →](docs/configuration.md)**.
+The usual way is the `ssff-mcp init` wizard (see Getting started above): it
+writes `~/.config/ssff-mcp/config.json` and prints the block for your client. To
+edit the file by hand, or for OAuth, entity allowlist, secret providers and
+inline mode, see **[Configuration →](docs/configuration.md)**.
 
-## What you can ask
+## 💬 What you can ask
 
 You drive the assistant in natural language; it picks the tool.
 
@@ -166,32 +168,14 @@ You drive the assistant in natural language; it picks the tool.
 - "Get the employees in `PerPersonal` whose last name is García, with id, name and email."
 - "Fetch these five entities at once: …" *(one `$batch` request)*
 
-## Demo
+## 🎬 Demo
 
-An abridged sample session — the assistant picks the tools (output shapes are
-real; values are illustrative):
+The assistant picks the tools and answers from the records it reads (output
+shapes are real; values are illustrative):
 
-```text
-You        Which SuccessFactors environments do I have configured?
+![Example session: list_environments, inspect_entity and query_entity](assets/demo.svg)
 
-Assistant  calls list_environments ->
-           { "environments": [ { "alias": "prod", "authType": "basic" } ] }
-
-You        Show me the fields of EmpJob.
-
-Assistant  calls inspect_entity ->
-           keys: seqNumber, userId, effectiveStartDate
-           navigation: userNav -> User
-
-You        Read the current job info for employee 1000001.
-
-Assistant  calls query_entity ->
-           { "recordCount": 1, "hasMore": false, "records": [ { "jobTitle": "..." } ] }
-```
-
-<!-- To show a recorded GIF instead: add docs/assets/demo.gif and replace the transcript above with ![demo](docs/assets/demo.gif). -->
-
-## Security
+## 🔒 Security
 
 `ssff-mcp` is read-only by construction: no POST/PUT/PATCH/DELETE can come from
 tool input, credentials travel over HTTPS only (or not at all, in inline mode),
@@ -199,7 +183,7 @@ errors are sanitized and logs are metadata-only on stderr. Use a
 least-privileged, read-only SuccessFactors account. Details in
 [Security](docs/security.md).
 
-## Tools
+## 🧰 Tools
 
 | Tool | What it does |
 |---|---|
@@ -211,7 +195,7 @@ least-privileged, read-only SuccessFactors account. Details in
 Plus read-only [MCP resources](docs/tools.md#mcp-resources) for browsing the
 schema. Full argument reference: **[Tools & Resources →](docs/tools.md)**.
 
-## Documentation
+## 📚 Documentation
 
 | Document | Contents |
 |---|---|
@@ -222,7 +206,7 @@ schema. Full argument reference: **[Tools & Resources →](docs/tools.md)**.
 | [Troubleshooting](docs/troubleshooting.md) | Every error code and how to fix it. |
 | [Development](docs/development.md) | Build, test, the opt-in integration test, contributing. |
 
-## Contributing
+## 🤝 Contributing
 
 Issues and pull requests are welcome at
 [chiptime/ssff-mcp](https://github.com/chiptime/ssff-mcp). See
@@ -230,11 +214,11 @@ Issues and pull requests are welcome at
 integration test. Please keep changes read-only in spirit: this server must never
 gain the ability to write to SuccessFactors.
 
-## Maintainers
+## 👤 Maintainers
 
 [@chiptime](https://github.com/chiptime).
 
-## License
+## 📄 License
 
 [MIT](LICENSE) — Copyright (c) 2026 ChipTime. Published on npm as
 [`ssff-mcp`](https://www.npmjs.com/package/ssff-mcp).

@@ -35,7 +35,7 @@ secret sits on disk, and optionally pin an entity allowlist. Details in
 **The docs mention `inspect_entity`, but npm says 0.3.0 — why?**
 The **published** npm version is 0.3.0. `inspect_entity`, the `cache invalidate`
 command, the configurable size cap and the Custom MDF improvements are on `main`
-and land in the **next** release; until then, run [from source](../README.md#from-source-development)
+and land in the **next** release; until then, [build from source](development.md#build-and-test)
 if you need them.
 
 **Does it support OData v4?**
