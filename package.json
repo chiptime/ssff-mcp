@@ -29,6 +29,7 @@
   },
   "files": [
     "dist/src",
+    "assets",
     "config.template.json"
   ],
   "scripts": {

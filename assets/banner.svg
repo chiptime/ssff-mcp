@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="280" viewBox="0 0 1280 280" role="img" aria-label="ssff-mcp — read-only MCP server for SAP SuccessFactors OData v2">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="1" stop-color="#123055"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="280" fill="url(#bg)"/>
+  <rect x="0" y="0" width="8" height="280" fill="#3b82f6"/>
+
+  <text x="72" y="132" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="84" font-weight="700" fill="#ffffff" letter-spacing="1">ssff-mcp</text>
+  <text x="74" y="182" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="28" fill="#9fc0e6">Read-only MCP server for SAP SuccessFactors OData v2</text>
+
+  <rect x="74" y="210" rx="14" ry="14" width="196" height="34" fill="#12233b" stroke="#3b82f6"/>
+  <text x="96" y="233" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="16" fill="#cfe3ff" letter-spacing="2">READ-ONLY</text>
+</svg>

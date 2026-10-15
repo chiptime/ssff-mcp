@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="446" viewBox="0 0 1000 446" role="img" aria-label="Example session: the assistant calls list_environments, inspect_entity and query_entity and answers from the returned records">
+  <defs>
+    <linearGradient id="bar" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b3445"/>
+      <stop offset="1" stop-color="#232b39"/>
+    </linearGradient>
+  </defs>
+  <rect width="1000" height="446" rx="14" fill="#0e1116"/>
+  <rect width="1000" height="42" rx="14" fill="url(#bar)"/>
+  <rect y="30" width="1000" height="12" fill="url(#bar)"/>
+  <circle cx="26" cy="21" r="7" fill="#ff5f56"/>
+  <circle cx="50" cy="21" r="7" fill="#ffbd2e"/>
+  <circle cx="74" cy="21" r="7" fill="#27c93f"/>
+  <text x="500" y="26" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#9aa4b2">ssff-mcp — example session</text>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17">
+    <text x="34" y="82" fill="#7ee787">you</text>
+    <text x="120" y="82" fill="#e6edf3">Which SuccessFactors environments do I have configured?</text>
+
+    <text x="34" y="118" fill="#58a6ff">assistant</text>
+    <text x="162" y="118" fill="#d2a8ff">list_environments</text>
+    <text x="360" y="118" fill="#8b949e">→</text>
+    <text x="120" y="148" fill="#e6edf3">{ "environments": [ { "alias": "prod", "authType": "basic" } ] }</text>
+
+    <text x="34" y="196" fill="#7ee787">you</text>
+    <text x="120" y="196" fill="#e6edf3">Show me the fields of EmpJob.</text>
+
+    <text x="34" y="232" fill="#58a6ff">assistant</text>
+    <text x="162" y="232" fill="#d2a8ff">inspect_entity</text>
+    <text x="312" y="232" fill="#8b949e">→</text>
+    <text x="120" y="262" fill="#e6edf3">keys: seqNumber, userId, effectiveStartDate</text>
+    <text x="120" y="292" fill="#e6edf3">navigation: userNav → User</text>
+
+    <text x="34" y="340" fill="#7ee787">you</text>
+    <text x="120" y="340" fill="#e6edf3">Read the current job info for employee 1000001.</text>
+
+    <text x="34" y="376" fill="#58a6ff">assistant</text>
+    <text x="162" y="376" fill="#d2a8ff">query_entity</text>
+    <text x="300" y="376" fill="#8b949e">→</text>
+    <text x="120" y="406" fill="#e6edf3">{ "recordCount": 1, "hasMore": false, "records": [ { "jobTitle": "…" } ] }</text>
+  </g>
+</svg>
