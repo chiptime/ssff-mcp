@@ -49,28 +49,19 @@ interface CatalogItem {
 
 // --- S6: catalog flags ----------------------------------------------------------
 
-test("sf://{env}/entities adds isEmployeeLinked and isEffectiveDated and keeps the existing fields", async () => {
+test("sf://{env}/entities carries names only, with no enrichment fields", async () => {
   const { fetch } = responder();
   await withTestServer({ configPath: await configPathFor(), fetchImpl: fetch }, async (client) => {
     const catalog = await readJson<{ entities: CatalogItem[] }>(client, "sf://tenant-a/entities");
     const by = Object.fromEntries(catalog.entities.map((e) => [e.name, e]));
-    assert.deepEqual(by.cust_Equipo, {
-      name: "cust_Equipo",
-      entityType: "SFOData.cust_Equipo",
-      isCustom: true,
-      isEmployeeLinked: true,
-      isEffectiveDated: true,
-      keyProperties: ["externalCode", "effectiveStartDate"],
-    });
-    assert.equal(by.cust_Catalogo!.isEmployeeLinked, false);
-    assert.equal(by.cust_Catalogo!.isEffectiveDated, false);
-    assert.equal(by.cust_Equipo_Detalle!.isEmployeeLinked, false);
-    assert.equal(by.cust_Prendas!.isEmployeeLinked, true);
-    assert.equal(by.cust_Social!.isEffectiveDated, true);
-    // Standard entities: isCustom stays false, link flag is only evaluated for Custom MDF.
-    assert.equal(by.User!.isCustom, false);
-    assert.equal(by.User!.isEmployeeLinked, false);
-    assert.equal(by.User!.isEffectiveDated, false);
+    // Decision 2026-10-14: names only, 142 KB -> ~19 KB against PROD's 658
+    // entities. The MDF flags live in sf://{env}/mdf/custom and in the
+    // per-entity detail resource, not in the base catalog.
+    assert.deepEqual(by.cust_Equipo, { name: "cust_Equipo" });
+    assert.deepEqual(by.User, { name: "User" });
+    for (const entity of catalog.entities) {
+      assert.deepEqual(Object.keys(entity), ["name"]);
+    }
   });
 });
 
