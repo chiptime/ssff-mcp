@@ -26,75 +26,6 @@ server code, never in a prompt.
 > cap and the Custom MDF improvements are on `main` and land in the next release.
 > If you need them today, run [from source](#from-source-development).
 
-## How it works
-
-Your assistant speaks **MCP** to `ssff-mcp` over **STDIO**; `ssff-mcp` speaks
-**OData v2** to SuccessFactors over **HTTPS**. Nothing is proxied through a third
-party, and there is no write path anywhere.
-
-```text
-   Assistant (MCP host)          ssff-mcp (local)            SAP SuccessFactors
-   ─────────────────────  MCP   ─────────────────  HTTPS   ─────────────────────
-   "read EmpJob for ..."  ────►   validate + build  ─────►   OData v2 endpoint
-   answer                 ◄────   sanitize + page   ◄─────   one page per call
-```
-
-Every call is one **`HTTPS GET`** (plus a fixed, GET-only `$batch` POST for
-`batch_get`). The server validates the request, enforces your
-[entity allowlist](docs/configuration.md#entity-allowlist), caches only the
-`$metadata` schema, and returns at most one page. Not sure whether it fits your
-case? See the [FAQ and comparison](docs/faq.md).
-
-## What you can ask
-
-You drive the assistant in natural language; it picks the tool.
-
-- "List my SuccessFactors environments."
-- "Which entities can I read, and which of them are custom?"
-- "Show me the schema of `EmpJob` — keys, fields and navigations."
-- "Read the current job info for employee `1000001`."
-- "Get the employees in `PerPersonal` whose last name is García, with id, name and email."
-- "Fetch these five entities at once: …" *(one `$batch` request)*
-
-See [Examples](docs/tools.md#examples-what-you-ask-what-happens) for what each
-prompt triggers under the hood.
-
-## Demo
-
-An abridged sample session — the assistant picks the tools (output shapes are
-real; values are illustrative):
-
-```text
-You        Which SuccessFactors environments do I have configured?
-
-Assistant  calls list_environments ->
-           { "environments": [ { "alias": "prod", "authType": "basic" } ] }
-
-You        Show me the fields of EmpJob.
-
-Assistant  calls inspect_entity ->
-           keys: seqNumber, userId, effectiveStartDate
-           navigation: userNav -> User
-
-You        Read the current job info for employee 1000001.
-
-Assistant  calls query_entity ->
-           { "recordCount": 1, "hasMore": false, "records": [ { "jobTitle": "..." } ] }
-```
-
-<!-- To show a recorded GIF instead: add docs/assets/demo.gif and replace the transcript above with ![demo](docs/assets/demo.gif). -->
-
-## Documentation
-
-| Document | Contents |
-|---|---|
-| [Configuration](docs/configuration.md) | Config path, fields, Basic/OAuth auth, secret providers, entity allowlist, inline mode, locale, response-size cap. |
-| [Tools & Resources](docs/tools.md) | The four tools and their arguments, query encoding and effective dating, pagination/cursors, MCP resources, Custom MDF discovery, examples. |
-| [FAQ & comparison](docs/faq.md) | Common questions and how it compares to the SF UI, raw OData and ad-hoc scripts. |
-| [Security](docs/security.md) | Read-only guarantees, secrets, logging, metadata cache, limits and scope. |
-| [Troubleshooting](docs/troubleshooting.md) | Every error code and how to fix it. |
-| [Development](docs/development.md) | Build, test, the opt-in integration test, contributing. |
-
 ## Requirements
 
 - **Node.js >= 20** (Linux, macOS, Windows).
@@ -144,7 +75,8 @@ into your MCP client.
 npx -y ssff-mcp@latest init
 ```
 
-**2. Paste the printed block** into your client's config (see below).
+**2. Paste the printed block** into your client's config (see
+[Connecting your MCP client](#connecting-your-mcp-client)).
 
 **3. Restart the client and ask it something**, for example *"List my
 SuccessFactors environments."*
@@ -238,6 +170,92 @@ args = ["-y", "ssff-mcp@latest"]
 For inline mode (credentials in the block, no config file), the `env` /
 `environment` object carries the `SF_*` variables instead of being empty; secret
 variables are referenced, not embedded, by the generator.
+
+## Configuration
+
+The wizard writes the config file; the server re-reads it on **every** call. In
+short:
+
+- **Path:** `~/.config/ssff-mcp/config.json` (POSIX) or
+  `%USERPROFILE%\.config\ssff-mcp\config.json` (Windows).
+- **Environments:** `environments.<alias>` with `baseUrl` (https, no `/odata/v2`)
+  and `auth` — Basic or OAuth 2.0.
+- **Allowlist (optional):** `entityAllowlist` limits which entities are readable.
+- **Secrets:** plain text, or `{ "fromEnv": … }` / `{ "fromCommand": […] }` so no
+  secret sits on disk.
+- **Other:** `defaultLocale` (guidance language) and `maxResponseBytes` (output cap).
+
+Full field reference, inline mode and every option:
+**[Configuration →](docs/configuration.md)**.
+
+## How it works
+
+Your assistant speaks **MCP** to `ssff-mcp` over **STDIO**; `ssff-mcp` speaks
+**OData v2** to SuccessFactors over **HTTPS**. Nothing is proxied through a third
+party, and there is no write path anywhere.
+
+```text
+   Assistant (MCP host)          ssff-mcp (local)            SAP SuccessFactors
+   ─────────────────────  MCP   ─────────────────  HTTPS   ─────────────────────
+   "read EmpJob for ..."  ────►   validate + build  ─────►   OData v2 endpoint
+   answer                 ◄────   sanitize + page   ◄─────   one page per call
+```
+
+Every call is one **`HTTPS GET`** (plus a fixed, GET-only `$batch` POST for
+`batch_get`). The server validates the request, enforces your
+[entity allowlist](docs/configuration.md#entity-allowlist), caches only the
+`$metadata` schema, and returns at most one page. Not sure whether it fits your
+case? See the [FAQ and comparison](docs/faq.md).
+
+## What you can ask
+
+You drive the assistant in natural language; it picks the tool.
+
+- "List my SuccessFactors environments."
+- "Which entities can I read, and which of them are custom?"
+- "Show me the schema of `EmpJob` — keys, fields and navigations."
+- "Read the current job info for employee `1000001`."
+- "Get the employees in `PerPersonal` whose last name is García, with id, name and email."
+- "Fetch these five entities at once: …" *(one `$batch` request)*
+
+See [Examples](docs/tools.md#examples-what-you-ask-what-happens) for what each
+prompt triggers under the hood.
+
+## Demo
+
+An abridged sample session — the assistant picks the tools (output shapes are
+real; values are illustrative):
+
+```text
+You        Which SuccessFactors environments do I have configured?
+
+Assistant  calls list_environments ->
+           { "environments": [ { "alias": "prod", "authType": "basic" } ] }
+
+You        Show me the fields of EmpJob.
+
+Assistant  calls inspect_entity ->
+           keys: seqNumber, userId, effectiveStartDate
+           navigation: userNav -> User
+
+You        Read the current job info for employee 1000001.
+
+Assistant  calls query_entity ->
+           { "recordCount": 1, "hasMore": false, "records": [ { "jobTitle": "..." } ] }
+```
+
+<!-- To show a recorded GIF instead: add docs/assets/demo.gif and replace the transcript above with ![demo](docs/assets/demo.gif). -->
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [Configuration](docs/configuration.md) | Config path, fields, Basic/OAuth auth, secret providers, entity allowlist, inline mode, locale, response-size cap. |
+| [Tools & Resources](docs/tools.md) | The four tools and their arguments, query encoding and effective dating, pagination/cursors, MCP resources, Custom MDF discovery, examples. |
+| [FAQ & comparison](docs/faq.md) | Common questions and how it compares to the SF UI, raw OData and ad-hoc scripts. |
+| [Security](docs/security.md) | Read-only guarantees, secrets, logging, metadata cache, limits and scope. |
+| [Troubleshooting](docs/troubleshooting.md) | Every error code and how to fix it. |
+| [Development](docs/development.md) | Build, test, the opt-in integration test, contributing. |
 
 ## Contributing
 
