@@ -9,7 +9,7 @@ Every tool error is a sanitized object `{ code, message }` (plus optional
 | Code | Meaning / fix |
 |---|---|
 | `CONFIG_MISSING` | No `config.json` and inline mode not configured. Run `ssff-mcp init`, copy the template, or set `SF_*`. |
-| `CONFIG_INVALID` | The config failed strict validation (unknown key, bad URL, bad allowlist, non-null `defaultEnvironment`, …). The message names the field. |
+| `CONFIG_INVALID` | The config failed strict validation (unknown key, bad URL, bad allowlist, a top-level `entityAllowlist`, non-null `defaultEnvironment`, …). The message names the field. |
 | `CONFIG_SECRET_MISSING` | A `fromEnv` secret provider referenced a variable that is not set or is empty. |
 | `CONFIG_SECRET_COMMAND_FAILED` | A `fromCommand` secret provider failed or produced empty output. |
 | `CONFIG_SECRET_TIMEOUT` | A `fromCommand` secret provider exceeded the 5s timeout. |

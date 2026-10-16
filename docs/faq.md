@@ -17,7 +17,8 @@ talks directly to your SuccessFactors host over HTTPS. Nothing is proxied throug
 a third party.
 
 **Which entities can it read?**
-Any entity set your SuccessFactors API account can read, optionally narrowed by
+Any entity set your SuccessFactors API account can read, optionally narrowed **per
+environment** by
 [`entityAllowlist`](configuration.md#entity-allowlist). What the account can read,
 the server can read — nothing more.
 
