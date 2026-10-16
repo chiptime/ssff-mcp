@@ -57,16 +57,16 @@ export interface EnvironmentConfig {
   /** Normalized base URL: https origin + optional path prefix, no trailing slash. */
   baseUrl: string;
   auth: AuthConfig;
+  /**
+   * Entity allowlist for THIS environment (FR-28/D-30). The key is ABSENT when
+   * the environment is unrestricted. An empty array IS a configured allowlist
+   * and means deny-all for this environment (fail-closed).
+   */
+  entityAllowlist?: AllowlistEntry[];
 }
 
 export interface SsffConfig {
   environments: Record<string, EnvironmentConfig>;
-  /**
-   * Entity allowlist (FR-28/D-30). The key is ABSENT when no allowlist is
-   * configured (no restriction). An empty array IS a configured allowlist
-   * and means deny-all (fail-closed).
-   */
-  entityAllowlist?: AllowlistEntry[];
   /** Preferred language for guidance prose (FR-76); absent when not configured. */
   defaultLocale?: string;
   /** Cap, in bytes, for what is returned to the model (D-75/FR-86); absent when not configured. */
@@ -115,17 +115,6 @@ const oauthAuthSchema = z
 
 const authSchema = z.discriminatedUnion("type", [basicAuthSchema, oauthAuthSchema]);
 
-const environmentSchema = z
-  .object({
-    baseUrl: z.string().min(1),
-    auth: authSchema,
-  })
-  .strict();
-
-const aliasSchema = z.string().refine((value) => value.trim().length > 0, {
-  message: "environment alias must be a non-empty string",
-});
-
 // OData entity set name (case-sensitive exact match; no predicates here).
 const ENTITY_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -160,6 +149,21 @@ const entityAllowlistSchema = z.array(allowlistEntrySchema).superRefine((entries
   }
 });
 
+const environmentSchema = z
+  .object({
+    baseUrl: z.string().min(1),
+    auth: authSchema,
+    // Per-environment entity allowlist (FR-28/D-30): the key is ABSENT when
+    // this environment is unrestricted. An empty array IS a configured
+    // allowlist and means deny-all for this environment (fail-closed).
+    entityAllowlist: entityAllowlistSchema.optional(),
+  })
+  .strict();
+
+const aliasSchema = z.string().refine((value) => value.trim().length > 0, {
+  message: "environment alias must be a non-empty string",
+});
+
 /** A4: the Windows ACL warning is informative, so one per process is enough. */
 let windowsAclWarningEmitted = false;
 
@@ -168,8 +172,6 @@ const configSchema = z
     environments: z.record(aliasSchema, environmentSchema),
     // Implicit environment selection is forbidden: null/absent only.
     defaultEnvironment: z.null().optional(),
-    // Optional entity allowlist (FR-28/D-30): absent => no restriction.
-    entityAllowlist: entityAllowlistSchema.optional(),
     // Optional language preference for guidance prose (FR-76/D-70). Lax BCP-47
     // (`es`, `es_ES`, `es-ES`): the format is validated, not whether a catalog
     // exists for it (an untranslated locale falls back to en_US at use time).
@@ -351,6 +353,16 @@ async function defaultStat(filePath: string): Promise<StatLike> {
   return await fs.stat(filePath);
 }
 
+/** True when `value` is a plain object (not null, not an array) with its own `key`. */
+function hasOwnKey(value: unknown, key: string): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.prototype.hasOwnProperty.call(value, key)
+  );
+}
+
 /** Trimmed non-empty value, or undefined. */
 function nonEmpty(value: string | undefined): string | undefined {
   if (typeof value !== "string") {
@@ -477,13 +489,14 @@ function synthesizeInlineConfig(env: NodeJS.ProcessEnv): SsffConfig {
     auth = { type: "basic", username, password: password! };
   }
 
+  // Inline mode synthesizes exactly one environment, so SF_ENTITY_ALLOWLIST
+  // becomes that environment's allowlist (FR-28/D-30).
   const entityAllowlist = parseInlineAllowlist(env.SF_ENTITY_ALLOWLIST);
-  const environments: Record<string, EnvironmentConfig> = {
-    [alias]: { baseUrl: normalizedBaseUrl, auth },
-  };
-  return entityAllowlist === undefined
-    ? { environments, inline: true }
-    : { environments, entityAllowlist, inline: true };
+  const inlineEnvironment: EnvironmentConfig = { baseUrl: normalizedBaseUrl, auth };
+  if (entityAllowlist !== undefined) {
+    inlineEnvironment.entityAllowlist = entityAllowlist;
+  }
+  return { environments: { [alias]: inlineEnvironment }, inline: true };
 }
 
 export async function loadConfig(options: LoadConfigOptions = {}): Promise<SsffConfig> {
@@ -533,6 +546,16 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<SsffC
     throw new SanitizedError("CONFIG_INVALID", `configuration file at ${CONFIG_TILDE_PATH} is not valid JSON`);
   }
 
+  // The allowlist is per environment (FR-28/D-30). A root-level key is a
+  // migration leftover: reject it naming the field and the fix, instead of
+  // letting zod report a generic "unrecognized key".
+  if (hasOwnKey(parsed, "entityAllowlist")) {
+    throw new SanitizedError(
+      "CONFIG_INVALID",
+      `configuration file at ${CONFIG_TILDE_PATH} is invalid: "entityAllowlist" is no longer supported at the top level; define it inside each environment as environments.<alias>.entityAllowlist`,
+    );
+  }
+
   const result = configSchema.safeParse(parsed);
   if (!result.success) {
     throw new SanitizedError(
@@ -564,13 +587,13 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<SsffC
         auth: materializeOAuthAuth(env.auth, privateKey),
       };
     }
+    // The allowlist stays absent (key not set) when this environment is
+    // unrestricted; an empty array is a configured deny-all and is preserved.
+    if (env.entityAllowlist !== undefined) {
+      environments[alias]!.entityAllowlist = env.entityAllowlist;
+    }
   }
-  // entityAllowlist stays absent (key not set) when not configured; an empty
-  // array is a configured deny-all allowlist and is preserved as-is.
   const config: SsffConfig = { environments };
-  if (result.data.entityAllowlist !== undefined) {
-    config.entityAllowlist = result.data.entityAllowlist;
-  }
   if (result.data.defaultLocale !== undefined) {
     config.defaultLocale = result.data.defaultLocale;
   }

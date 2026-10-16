@@ -76,14 +76,16 @@ export function buildConfigFromAnswers(answers: ConfigAnswers): Record<string, u
           privateKey: answers.privateKey ?? "",
           tokenUrl: answers.tokenUrl ?? "",
         };
-  const config: Record<string, unknown> = {
-    environments: { [answers.alias]: { baseUrl: answers.baseUrl, auth } },
+  const environment: Record<string, unknown> = { baseUrl: answers.baseUrl, auth };
+  // The allowlist is per environment (FR-28/D-30): an empty selection is still
+  // an explicit configuration and is written as a deny-all for this environment.
+  if (answers.allowlist !== undefined) {
+    environment.entityAllowlist = answers.allowlist.map((entity) => ({ entity }));
+  }
+  return {
+    environments: { [answers.alias]: environment },
     defaultEnvironment: null,
   };
-  if (answers.allowlist !== undefined) {
-    config.entityAllowlist = answers.allowlist.map((entity) => ({ entity }));
-  }
-  return config;
 }
 
 /** Write `contents` to `filePath` atomically: temp file (0600) + rename, no TOCTOU window. */

@@ -42,7 +42,7 @@ test("buildConfigFromAnswers: basic auth shape", () => {
     auth: { type: "basic", username: "u", password: "p" },
   });
   assert.equal(cfg.defaultEnvironment, null);
-  assert.equal(cfg.entityAllowlist, undefined);
+  assert.equal(cfg.environments.prod.entityAllowlist, undefined);
 });
 
 test("buildConfigFromAnswers: oauth auth with allowlist", () => {
@@ -60,7 +60,7 @@ test("buildConfigFromAnswers: oauth auth with allowlist", () => {
   assert.equal(cfg.environments.prod.auth.type, "oauth");
   assert.equal(cfg.environments.prod.auth.userId, "u");
   assert.equal(cfg.environments.prod.auth.tokenUrl, "https://api2.successfactors.eu/oauth/token");
-  assert.deepEqual(cfg.entityAllowlist, [{ entity: "User" }, { entity: "PerPersonal" }]);
+  assert.deepEqual(cfg.environments.prod.entityAllowlist, [{ entity: "User" }, { entity: "PerPersonal" }]);
 });
 
 test("writeConfigAtomic: writes exact contents, mode 0600, creates parent dirs", async () => {

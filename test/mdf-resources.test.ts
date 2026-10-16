@@ -8,14 +8,14 @@ interface ConfigOptions {
 }
 
 async function configPathFor(options: ConfigOptions = {}): Promise<string> {
-  const config: Record<string, unknown> = {
-    environments: {
-      "tenant-a": { baseUrl: "https://tenant-a.example.com", auth: { type: "basic", username: "u", password: "p" } },
-    },
+  const environment: Record<string, unknown> = {
+    baseUrl: "https://tenant-a.example.com",
+    auth: { type: "basic", username: "u", password: "p" },
   };
   if (options.allowlist !== undefined) {
-    config.entityAllowlist = options.allowlist;
+    environment.entityAllowlist = options.allowlist;
   }
+  const config: Record<string, unknown> = { environments: { "tenant-a": environment } };
   if (options.defaultLocale !== undefined) {
     config.defaultLocale = options.defaultLocale;
   }

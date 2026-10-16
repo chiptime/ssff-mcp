@@ -217,10 +217,9 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     disableDiskCache: deps.disableDiskCache,
   });
 
-  /** Freshly loaded config per tool call: environments + optional allowlist + inline flag. */
+  /** Freshly loaded config per tool call: environments (each with its own allowlist) + inline flag. */
   interface FreshConfig {
     environments: Record<string, EnvironmentConfig>;
-    entityAllowlist?: AllowlistEntry[];
     defaultLocale?: string;
     inline?: boolean;
   }
@@ -235,7 +234,6 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     setMaxResponseBytes(config.maxResponseBytes);
     return {
       environments: config.environments,
-      entityAllowlist: config.entityAllowlist,
       defaultLocale: config.defaultLocale,
       inline: config.inline,
     };
@@ -310,8 +308,10 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     },
     async (args) =>
       await executeTool("inspect_entity", args.environment, async () => {
-        const { environments, entityAllowlist, defaultLocale, inline } = await loadFreshConfig(args.environment);
+        const { environments, defaultLocale, inline } = await loadFreshConfig(args.environment);
         const { alias, env } = resolveEnvironment(environments, args.environment, inline);
+        // The allowlist is per environment (FR-28/D-30).
+        const entityAllowlist = env.entityAllowlist;
         const target: EnvTarget = envTargetFor(env, alias);
         const locale = resolveLocale({ tool: args.locale, config: defaultLocale, env: envVars.SF_DEFAULT_LOCALE });
 
@@ -403,8 +403,10 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     },
     async (args) =>
       await executeTool("query_entity", args.environment, async () => {
-        const { environments, entityAllowlist, inline } = await loadFreshConfig(args.environment);
+        const { environments, inline } = await loadFreshConfig(args.environment);
         const { alias, env } = resolveEnvironment(environments, args.environment, inline);
+        // The allowlist is per environment (FR-28/D-30).
+        const entityAllowlist = env.entityAllowlist;
 
         const output = args.output ?? "json";
 
@@ -569,8 +571,10 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     },
     async (args) =>
       await executeTool("batch_get", args.environment, async () => {
-        const { environments, entityAllowlist, inline } = await loadFreshConfig(args.environment);
+        const { environments, inline } = await loadFreshConfig(args.environment);
         const { alias, env } = resolveEnvironment(environments, args.environment, inline);
+        // The allowlist is per environment (FR-28/D-30).
+        const entityAllowlist = env.entityAllowlist;
 
         const output = args.output ?? "json";
         const target: EnvTarget = envTargetFor(env, alias);
@@ -823,8 +827,10 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       },
     }),
     async (uri, { environment }) => {
-      const { environments, entityAllowlist, inline } = await loadFreshConfig(environment as string);
+      const { environments, inline } = await loadFreshConfig(environment as string);
       const resolved = resolveEnvironment(environments, environment as string, inline);
+      // The allowlist is per environment (FR-28/D-30).
+      const entityAllowlist = resolved.env.entityAllowlist;
       const target = envTargetFor(resolved.env);
       const parsed = await metadataService.getParsedMetadata(target, resolved.alias);
 
@@ -871,8 +877,10 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       },
     }),
     async (uri, { environment }) => {
-      const { environments, entityAllowlist, inline } = await loadFreshConfig(environment as string);
+      const { environments, inline } = await loadFreshConfig(environment as string);
       const resolved = resolveEnvironment(environments, environment as string, inline);
+      // The allowlist is per environment (FR-28/D-30).
+      const entityAllowlist = resolved.env.entityAllowlist;
       const target = envTargetFor(resolved.env);
       const parsed = await metadataService.getParsedMetadata(target, resolved.alias);
 
@@ -910,8 +918,10 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     "sf_entity_schema",
     new ResourceTemplate("sf://{environment}/entities/{entitySet}", { list: undefined }),
     async (uri, { environment, entitySet }) => {
-      const { environments, entityAllowlist, defaultLocale, inline } = await loadFreshConfig(environment as string);
+      const { environments, defaultLocale, inline } = await loadFreshConfig(environment as string);
       const resolved = resolveEnvironment(environments, environment as string, inline);
+      // The allowlist is per environment (FR-28/D-30).
+      const entityAllowlist = resolved.env.entityAllowlist;
       const entityName = entitySet as string;
 
       if (entityAllowlist !== undefined && !isEntityAllowed(entityAllowlist, entityName)) {
@@ -976,8 +986,10 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       },
     }),
     async (uri, { environment }) => {
-      const { environments, entityAllowlist, inline } = await loadFreshConfig(environment as string);
+      const { environments, inline } = await loadFreshConfig(environment as string);
       const resolved = resolveEnvironment(environments, environment as string, inline);
+      // The allowlist is per environment (FR-28/D-30).
+      const entityAllowlist = resolved.env.entityAllowlist;
       const target = envTargetFor(resolved.env);
       // Zero-network (D-62): classified from the cached $metadata; allowlist-filtered (D-68).
       const entities = await metadataService.listCustomMdf(target, resolved.alias, entityAllowlist);

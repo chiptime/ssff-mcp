@@ -874,9 +874,9 @@ function allowlistConfigJson(entries: Array<Record<string, unknown>>): string {
       "tenant-a": {
         baseUrl: "https://tenant-a.example.com",
         auth: { type: "basic", username: "apiuser@tenantA", password: "secret-password-a" },
+        entityAllowlist: entries,
       },
     },
-    entityAllowlist: entries,
   });
 }
 
@@ -983,6 +983,75 @@ test("without an allowlist configured, queries are unrestricted as before", asyn
     const structured = result.structuredContent as { recordCount: number };
     assert.equal(structured.recordCount, 1);
     assert.equal(requests.filter((r) => !r.url.includes("$metadata")).length, 1);
+  });
+});
+
+test("environments carry independent allowlists: one restricted, one unrestricted", async () => {
+  const configPath = await writeConfigFile(configJson({ prod: { allowlist: [{ entity: "User" }] }, dev: {} }), {
+    mode: 0o600,
+  });
+  const { fetch } = recordingFetch(standardSfResponder(feed([{ id: "f1" }])));
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    // The restricted environment denies the entity...
+    const denied = await callTool(client, "query_entity", { environment: "prod", entityPath: "FOOBar" });
+    assert.equal(errorPayload(denied).code, "ENTITY_NOT_ALLOWED");
+    // ...while the unrestricted one serves the very same path.
+    const allowed = await callTool(client, "query_entity", { environment: "dev", entityPath: "FOOBar" });
+    assert.equal(allowed.isError, undefined);
+  });
+});
+
+test("a deny-all allowlist is scoped to its own environment", async () => {
+  const configPath = await writeConfigFile(configJson({ prod: { allowlist: [] }, dev: {} }), { mode: 0o600 });
+  const { fetch } = recordingFetch(standardSfResponder(feed([{ userId: "u1" }])));
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const denied = await callTool(client, "query_entity", { environment: "prod", entityPath: "User" });
+    assert.equal(errorPayload(denied).code, "ENTITY_NOT_ALLOWED");
+    const allowed = await callTool(client, "query_entity", { environment: "dev", entityPath: "User" });
+    assert.equal(allowed.isError, undefined);
+  });
+});
+
+test("sf://{env}/overview reports the allowlist state of its own environment", async () => {
+  const configPath = await writeConfigFile(
+    configJson({ prod: { allowlist: [{ entity: "User" }] }, dev: { allowlist: [] } }),
+    { mode: 0o600 },
+  );
+  const { fetch } = recordingFetch(standardSfResponder(feed([])));
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const read = async (uri: string): Promise<{ allowlistConfigured: boolean; allowlistDeniedAll: boolean }> => {
+      const res = await client.readResource({ uri });
+      const content = res.contents[0];
+      assert.ok(content !== undefined && "text" in content);
+      return JSON.parse(content.text) as { allowlistConfigured: boolean; allowlistDeniedAll: boolean };
+    };
+
+    const prod = await read("sf://prod/overview");
+    assert.equal(prod.allowlistConfigured, true);
+    assert.equal(prod.allowlistDeniedAll, false);
+
+    const dev = await read("sf://dev/overview");
+    assert.equal(dev.allowlistConfigured, true);
+    assert.equal(dev.allowlistDeniedAll, true);
+  });
+});
+
+test("sf://{env}/entities filters the catalog with its own environment's allowlist", async () => {
+  const configPath = await writeConfigFile(configJson({ prod: { allowlist: [{ entity: "User" }] }, dev: {} }), {
+    mode: 0o600,
+  });
+  const { fetch } = recordingFetch(standardSfResponder(feed([])));
+  await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
+    const read = async (uri: string): Promise<string[]> => {
+      const res = await client.readResource({ uri });
+      const content = res.contents[0];
+      assert.ok(content !== undefined && "text" in content);
+      const catalog = JSON.parse(content.text) as { entities: Array<{ name: string }> };
+      return catalog.entities.map((entity) => entity.name);
+    };
+
+    assert.deepEqual(await read("sf://prod/entities"), ["User"]);
+    assert.deepEqual((await read("sf://dev/entities")).sort(), ["FOOBar", "User"]);
   });
 });
 
@@ -1128,9 +1197,9 @@ test("sf://{env}/entities returns lightweight catalog and respects entityAllowli
       "tenant-a": {
         baseUrl: "https://tenant-a.example.com",
         auth: { type: "basic", username: "u", password: "p" },
+        entityAllowlist: [{ entity: "User" }],
       },
     },
-    entityAllowlist: [{ entity: "User" }],
   });
   const configPath = await writeConfigFile(configContent, { mode: 0o600 });
   const { fetch } = recordingFetch(standardSfResponder(feed([])));
@@ -1183,9 +1252,9 @@ test("sf://{env}/entities/{entitySet} rejects denied or non-existent entities", 
       "tenant-a": {
         baseUrl: "https://tenant-a.example.com",
         auth: { type: "basic", username: "u", password: "p" },
+        entityAllowlist: [{ entity: "User" }],
       },
     },
-    entityAllowlist: [{ entity: "User" }],
   });
   const configPath = await writeConfigFile(configContent, { mode: 0o600 });
   const { fetch } = recordingFetch(standardSfResponder(feed([])));

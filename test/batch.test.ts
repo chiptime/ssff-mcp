@@ -204,9 +204,9 @@ function allowlistConfigJson(entries: Array<Record<string, unknown>>): string {
       "tenant-a": {
         baseUrl: "https://tenant-a.example.com",
         auth: { type: "basic", username: "apiuser@tenantA", password: "secret-password-a" },
+        entityAllowlist: entries,
       },
     },
-    entityAllowlist: entries,
   });
 }
 
