@@ -16,8 +16,9 @@ import { SanitizedError, redactUrls, sanitizeMessage } from "./errors.js";
 import type { EnvironmentConfig, OAuthAuthConfig } from "./config.js";
 import { getAuthorizationHeader, invalidateOAuthToken } from "./oauth.js";
 import type { OAuthFetch, OAuthPostInit } from "./oauth.js";
+import { PACKAGE_VERSION } from "./version.js";
 
-export const USER_AGENT = "ssff-mcp/0.1.0 (+mcp; linux)";
+export const USER_AGENT = `ssff-mcp/${PACKAGE_VERSION} (+mcp; linux)`;
 export const MAX_REDIRECT_HOPS = 5;
 
 /** Exactly the headers every request carries. Nothing else, ever. */

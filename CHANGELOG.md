@@ -12,6 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The advertised version is no longer hardcoded.** The outgoing `User-Agent` and the MCP
+  server handshake both reported `0.1.0` — two releases stale, and wrong to the SuccessFactors
+  tenant receiving every request. Both now read the version from the shipped `package.json`
+  (`src/version.ts`), so a release bump propagates on its own, and the tests derive the
+  expected value from the manifest instead of pinning a literal.
+
 ## [0.4.0] — 2026-10-17
 
 ### Breaking

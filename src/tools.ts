@@ -17,6 +17,7 @@ import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mc
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { executeBatchGet, sanitizeEmbeddedFailure } from "./batch.js";
 import { isEntityAllowed, type AllowlistEntry } from "./allowlist.js";
+import { PACKAGE_VERSION } from "./version.js";
 import { loadConfig, type EnvironmentConfig } from "./config.js";
 import { CURSOR_VERSION, defaultCursorCodec } from "./cursor.js";
 import { SanitizedError, toSanitizedError } from "./errors.js";
@@ -204,7 +205,7 @@ function encodeContinuationCursor(
 
 export function createMcpServer(deps: ServerDeps = {}): McpServer {
   const server = new McpServer(
-    { name: "ssff-mcp", version: "0.1.0" },
+    { name: "ssff-mcp", version: PACKAGE_VERSION },
     { instructions: "Read-only MCP server for SAP SuccessFactors OData v2. Name the environment explicitly; in inline mode (a single configured environment) it may be omitted." },
   );
   const log: Logger = makeLogger(deps.logSink);
