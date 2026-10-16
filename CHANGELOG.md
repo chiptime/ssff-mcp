@@ -12,6 +12,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-17
+
+### Breaking
+
+- **`entityAllowlist` is now per environment.** The key moves inside each
+  environment (`environments.<alias>.entityAllowlist`) so one environment can be restricted
+  while another is not; a single shared list could not express that. A **top-level
+  `entityAllowlist` is now rejected** with `CONFIG_INVALID` naming the field and the fix —
+  move each list into the environment it applies to. `SF_ENTITY_ALLOWLIST` now populates the
+  single environment synthesized in inline mode. The shipped `config.template.json` no longer
+  carries the key, which restores the documented promise that copying the template never
+  activates a restriction silently.
+
 ### Added
 
 - **Unified `inspect_entity` tool.** A single tool to inspect the data model, standard or
@@ -61,14 +74,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **BREAKING — `entityAllowlist` is now per environment.** The key moves inside each
-  environment (`environments.<alias>.entityAllowlist`) so one environment can be restricted
-  while another is not; a single shared list could not express that. A **top-level
-  `entityAllowlist` is now rejected** with `CONFIG_INVALID` naming the field and the fix —
-  move each list into the environment it applies to. `SF_ENTITY_ALLOWLIST` now populates the
-  single environment synthesized in inline mode. The shipped `config.template.json` no longer
-  carries the key, which restores the documented promise that copying the template never
-  activates a restriction silently.
 - **`sf://{env}/entities` is now a names-only catalog** (`{ name }`). The heavier fields
   (`entityType`, `keyProperties` and the custom/effective-dated/employee flags) were dropped
   from the catalog to cut its size (measured 142 KB → ~19 KB on a 658-entity tenant); they
@@ -86,6 +91,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ssff-mcp init` wrote the allowlist at the top level**, which the server now rejects: the
   wizard would have generated a config it refuses to load. It now writes the allowlist inside
   the generated environment.
+- **`ssff-mcp init` silently ignored an empty allowlist selection.** Answering "Restrict
+  access with an entity allowlist?" and then selecting nothing produced a config with **no**
+  restriction at all, inverting the user's choice without a warning. An empty selection is now
+  an explicit deny-all (`[]`) for that environment, and the wizard announces it on both empty
+  paths (empty selection, and a tenant that exposes no entity sets).
 - **Filtered queries and `orderby` no longer lose their spaces.** Option values for
   `$filter`, `$orderby`, `$select` and `$expand` were assembled through
   `URLSearchParams`, which encodes a space as `+` and percent-encodes quotes, commas and
@@ -185,6 +195,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional fail-closed `entityAllowlist` enforcement.
 - GET-only `batch_get` built on the `odata-batch` retrieve pattern.
 
-[Unreleased]: https://github.com/chiptime/ssff-mcp/compare/0.3.0...HEAD
+[Unreleased]: https://github.com/chiptime/ssff-mcp/compare/0.4.0...HEAD
+[0.4.0]: https://github.com/chiptime/ssff-mcp/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/chiptime/ssff-mcp/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/chiptime/ssff-mcp/releases/tag/0.2.0
