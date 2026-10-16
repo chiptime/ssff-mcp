@@ -158,7 +158,7 @@ async function runDiscoveryWithRetry(
       const entities = await discoverEntities({ environment, alias });
       spin.stop(`Entity catalog retrieved (${entities.length} entity sets)`);
       if (entities.length === 0) {
-        note("No entity sets were returned; the allowlist will not be restricted.");
+        note("No entity sets were returned; the allowlist will deny every entity for this environment.");
         return [];
       }
       const selected = await autocompleteMultiselect({
@@ -168,6 +168,9 @@ async function runDiscoveryWithRetry(
       });
       if (isCancel(selected)) {
         return undefined;
+      }
+      if (selected.length === 0) {
+        note("No entities selected; the allowlist will deny every entity for this environment.");
       }
       return selected as string[];
     } catch (error) {
@@ -179,6 +182,25 @@ async function runDiscoveryWithRetry(
       }
     }
   }
+}
+
+/**
+ * The allowlist the wizard must write (FR-28/D-30, fail-closed).
+ *
+ * - `restrict === false` leaves the key absent, so the environment is unrestricted.
+ * - `restrict === true` writes the selection, and an **empty** selection is an
+ *   explicit deny-all (`[]`) rather than a silent fallback to unrestricted: the
+ *   user answered "restrict", and the wizard must never invert that quietly.
+ * - `selected === undefined` means the caller cancelled the discovery step.
+ */
+export function allowlistFromSelection(
+  restrict: boolean,
+  selected: readonly string[] | undefined,
+): string[] | undefined {
+  if (!restrict || selected === undefined) {
+    return undefined;
+  }
+  return [...selected];
 }
 
 /** Interactive answer collection (T3 basic/OAuth; discovery and allowlist are T4). */
@@ -278,15 +300,14 @@ async function collectAnswers(): Promise<{ answers: ConfigAnswers; client: Clien
   if (isCancel(restrict)) {
     return undefined;
   }
+  let selected: string[] | undefined;
   if (restrict === true) {
-    const entities = await runDiscoveryWithRetry(environmentFromAnswers(answers), answers.alias);
-    if (entities === undefined) {
+    selected = await runDiscoveryWithRetry(environmentFromAnswers(answers), answers.alias);
+    if (selected === undefined) {
       return undefined;
     }
-    if (entities.length > 0) {
-      answers.allowlist = entities;
-    }
   }
+  answers.allowlist = allowlistFromSelection(restrict === true, selected);
 
   const client = await select({
     message: "Generate the configuration block for which client?",

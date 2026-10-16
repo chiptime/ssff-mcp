@@ -6,6 +6,7 @@ import { promises as fs } from "node:fs";
 import {
   parseCliArgs,
   buildConfigFromAnswers,
+  allowlistFromSelection,
   writeConfigAtomic,
   backupExisting,
   runInit,
@@ -61,6 +62,30 @@ test("buildConfigFromAnswers: oauth auth with allowlist", () => {
   assert.equal(cfg.environments.prod.auth.userId, "u");
   assert.equal(cfg.environments.prod.auth.tokenUrl, "https://api2.successfactors.eu/oauth/token");
   assert.deepEqual(cfg.environments.prod.entityAllowlist, [{ entity: "User" }, { entity: "PerPersonal" }]);
+});
+
+test("allowlistFromSelection: answering 'restrict' with an empty selection is an explicit deny-all", () => {
+  // A real selection is written verbatim.
+  assert.deepEqual(allowlistFromSelection(true, ["User", "PerPersonal"]), ["User", "PerPersonal"]);
+  // Saying "restrict" and then selecting nothing must NOT fall back to unrestricted:
+  // it is an explicit deny-all, never `undefined` (which leaves the key absent).
+  assert.deepEqual(allowlistFromSelection(true, []), []);
+  // Declining to restrict leaves the key absent, so the environment is unrestricted.
+  assert.equal(allowlistFromSelection(false, undefined), undefined);
+  assert.equal(allowlistFromSelection(false, ["User"]), undefined);
+});
+
+test("the wizard's deny-all decision survives into the generated config as an explicit []", () => {
+  const cfg = buildConfigFromAnswers({
+    authType: "basic",
+    alias: "prod",
+    baseUrl: "https://api2.successfactors.eu",
+    username: "u",
+    password: "p",
+    allowlist: allowlistFromSelection(true, []),
+  }) as any;
+  // `[]` is a configured deny-all for that environment (see docs/configuration.md).
+  assert.deepEqual(cfg.environments.prod.entityAllowlist, []);
 });
 
 test("writeConfigAtomic: writes exact contents, mode 0600, creates parent dirs", async () => {
