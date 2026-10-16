@@ -179,7 +179,7 @@ test("batch_get dispatches exactly ONE $batch POST with GET-only direct parts an
     );
     assert.equal(post.headers.Accept, "multipart/mixed");
     assert.match(post.headers["Content-Type"] ?? "", /^multipart\/mixed; boundary=batch_\d+$/);
-    assert.equal(post.headers["User-Agent"], `ssff-mcp/${PACKAGE_VERSION} (+mcp; linux)`);
+    assert.equal(post.headers["User-Agent"], `ssff-mcp/${PACKAGE_VERSION} (+mcp; ${process.platform})`);
     assert.equal(Object.keys(post.headers).length, 4);
     const lines = requestLinesOf(post.body);
     assert.equal(lines.length, 2);

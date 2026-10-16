@@ -18,7 +18,16 @@ import { getAuthorizationHeader, invalidateOAuthToken } from "./oauth.js";
 import type { OAuthFetch, OAuthPostInit } from "./oauth.js";
 import { PACKAGE_VERSION } from "./version.js";
 
-export const USER_AGENT = `ssff-mcp/${PACKAGE_VERSION} (+mcp; linux)`;
+/**
+ * The `User-Agent` this server sends to SuccessFactors: name, version and the
+ * platform it is actually running on. The tenant sees this on every request, so
+ * the platform must be the real one, never a fixed token.
+ */
+export function userAgentFor(platform: string, version: string): string {
+  return `ssff-mcp/${version} (+mcp; ${platform})`;
+}
+
+export const USER_AGENT = userAgentFor(process.platform, PACKAGE_VERSION);
 export const MAX_REDIRECT_HOPS = 5;
 
 /** Exactly the headers every request carries. Nothing else, ever. */

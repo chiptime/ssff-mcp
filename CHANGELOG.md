@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tenant receiving every request. Both now read the version from the shipped `package.json`
   (`src/version.ts`), so a release bump propagates on its own, and the tests derive the
   expected value from the manifest instead of pinning a literal.
+- **The `User-Agent` claimed to run on `linux` on every OS.** macOS and Windows tenants saw
+  `linux` on every request they received. The string is now built from `process.platform`, so
+  it reports `darwin`, `win32` or `linux` truthfully. On Linux the header is byte-for-byte
+  unchanged.
 
 ## [0.4.0] — 2026-10-17
 

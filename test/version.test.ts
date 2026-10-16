@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { PACKAGE_VERSION } from "../src/version.js";
-import { USER_AGENT } from "../src/http.js";
+import { USER_AGENT, userAgentFor } from "../src/http.js";
 import { configJson, withTestServer, writeConfigFile } from "./helpers.js";
 
 /**
@@ -21,7 +21,16 @@ test("the runtime version tracks package.json (single source of truth)", () => {
 });
 
 test("the outgoing User-Agent carries the package version, never a hardcoded one", () => {
-  assert.equal(USER_AGENT, `ssff-mcp/${manifest.version} (+mcp; linux)`);
+  assert.equal(USER_AGENT, `ssff-mcp/${manifest.version} (+mcp; ${process.platform})`);
+});
+
+test("the User-Agent reports the running platform, never a fixed one", () => {
+  // The bug is invisible on Linux, so probe the platforms the CI matrix runs.
+  assert.equal(userAgentFor("linux", "1.2.3"), "ssff-mcp/1.2.3 (+mcp; linux)");
+  assert.equal(userAgentFor("darwin", "1.2.3"), "ssff-mcp/1.2.3 (+mcp; darwin)");
+  assert.equal(userAgentFor("win32", "1.2.3"), "ssff-mcp/1.2.3 (+mcp; win32)");
+  // The exported constant is the running platform, not a literal.
+  assert.ok(USER_AGENT.endsWith(`(+mcp; ${process.platform})`), USER_AGENT);
 });
 
 test("the MCP handshake advertises the package version", async () => {
