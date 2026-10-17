@@ -11,37 +11,53 @@
 Compartir el MCP como servicio: **varios clientes (tenants)**, cada uno con sus
 propios entornos (**dev / test / prod**), **varios usuarios por tenant** y
 **roles**, donde el acceso a las entidades se define **a partir del rol**
-(básicamente, un *allowlist por rol*).
+(básicamente, un *allowlist/denylist por rol*).
 
 El destino es que la autorización se resuelva así:
 
 ```
 entorno = TECHO        → lo que se puede tocar en ese entorno
 rol     = SUBCONJUNTO  → lo que puede ver ese usuario
-efectivo = INTERSECCIÓN, fail-closed
+efectivo = INTERSECCIÓN
 ```
+
+Regla transversal: **la denegación siempre gana** (ver *Decisiones abiertas*).
 
 ## Resumen de fases
 
 | Fase | Alcance | Estado |
 |---|---|---|
-| **1 · Acceso por entorno** | `entityAllowlist` dentro de cada entorno | ✅ Hecha |
+| **1 · Acceso por entorno** | `entityAllowlist` + `entityDenylist` dentro de cada entorno | ✅ Hecha |
 | **2 · Servicio hospedado multi-tenant** | Transporte remoto + tenants | 🔄 En marcha |
-| **3 · Identidad: usuarios y roles** | IdP + roles → allowlist por rol | 🧭 Diseñada |
+| **3 · Identidad: usuarios y roles** | IdP + roles → allowlist/denylist por rol | 🧭 Diseñada |
 
 ---
 
 ## Fase 1 · Acceso por entorno ✅
 
-`entityAllowlist` vive **dentro de cada entorno**
-(`environments.<alias>.entityAllowlist`), de modo que un entorno puede quedar
-restringido y otro no. Un `entityAllowlist` **en la raíz se rechaza** con
-`CONFIG_INVALID` (mensaje que indica mover cada lista al entorno al que aplica).
+El control de acceso por entidad vive **dentro de cada entorno**
+(`environments.<alias>.entityAllowlist` y `environments.<alias>.entityDenylist`),
+de modo que un entorno puede quedar restringido y otro no. Ambas claves **en la
+raíz se rechazan** con `CONFIG_INVALID` (el mensaje indica mover cada lista al
+entorno al que aplica).
 
-- Rama: `feat/entity-allowlist-per-environment` (aún **sin mergear** a `main`).
-- El filtrado es **post-caché** (`isEntityAllowed` ya recibe la lista como
-  parámetro) → solo cambia la *procedencia* de la lista.
-- `SF_ENTITY_ALLOWLIST` sigue poblando el entorno único del modo inline.
+El modelo es **allowlist + denylist**, con esta precedencia:
+
+```
+denylist  >  allowlist  >  permisos de la cuenta API
+```
+
+- La **`entityAllowlist` solo ACOTA**: una lista **vacía o ausente se comporta
+  igual** — **no acota nada**. Ya **no** deniega todo (`[]` dejó de ser deny-all).
+- La denegación explícita se expresa con **`entityDenylist`** (por entorno), que
+  **siempre gana** sobre la allowlist.
+- Los nueve puntos de enforcement pasan por `isEntityPermitted`; el filtrado es
+  **post-caché** (la lista llega como parámetro) → solo cambia la *procedencia*.
+- El wizard `init` exige elegir ≥1 entidad: escribir `[]` invertiría en silencio
+  una respuesta de "restringir".
+- En inline: `SF_ENTITY_ALLOWLIST` y `SF_ENTITY_DENYLIST` pueblan el entorno único.
+- `sf://{env}/overview` reporta `denylistConfigured`.
+- Rama `feat/entity-allowlist-per-environment` (ya en `origin`; **sin mergear** a `main`).
 
 ---
 
@@ -73,7 +89,8 @@ Llevar el MCP a servidor para compartirlo entre varios clientes.
           "dev":  { "baseUrl": "https://api4.successfactors.com", "auth": { "...": "..." } },
           "prod": { "baseUrl": "https://api4.successfactors.com", "auth": { "...": "..." } }
         },
-        "entityAllowlist": [ { "entity": "User" }, { "entity": "EmpJob" } ]
+        "entityAllowlist": [ { "entity": "User" }, { "entity": "EmpJob" } ],
+        "entityDenylist":  [ { "entity": "PerPersonal" } ]
       }
     }
   }
@@ -86,7 +103,8 @@ Llevar el MCP a servidor para compartirlo entre varios clientes.
      explícito; nunca estado global mutable.
   2. Claves de caché (`$metadata` y tokens OAuth) = **tenant + entorno**.
   3. **Fail-closed**: clave o tenant desconocidos → `401`. Nunca un tenant por defecto.
-  4. Credenciales, allowlist y logs se leen **siempre** del contexto del tenant.
+  4. Credenciales, `allowlist`/`denylist` y logs se leen **siempre** del contexto
+     del tenant.
   5. `environment` se valida **contra el tenant resuelto**.
 
 ### Consecuencias asumidas
@@ -97,7 +115,7 @@ Llevar el MCP a servidor para compartirlo entre varios clientes.
   y envolverla como un único tenant).
 - **El aislamiento pasa a ser responsabilidad del código.** En servicio
   compartido, un bug en la resolución de tenant, en la clave de caché o en la
-  lectura del allowlist = **fuga de datos entre clientes**. El proceso sostiene
+  lectura de las listas = **fuga de datos entre clientes**. El proceso sostiene
   además las **credenciales de todos los clientes**, no una por instancia.
 
 ---
@@ -114,10 +132,13 @@ Varios usuarios por tenant, roles, y acceso definido por rol.
   *client credentials*).
 - **Dos planos, solo uno cambia:**
   - **Usuario → MCP**: IAS autentica al usuario; el servidor actúa de *OAuth
-    Resource Server* y **mapea grupos → rol → allowlist**.
+    Resource Server* y **mapea grupos → rol → allowlist/denylist**.
   - **MCP → SuccessFactors**: **sin cambios** (cuenta de servicio por tenant).
-- **Resolución efectiva:** `entorno` = techo, `rol` = subconjunto → **intersección
-  fail-closed**. Un rol sin lista declarada **se deniega**.
+- **Resolución efectiva:** `entorno` = techo, `rol` = subconjunto → **intersección**.
+  El detalle —cómo se combinan las listas de entorno y rol, y si un rol sin lista
+  declarada actúa como techo o no acota— es **decisión abierta** (ver abajo).
+- **La denegación siempre gana:** un rol no debería poder ampliar lo que un
+  `denylist` prohíbe.
 - **No construir un almacén propio de usuarios/contraseñas.** El IdP del cliente
   es quien autentica; el servidor no custodia credenciales de usuario.
 
@@ -150,9 +171,12 @@ Leer el `.well-known/openid-configuration` del IAS del cliente y comprobar:
 
 | # | Decisión | Fase |
 |---|---|---|
-| 1 | **Semántica de "allowlist ausente"**: ¿hereda del tenant y, si tampoco hay, sin restricción (como hoy), o fail-closed (denegar)? | 2 |
+| 1 | **`allowlist`/`denylist` en capas y con roles**: cómo se combinan tenant → entorno → rol. Regla propuesta: **la denegación siempre gana** (un rol no amplía lo que el `denylist` prohíbe) y un rol sin lista declarada **no acota** (coherente con el modelo de Fase 1). | 2/3 |
 | 2 | **Alcance de la clave**: ¿una clave por cliente sin más, o acotada a entornos concretos (*scope*)? | 2 |
 | 3 | **Verificación de IAS** (PKCE / registro de cliente / claim de grupos) — diferida hasta que arranque la Fase 3. | 3 |
+
+> *Resuelta:* la pregunta previa sobre la semántica de la **allowlist vacía/ausente**
+> está cerrada — **no acota nada**; la denegación explícita va por `entityDenylist`.
 
 ## Referencias
 
