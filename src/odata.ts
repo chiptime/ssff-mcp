@@ -87,6 +87,15 @@ export function validateEntityPath(entityPath: string): ValidatedPath {
   if (entityPath.length > MAX_PATH_LENGTH) {
     throw new SanitizedError("PATH_INVALID", `entity path exceeds the maximum length of ${MAX_PATH_LENGTH} characters`);
   }
+  // Percent-encoded characters hide structure from THIS parser while the service
+  // still decodes it: `User('a%27)/payrollNav(%27x')` looks like ONE segment here
+  // and like a real navigation there, which silently defeats the allowlist.
+  if (entityPath.includes("%")) {
+    throw new SanitizedError(
+      "PATH_INVALID",
+      "entity path must not contain percent-encoded characters: the service decodes them, so they can hide structure this server would not check",
+    );
+  }
   const segments = splitSegments(entityPath);
   if (segments === null) {
     throw new SanitizedError("PATH_INVALID", "entity path contains an unterminated string literal");

@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { validateEntityPath } from "../src/odata.js";
+import { isSanitizedError } from "../src/errors.js";
 import {
   callTool,
   configJson,
@@ -138,5 +140,47 @@ test("an unbalanced $select value is rejected instead of dispatched", async () =
       expand: "manager($select=(userId)",
     });
     assert.equal(errorPayload(result).code, "OPTION_INVALID");
+  });
+});
+
+test("percent-encoded characters in the entity path are rejected before parsing", () => {
+  for (const path of [
+    "User('a%27)",
+    "User('a%27)/payrollNav(%27x')",
+    "User('a%27)%2FpayrollNav%28%27x')",
+    "User%28'1'%29",
+  ]) {
+    assert.throws(
+      () => validateEntityPath(path),
+      (error: unknown) => isSanitizedError(error) && error.code === "PATH_INVALID",
+      path,
+    );
+  }
+});
+
+test("an encoded path cannot hide a denied navigation, and nothing is dispatched", async () => {
+  const { fetch, requests } = responder();
+  await withTestServer({ configPath: await configPath(), fetchImpl: fetch }, async (client) => {
+    // Decoded by the service this reaches Payroll through a navigation the
+    // checker never saw, because the raw path parses as a single segment.
+    const result = await callTool(client, "query_entity", {
+      environment: "prod",
+      entityPath: "User('a%27)/payrollNav(%27x')",
+    });
+    assert.equal(errorPayload(result).code, "PATH_INVALID");
+    assert.equal(requests.filter((r) => !r.url.includes("$metadata")).length, 0);
+  });
+});
+
+test("an encoded path cannot move the entity an $expand resolves from", async () => {
+  const { fetch, requests } = responder();
+  await withTestServer({ configPath: await configPath(), fetchImpl: fetch }, async (client) => {
+    const result = await callTool(client, "query_entity", {
+      environment: "prod",
+      entityPath: "User('a%27)/job(%27x')",
+      expand: "manager",
+    });
+    assert.equal(errorPayload(result).code, "PATH_INVALID");
+    assert.equal(requests.filter((r) => !r.url.includes("$metadata")).length, 0);
   });
 });
