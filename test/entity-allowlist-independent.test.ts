@@ -58,8 +58,13 @@ test("S1/S2/S4/S5: config migration, inline mapping and writer round trips", asy
 test("S1/S3/S5/S6/S8: scope matrix, cold denials, first segment and cache", async () => {
   const lists: Record<string, AllowlistEntry[] | undefined> = {
     prod: [{ entity: "User" }, { entity: "cust_One" }], dev: [{ entity: "FOOBar" }, { entity: "cust_Two" }],
-    open: undefined, closed: [], v4: [{ entity: "User", protocols: ["v4"] }], v2: [{ entity: "User", protocols: ["v2"] }],
+    open: undefined, empty: [], v4: [{ entity: "User", protocols: ["v4"] }], v2: [{ entity: "User", protocols: ["v2"] }],
   };
+  // An EMPTY allowlist narrows nothing, exactly like an absent one.
+  const allowedFor = (list: AllowlistEntry[] | undefined): string[] =>
+    list === undefined || list.length === 0
+      ? names
+      : list.filter((e) => e.protocols === undefined || e.protocols.includes("v2")).map((e) => e.entity);
   const p = await configFile({ environments: Object.fromEntries(Object.entries(lists).map(([a, l]) => [a, environment(l)])) });
   const cacheDir = path.join(path.dirname(p), "cache");
   const { fetch, requests } = recordingFetch((url, init) => {
@@ -74,14 +79,16 @@ test("S1/S3/S5/S6/S8: scope matrix, cold denials, first segment and cache", asyn
     assert.deepEqual(first.structuredContent, { code: "ENTITY_NOT_ALLOWED", message: "the entity is not permitted by the configured entityAllowlist" });
     assert.equal(requests.length, 0);
     for (const alias of [...Object.keys(lists), "dev", "prod"]) {
-      const allowed = lists[alias]?.filter(e => e.protocols === undefined || e.protocols.includes("v2")).map(e => e.entity) ?? names;
+      const allowed = allowedFor(lists[alias]);
+      // Only a NON-EMPTY allowlist narrows; `[]` behaves exactly like absent.
+      const narrows = lists[alias] !== undefined && lists[alias]!.length > 0;
       for (const name of [...names, "user", "UserExtra"]) {
         for (const method of ["query_entity", "batch_get", "inspect_entity"]) {
           const before: number = requests.length;
           const args = { environment: alias, ...(method === "batch_get" ? { requests: [{ entityPath: name }] } : method === "inspect_entity" ? { entitySet: name } : { entityPath: name }) };
           const r = await unchanged(p, () => callTool(client, method, args));
           if (allowed.includes(name)) assert.equal(r.isError, undefined);
-          else { assert.equal(r.structuredContent?.code, lists[alias] === undefined ? (method === "inspect_entity" ? "RESOURCE_NOT_FOUND" : "PATH_INVALID") : "ENTITY_NOT_ALLOWED"); if (lists[alias] !== undefined) assert.equal(requests.length, before); }
+          else { assert.equal(r.structuredContent?.code, narrows ? "ENTITY_NOT_ALLOWED" : (method === "inspect_entity" ? "RESOURCE_NOT_FOUND" : "PATH_INVALID")); if (narrows) assert.equal(requests.length, before); }
         }
         const uri = `sf://${alias}/entities/${name}`;
         if (allowed.includes(name)) assert.equal((await read(uri)).entitySet, name);
@@ -96,14 +103,17 @@ test("S1/S3/S5/S6/S8: scope matrix, cold denials, first segment and cache", asyn
         assert.deepEqual((r.structuredContent!.entities as Array<{ name: string }>).map(e => e.name).sort(), allowed.filter(n => !customOnly || n.startsWith("cust_")).sort());
       }
       const overview = await read(`sf://${alias}/overview`);
-      assert.equal(overview.allowlistConfigured, lists[alias] !== undefined);
-      assert.equal(overview.allowlistDeniedAll, lists[alias]?.length === 0);
+      assert.equal(overview.allowlistConfigured, lists[alias] !== undefined && lists[alias]!.length > 0);
+      assert.equal(overview.denylistConfigured, false);
     }
     assert.equal((await query("prod", "User(123)/FOOBar")).isError, undefined);
     const before: number = requests.length;
     await fs.writeFile(p, JSON.stringify({ environments: { prod: environment([]), dev: environment() } }));
-    assert.deepEqual((await read("sf://prod/entities")).entities, []);
-    assert.deepEqual(((await read("sf://dev/entities")).entities as Array<{ name: string }>).map(e => e.name).sort(), [...names].sort());
+    // `[]` narrows nothing, so BOTH environments expose the full catalog.
+    const catalog = (body: Record<string, unknown>): string[] =>
+      (body.entities as Array<{ name: string }>).map((e) => e.name).sort();
+    assert.deepEqual(catalog(await read("sf://prod/entities")), [...names].sort());
+    assert.deepEqual(catalog(await read("sf://dev/entities")), [...names].sort());
     assert.equal(requests.length, before);
     for (const alias of ["prod", "dev"]) assert.deepEqual(JSON.parse(await fs.readFile(path.join(cacheDir, `metadata-${alias}.json`), "utf8")).data.entitySets.sort(), [...names].sort());
   });

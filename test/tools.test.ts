@@ -962,15 +962,14 @@ test("navigation after an allowed first segment is not re-checked against the al
   });
 });
 
-test("an empty allowlist array is a configured deny-all for query_entity", async () => {
+test("an empty allowlist array narrows nothing: queries stay unrestricted", async () => {
   const configPath = await writeConfigFile(allowlistConfigJson([]), { mode: 0o600 });
-  const { fetch, requests } = recordingFetch(standardSfResponder(feed([])));
+  const { fetch } = recordingFetch(standardSfResponder(feed([{ userId: "u1" }])));
   await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
     for (const entityPath of ["User", "FOOBar"]) {
       const result = await callTool(client, "query_entity", { environment: "tenant-a", entityPath });
-      assert.equal(errorPayload(result).code, "ENTITY_NOT_ALLOWED", entityPath);
+      assert.equal(result.isError, undefined, entityPath);
     }
-    assert.equal(requests.length, 0);
   });
 });
 
@@ -1001,38 +1000,54 @@ test("environments carry independent allowlists: one restricted, one unrestricte
   });
 });
 
-test("a deny-all allowlist is scoped to its own environment", async () => {
-  const configPath = await writeConfigFile(configJson({ prod: { allowlist: [] }, dev: {} }), { mode: 0o600 });
+test("a denylist is scoped to its own environment and wins over the allowlist", async () => {
+  const configPath = await writeConfigFile(
+    configJson({
+      prod: { allowlist: [{ entity: "User" }, { entity: "FOOBar" }], denylist: [{ entity: "FOOBar" }] },
+      dev: {},
+    }),
+    { mode: 0o600 },
+  );
   const { fetch } = recordingFetch(standardSfResponder(feed([{ userId: "u1" }])));
   await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
-    const denied = await callTool(client, "query_entity", { environment: "prod", entityPath: "User" });
+    // prod allows FOOBar but denies it explicitly: the denylist wins.
+    const denied = await callTool(client, "query_entity", { environment: "prod", entityPath: "FOOBar" });
     assert.equal(errorPayload(denied).code, "ENTITY_NOT_ALLOWED");
-    const allowed = await callTool(client, "query_entity", { environment: "dev", entityPath: "User" });
+    // prod still allows the entity that is not denylisted.
+    const allowed = await callTool(client, "query_entity", { environment: "prod", entityPath: "User" });
     assert.equal(allowed.isError, undefined);
+    // dev has no lists at all, so the same entity is reachable there.
+    const devAllowed = await callTool(client, "query_entity", { environment: "dev", entityPath: "FOOBar" });
+    assert.equal(devAllowed.isError, undefined);
   });
 });
 
-test("sf://{env}/overview reports the allowlist state of its own environment", async () => {
+test("sf://{env}/overview reports the allowlist and denylist state of its own environment", async () => {
   const configPath = await writeConfigFile(
-    configJson({ prod: { allowlist: [{ entity: "User" }] }, dev: { allowlist: [] } }),
+    configJson({
+      prod: { allowlist: [{ entity: "User" }], denylist: [{ entity: "FOOBar" }] },
+      dev: { allowlist: [] },
+    }),
     { mode: 0o600 },
   );
   const { fetch } = recordingFetch(standardSfResponder(feed([])));
   await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
-    const read = async (uri: string): Promise<{ allowlistConfigured: boolean; allowlistDeniedAll: boolean }> => {
+    type Overview = { allowlistConfigured: boolean; denylistConfigured: boolean };
+    const read = async (uri: string): Promise<Overview> => {
       const res = await client.readResource({ uri });
       const content = res.contents[0];
       assert.ok(content !== undefined && "text" in content);
-      return JSON.parse(content.text) as { allowlistConfigured: boolean; allowlistDeniedAll: boolean };
+      return JSON.parse(content.text) as Overview;
     };
 
     const prod = await read("sf://prod/overview");
     assert.equal(prod.allowlistConfigured, true);
-    assert.equal(prod.allowlistDeniedAll, false);
+    assert.equal(prod.denylistConfigured, true);
 
+    // An empty allowlist narrows nothing, so it is reported as NOT configured.
     const dev = await read("sf://dev/overview");
-    assert.equal(dev.allowlistConfigured, true);
-    assert.equal(dev.allowlistDeniedAll, true);
+    assert.equal(dev.allowlistConfigured, false);
+    assert.equal(dev.denylistConfigured, false);
   });
 });
 

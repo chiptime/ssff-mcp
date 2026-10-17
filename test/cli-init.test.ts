@@ -7,6 +7,7 @@ import {
   parseCliArgs,
   buildConfigFromAnswers,
   allowlistFromSelection,
+  selectAtLeastOne,
   writeConfigAtomic,
   backupExisting,
   runInit,
@@ -64,18 +65,52 @@ test("buildConfigFromAnswers: oauth auth with allowlist", () => {
   assert.deepEqual(cfg.environments.prod.entityAllowlist, [{ entity: "User" }, { entity: "PerPersonal" }]);
 });
 
-test("allowlistFromSelection: answering 'restrict' with an empty selection is an explicit deny-all", () => {
+test("allowlistFromSelection: never writes an empty allowlist, because [] means no narrowing", () => {
   // A real selection is written verbatim.
   assert.deepEqual(allowlistFromSelection(true, ["User", "PerPersonal"]), ["User", "PerPersonal"]);
-  // Saying "restrict" and then selecting nothing must NOT fall back to unrestricted:
-  // it is an explicit deny-all, never `undefined` (which leaves the key absent).
-  assert.deepEqual(allowlistFromSelection(true, []), []);
+  // `[]` narrows nothing, so writing it would invert a "restrict" answer.
+  assert.equal(allowlistFromSelection(true, []), undefined);
   // Declining to restrict leaves the key absent, so the environment is unrestricted.
   assert.equal(allowlistFromSelection(false, undefined), undefined);
   assert.equal(allowlistFromSelection(false, ["User"]), undefined);
 });
 
-test("the wizard's deny-all decision survives into the generated config as an explicit []", () => {
+test("selectAtLeastOne: loops until the user picks at least one entity", async () => {
+  const rounds: Array<string[] | undefined> = [[], ["User"]];
+  let asked = 0;
+  const chosen = await selectAtLeastOne({
+    selectOnce: async () => rounds.shift(),
+    askRetry: async () => {
+      asked += 1;
+      return true;
+    },
+  });
+  assert.deepEqual(chosen, ["User"]);
+  assert.equal(asked, 1);
+});
+
+test("selectAtLeastOne: stops when the user declines to retry", async () => {
+  const chosen = await selectAtLeastOne({
+    selectOnce: async () => [],
+    askRetry: async () => false,
+  });
+  assert.equal(chosen, undefined);
+});
+
+test("selectAtLeastOne: a cancelled selection aborts without asking again", async () => {
+  let asked = 0;
+  const chosen = await selectAtLeastOne({
+    selectOnce: async () => undefined,
+    askRetry: async () => {
+      asked += 1;
+      return true;
+    },
+  });
+  assert.equal(chosen, undefined);
+  assert.equal(asked, 0);
+});
+
+test("an empty selection writes no allowlist at all, so the environment stays open", () => {
   const cfg = buildConfigFromAnswers({
     authType: "basic",
     alias: "prod",
@@ -84,8 +119,7 @@ test("the wizard's deny-all decision survives into the generated config as an ex
     password: "p",
     allowlist: allowlistFromSelection(true, []),
   }) as any;
-  // `[]` is a configured deny-all for that environment (see docs/configuration.md).
-  assert.deepEqual(cfg.environments.prod.entityAllowlist, []);
+  assert.equal("entityAllowlist" in cfg.environments.prod, false);
 });
 
 test("writeConfigAtomic: writes exact contents, mode 0600, creates parent dirs", async () => {

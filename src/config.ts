@@ -58,11 +58,17 @@ export interface EnvironmentConfig {
   baseUrl: string;
   auth: AuthConfig;
   /**
-   * Entity allowlist for THIS environment (FR-28/D-30). The key is ABSENT when
-   * the environment is unrestricted. An empty array IS a configured allowlist
-   * and means deny-all for this environment (fail-closed).
+   * Entity allowlist for THIS environment (FR-28/D-30). It only NARROWS: absent
+   * or empty means no narrowing, so everything the tenant account can read is
+   * reachable.
    */
   entityAllowlist?: AllowlistEntry[];
+  /**
+   * Entities ALWAYS denied in this environment, whatever the allowlist says.
+   * Wins over `entityAllowlist`; used to subtract from a base inherited at
+   * tenant level.
+   */
+  entityDenylist?: AllowlistEntry[];
 }
 
 export interface SsffConfig {
@@ -118,45 +124,53 @@ const authSchema = z.discriminatedUnion("type", [basicAuthSchema, oauthAuthSchem
 // OData entity set name (case-sensitive exact match; no predicates here).
 const ENTITY_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-const allowlistProtocolsSchema = z
-  .array(z.enum(["v2", "v4"]))
-  .min(1, "entityAllowlist protocols must be a non-empty array")
-  .refine((protocols) => new Set(protocols).size === protocols.length, {
-    message: "entityAllowlist protocols must not contain duplicates",
-  });
-
-const allowlistEntrySchema = z
-  .object({
-    entity: z.string().regex(ENTITY_NAME_PATTERN, {
-      message: "entityAllowlist entity must be an OData entity set name matching ^[A-Za-z_][A-Za-z0-9_]*$",
-    }),
-    protocols: allowlistProtocolsSchema.optional(),
-  })
-  .strict();
-
-// Duplicate entities are ambiguous (which protocols apply?) => rejected.
-const entityAllowlistSchema = z.array(allowlistEntrySchema).superRefine((entries, ctx) => {
-  const seen = new Set<string>();
-  for (const [index, entry] of entries.entries()) {
-    if (seen.has(entry.entity)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: [index, "entity"],
-        message: `entityAllowlist contains a duplicate entity entry for "${entry.entity}"`,
-      });
+/**
+ * Build the schema for one entity list (`entityAllowlist` or `entityDenylist`),
+ * so validation messages always name the field the user actually wrote.
+ */
+function entityListSchema(field: "entityAllowlist" | "entityDenylist") {
+  const protocols = z
+    .array(z.enum(["v2", "v4"]))
+    .min(1, `${field} protocols must be a non-empty array`)
+    .refine((values) => new Set(values).size === values.length, {
+      message: `${field} protocols must not contain duplicates`,
+    });
+  const entry = z
+    .object({
+      entity: z.string().regex(ENTITY_NAME_PATTERN, {
+        message: `${field} entity must be an OData entity set name matching ^[A-Za-z_][A-Za-z0-9_]*$`,
+      }),
+      protocols: protocols.optional(),
+    })
+    .strict();
+  // Duplicate entities are ambiguous (which protocols apply?) => rejected.
+  return z.array(entry).superRefine((entries, ctx) => {
+    const seen = new Set<string>();
+    for (const [index, item] of entries.entries()) {
+      if (seen.has(item.entity)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, "entity"],
+          message: `${field} contains a duplicate entity entry for "${item.entity}"`,
+        });
+      }
+      seen.add(item.entity);
     }
-    seen.add(entry.entity);
-  }
-});
+  });
+}
+
+const entityAllowlistSchema = entityListSchema("entityAllowlist");
+const entityDenylistSchema = entityListSchema("entityDenylist");
 
 const environmentSchema = z
   .object({
     baseUrl: z.string().min(1),
     auth: authSchema,
-    // Per-environment entity allowlist (FR-28/D-30): the key is ABSENT when
-    // this environment is unrestricted. An empty array IS a configured
-    // allowlist and means deny-all for this environment (fail-closed).
+    // Per-environment narrowing (FR-28/D-30). Absent OR empty means no
+    // narrowing: the environment reaches whatever the tenant account can read.
     entityAllowlist: entityAllowlistSchema.optional(),
+    // Always denied in this environment, whatever the allowlist says.
+    entityDenylist: entityDenylistSchema.optional(),
   })
   .strict();
 
@@ -389,8 +403,8 @@ function normalizeInlinePem(raw: string): string {
   return raw.replace(/\\n/g, "\n");
 }
 
-/** Parse SF_ENTITY_ALLOWLIST into allowlist entries (no protocols; trim, drop empties, reject duplicates). */
-function parseInlineAllowlist(raw: string | undefined): AllowlistEntry[] | undefined {
+/** Parse a comma-separated inline entity list (no protocols; trim, drop empties, reject duplicates). */
+function parseInlineAllowlist(raw: string | undefined, field: string): AllowlistEntry[] | undefined {
   const value = nonEmpty(raw);
   if (value === undefined) {
     return undefined;
@@ -408,13 +422,13 @@ function parseInlineAllowlist(raw: string | undefined): AllowlistEntry[] | undef
     if (!ENTITY_NAME_PATTERN.test(entity)) {
       throw new SanitizedError(
         "CONFIG_INVALID",
-        `SF_ENTITY_ALLOWLIST entity "${entity}" must be an OData entity set name matching ^[A-Za-z_][A-Za-z0-9_]*$`,
+        `${field} entity "${entity}" must be an OData entity set name matching ^[A-Za-z_][A-Za-z0-9_]*$`,
       );
     }
     if (seen.has(entity)) {
       throw new SanitizedError(
         "CONFIG_INVALID",
-        `SF_ENTITY_ALLOWLIST contains a duplicate entity entry for "${entity}"`,
+        `${field} contains a duplicate entity entry for "${entity}"`,
       );
     }
     seen.add(entity);
@@ -489,12 +503,16 @@ function synthesizeInlineConfig(env: NodeJS.ProcessEnv): SsffConfig {
     auth = { type: "basic", username, password: password! };
   }
 
-  // Inline mode synthesizes exactly one environment, so SF_ENTITY_ALLOWLIST
-  // becomes that environment's allowlist (FR-28/D-30).
-  const entityAllowlist = parseInlineAllowlist(env.SF_ENTITY_ALLOWLIST);
+  // Inline mode synthesizes exactly one environment, so the inline lists become
+  // that environment's lists (FR-28/D-30).
+  const entityAllowlist = parseInlineAllowlist(env.SF_ENTITY_ALLOWLIST, "SF_ENTITY_ALLOWLIST");
+  const entityDenylist = parseInlineAllowlist(env.SF_ENTITY_DENYLIST, "SF_ENTITY_DENYLIST");
   const inlineEnvironment: EnvironmentConfig = { baseUrl: normalizedBaseUrl, auth };
   if (entityAllowlist !== undefined) {
     inlineEnvironment.entityAllowlist = entityAllowlist;
+  }
+  if (entityDenylist !== undefined) {
+    inlineEnvironment.entityDenylist = entityDenylist;
   }
   return { environments: { [alias]: inlineEnvironment }, inline: true };
 }
@@ -587,10 +605,13 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<SsffC
         auth: materializeOAuthAuth(env.auth, privateKey),
       };
     }
-    // The allowlist stays absent (key not set) when this environment is
-    // unrestricted; an empty array is a configured deny-all and is preserved.
+    // Both keys stay ABSENT when not configured. An empty allowlist is
+    // preserved as-is: it narrows nothing (it is NOT a deny-all).
     if (env.entityAllowlist !== undefined) {
       environments[alias]!.entityAllowlist = env.entityAllowlist;
+    }
+    if (env.entityDenylist !== undefined) {
+      environments[alias]!.entityDenylist = env.entityDenylist;
     }
   }
   const config: SsffConfig = { environments };

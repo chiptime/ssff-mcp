@@ -108,8 +108,10 @@ export interface TestEnvSpec {
   baseUrl?: string;
   username?: string;
   password?: string;
-  /** Per-environment entity allowlist (FR-28/D-30); omit for no restriction. */
+  /** Per-environment entity allowlist (FR-28/D-30); empty/absent narrows nothing. */
   allowlist?: Array<{ entity: string; protocols?: string[] }>;
+  /** Per-environment entity denylist; it wins over the allowlist. */
+  denylist?: Array<{ entity: string; protocols?: string[] }>;
 }
 
 export function configJson(environments: Record<string, TestEnvSpec>): string {
@@ -117,11 +119,12 @@ export function configJson(environments: Record<string, TestEnvSpec>): string {
     const baseUrl = spec.baseUrl ?? "https://tenant-a.example.com";
     const username = spec.username ?? "apiuser@tenantA";
     const password = spec.password ?? "secret-password-a";
-    const allowlist =
-      spec.allowlist === undefined ? "" : `,\n      "entityAllowlist": ${JSON.stringify(spec.allowlist)}`;
+    const lists =
+      (spec.allowlist === undefined ? "" : `,\n      "entityAllowlist": ${JSON.stringify(spec.allowlist)}`) +
+      (spec.denylist === undefined ? "" : `,\n      "entityDenylist": ${JSON.stringify(spec.denylist)}`);
     return `    "${alias}": {
       "baseUrl": "${baseUrl}",
-      "auth": { "type": "basic", "username": "${username}", "password": "${password}" }${allowlist}
+      "auth": { "type": "basic", "username": "${username}", "password": "${password}" }${lists}
     }`;
   });
   return `{\n  "environments": {\n${entries.join(",\n")}\n  }\n}\n`;

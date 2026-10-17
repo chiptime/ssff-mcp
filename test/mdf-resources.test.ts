@@ -112,7 +112,7 @@ test("sf://{env}/mdf/custom performs no request other than the cached $metadata"
   });
 });
 
-test("sf://{env}/mdf/custom is allowlist-filtered and an empty allowlist lists nothing", async () => {
+test("sf://{env}/mdf/custom is allowlist-filtered and an empty allowlist narrows nothing", async () => {
   const { fetch } = responder();
   const filtered = await configPathFor({ allowlist: [{ entity: "cust_Prendas" }, { entity: "User" }] });
   await withTestServer({ configPath: filtered, fetchImpl: fetch }, async (client) => {
@@ -120,11 +120,14 @@ test("sf://{env}/mdf/custom is allowlist-filtered and an empty allowlist lists n
     assert.deepEqual(body.entities.map((e) => e.name), ["cust_Prendas"]);
     assert.equal(body.totalCount, 1);
   });
-  const denyAll = await configPathFor({ allowlist: [] });
-  await withTestServer({ configPath: denyAll, fetchImpl: fetch }, async (client) => {
-    const body = await readJson<{ totalCount: number; employeeLinkedCount: number; entities: unknown[] }>(client, "sf://tenant-a/mdf/custom");
-    assert.deepEqual([body.totalCount, body.employeeLinkedCount, body.entities.length], [0, 0, 0]);
-  });
+  // An empty allowlist narrows nothing: identical to having no list at all.
+  const catalogFor = async (configPath: string) =>
+    await withTestServer({ configPath, fetchImpl: fetch }, async (client) =>
+      readJson<{ totalCount: number; entities: Array<{ name: string }> }>(client, "sf://tenant-a/mdf/custom"),
+    );
+  const fromEmpty = await catalogFor(await configPathFor({ allowlist: [] }));
+  assert.deepEqual(fromEmpty, await catalogFor(await configPathFor()));
+  assert.ok(fromEmpty.totalCount > 0);
 });
 
 test("there is no sf://{env}/mdf/custom/{entitySet} resource (FR-72)", async () => {

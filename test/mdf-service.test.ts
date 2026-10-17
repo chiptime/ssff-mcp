@@ -34,11 +34,15 @@ test("employeeLinkedOnly keeps the four direct link kinds and drops composite/un
   assert.deepEqual(list.map((i) => i.name), ["cust_Equipo", "cust_Prendas", "cust_Social"]);
 });
 
-test("listCustomMdf respects the allowlist and an empty allowlist lists nothing (fail-closed)", async () => {
+test("listCustomMdf respects the allowlist and an empty allowlist narrows nothing", async () => {
   const { service: svc } = service();
   const some = await svc.listCustomMdf(env, "a", [{ entity: "cust_Equipo" }, { entity: "User" }]);
   assert.deepEqual(some.map((i) => i.name), ["cust_Equipo"]);
-  assert.deepEqual(await svc.listCustomMdf(env, "a", []), []);
+  // `[]` narrows nothing, so it returns the same catalog as passing no list.
+  assert.deepEqual(
+    (await svc.listCustomMdf(env, "a", [])).map((i) => i.name),
+    (await svc.listCustomMdf(env, "a", undefined)).map((i) => i.name),
+  );
 });
 
 test("an allowlist entry limited to v4 does not expose the entity (v2 is the active protocol)", async () => {
@@ -60,17 +64,16 @@ test("getCustomMdfDetails: unknown and non-custom entities yield undefined", asy
   assert.equal(await svc.getCustomMdfDetails(env, "a", "User"), undefined);
 });
 
-test("getCustomMdfDetails: a denied entity throws ENTITY_NOT_ALLOWED before metadata is touched", async () => {
+test("getCustomMdfDetails: a denied entity throws before metadata is touched; [] narrows nothing", async () => {
   const { service: svc, requests } = service();
   await assert.rejects(
     () => svc.getCustomMdfDetails(env, "a", "cust_Equipo", [{ entity: "User" }]),
     (error: unknown) => isSanitizedError(error) && error.code === "ENTITY_NOT_ALLOWED",
   );
-  await assert.rejects(
-    () => svc.getCustomMdfDetails(env, "a", "cust_Equipo", []),
-    (error: unknown) => isSanitizedError(error) && error.code === "ENTITY_NOT_ALLOWED",
-  );
+  // The denial happens before any fetch.
   assert.equal(requests.length, 0);
+  // An empty allowlist narrows nothing, so the entity is served normally.
+  assert.ok((await svc.getCustomMdfDetails(env, "a", "cust_Equipo", [])) !== undefined);
 });
 
 test("zero-network: discovery reuses the cached metadata and issues no data request", async () => {
