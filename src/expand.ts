@@ -75,11 +75,11 @@ function read(cursor: Cursor, pattern: RegExp, what: string): string {
 function parseSelectList(cursor: Cursor): void {
   for (;;) {
     read(cursor, IDENT, "a property name");
-    if (cursor.text[cursor.index] === ",") {
-      cursor.index += 1;
-      continue;
+    // `take` skips surrounding whitespace: `a , b` is an ordinary property list,
+    // not a syntax error.
+    if (!take(cursor, ",")) {
+      return;
     }
-    return;
   }
 }
 

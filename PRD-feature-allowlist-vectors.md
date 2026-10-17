@@ -121,7 +121,7 @@ Un segmento posterior al primero se resuelve buscando `name === segmento` en `En
 | Fichero | Cambio |
 |---|---|
 | `src/allowlist-navigation.ts` | **Nuevo.** Resolución pura: ruta/`expand` → lista de entity sets destino; comprobación contra la allowlist. Sin I/O. |
-| `src/expand.ts` | **Nuevo.** Parser del subconjunto probado de `$expand` (comas, `/`, paréntesis, `$levels`). Errores `OPTION_INVALID`. |
+| `src/expand.ts` | **Nuevo.** Parser del subconjunto probado de `$expand` (comas, `/`, paréntesis, `$select` como lista de propiedades). Rechaza percent-encoding y `$levels`. Errores `OPTION_INVALID`. |
 | `src/metadata.ts` | Exponer el mapa `entidad → { navName → targetEntitySet }` desde la metadata ya cacheada. Sin cambiar el formato de caché. |
 | `src/tools.ts` | Puntos de llamada en `query_entity` y `batch_get`. |
 | `src/allowlist.ts` | **Sin cambios.** |
