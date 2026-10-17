@@ -55,6 +55,12 @@ data are ever cached.** Force a reload with [`ssff-mcp cache invalidate`](config
 
 ## Limits & scope
 
+- **Entity allowlist/denylist scope.** `entityAllowlist` narrows and `entityDenylist`
+  subtracts, per environment. Both are enforced on **direct entity access**: `query_entity`,
+  `batch_get`, `inspect_entity` and the `sf://` resources. **Navigation segments
+  (`User('123')/navProperty`) and `$expand` are NOT filtered yet** — they can reach entity
+  sets that either list excludes. Treat the lists as a narrowing control, not as a complete
+  confidentiality boundary, until that vector is closed.
 - **OData v2 only.** OData v4 is deferred until a tenant with a verified v4
   endpoint exists.
 - **No function imports / custom service operations** (`FUNCTION_IMPORT_UNSUPPORTED`).
