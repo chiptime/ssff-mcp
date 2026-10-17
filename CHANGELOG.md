@@ -36,6 +36,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   single environment synthesized in inline mode. The shipped `config.template.json` no longer
   carries the key, which restores the documented promise that copying the template never
   activates a restriction silently.
+- **An empty `entityAllowlist` no longer denies everything.** `[]` now narrows nothing,
+  exactly like an absent list: the allowlist only subtracts from what the tenant account can
+  already read. This entry documents the **final** semantics — no published version ever
+  carried the previous `[]` = deny-all rule, so there is nothing to migrate on top of the key
+  move above.
+- **New `entityDenylist` per environment** (`SF_ENTITY_DENYLIST` in inline mode). Precedence
+  is **denylist > allowlist > the API account's own permissions**. There is no wildcard:
+  deny-all is expressed by listing the entities to remove. It also exists for the layered
+  model, where an environment subtracts from a base inherited at tenant level.
+- **`sf://{env}/overview` no longer reports `allowlistDeniedAll`**, which would now always be
+  `false`. It reports `denylistConfigured` instead, and `allowlistConfigured` is `false` for
+  an empty list.
 
 ### Added
 
@@ -105,9 +117,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the generated environment.
 - **`ssff-mcp init` silently ignored an empty allowlist selection.** Answering "Restrict
   access with an entity allowlist?" and then selecting nothing produced a config with **no**
-  restriction at all, inverting the user's choice without a warning. An empty selection is now
-  an explicit deny-all (`[]`) for that environment, and the wizard announces it on both empty
-  paths (empty selection, and a tenant that exposes no entity sets).
+  restriction at all, inverting the user's choice without a warning. The wizard now asks again
+  until at least one entity is picked (or the user cancels) — necessary because an empty
+  allowlist narrows nothing. A tenant that exposes no entity sets is reported honestly as
+  staying unrestricted.
 - **Filtered queries and `orderby` no longer lose their spaces.** Option values for
   `$filter`, `$orderby`, `$select` and `$expand` were assembled through
   `URLSearchParams`, which encodes a space as `+` and percent-encodes quotes, commas and

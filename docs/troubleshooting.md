@@ -15,7 +15,7 @@ Every tool error is a sanitized object `{ code, message }` (plus optional
 | `CONFIG_SECRET_TIMEOUT` | A `fromCommand` secret provider exceeded the 5s timeout. |
 | `ENVIRONMENT_REQUIRED` | The call omitted `environment`. Only inline mode may omit it. |
 | `ENVIRONMENT_UNKNOWN` | The named environment is not configured. The server never falls back to another one. |
-| `ENTITY_NOT_ALLOWED` | Blocked by [`entityAllowlist`](configuration.md#entity-allowlist). |
+| `ENTITY_NOT_ALLOWED` | Blocked by [`entityAllowlist` or `entityDenylist`](configuration.md#entity-allowlist-and-denylist). |
 | `PATH_INVALID` | Bad `entityPath`, unknown entity set, or a rejected `$`-segment. |
 | `OPTION_INVALID` | Bad or conflicting option (e.g. `skip` + `cursor`, `asOfDate` + `fromDate`, listing options with `entitySet`, control characters, malformed dates). |
 | `CURSOR_INVALID` | Cursor altered, reused with different arguments, or issued before a server restart. Re-run the query. |

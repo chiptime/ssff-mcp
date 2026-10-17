@@ -154,8 +154,8 @@ Install globally instead of with `npx` (`npm install -g ssff-mcp`, then run
 
 The usual way is the `ssff-mcp init` wizard (see Getting started above): it
 writes `~/.config/ssff-mcp/config.json` and prints the block for your client. To
-edit the file by hand, or for OAuth, the per-environment entity allowlist, secret
-providers and inline mode, see **[Configuration →](docs/configuration.md)**.
+edit the file by hand, or for OAuth, the per-environment entity allowlist and
+denylist, secret providers and inline mode, see **[Configuration →](docs/configuration.md)**.
 
 ## 💬 What you can ask
 
