@@ -41,6 +41,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already read. This entry documents the **final** semantics — no published version ever
   carried the previous `[]` = deny-all rule, so there is nothing to migrate on top of the key
   move above.
+- **Navigation and `$expand` are now filtered, and unverifiable values are rejected.** Both
+  used to bypass the lists entirely: a navigation segment names a NavigationProperty, so
+  `User('x')/payrollNav` reached `Payroll` without ever being checked, and `$expand` was passed
+  through verbatim. Every hop is now resolved to its **target entity set** and checked with the
+  same precedence. Consequences to expect: a navigation the metadata does not model fails with
+  `NAVIGATION_NOT_ALLOWED`, and an `$expand` the server cannot fully parse — including
+  `$filter`/`$orderby` nested inside it — fails with `OPTION_INVALID` instead of being
+  dispatched unverified.
 - **New `entityDenylist` per environment** (`SF_ENTITY_DENYLIST` in inline mode). Precedence
   is **denylist > allowlist > the API account's own permissions**, for **direct entity
   access**: navigation segments and `$expand` are still unfiltered, exactly like the
