@@ -106,7 +106,12 @@ test("S1/S3/S5/S6/S8: scope matrix, cold denials, first segment and cache", asyn
       assert.equal(overview.allowlistConfigured, lists[alias] !== undefined && lists[alias]!.length > 0);
       assert.equal(overview.denylistConfigured, false);
     }
-    assert.equal((await query("prod", "User(123)/FOOBar")).isError, undefined);
+    // The fixture metadata models no navigation, so the hop cannot be resolved:
+    // it must fail closed instead of being handed to the service (FR-144).
+    assert.equal(
+      (await query("prod", "User(123)/FOOBar")).structuredContent?.code,
+      "NAVIGATION_NOT_ALLOWED",
+    );
     const before: number = requests.length;
     await fs.writeFile(p, JSON.stringify({ environments: { prod: environment([]), dev: environment() } }));
     // `[]` narrows nothing, so BOTH environments expose the full catalog.

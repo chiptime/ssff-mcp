@@ -17,6 +17,13 @@ import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mc
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { executeBatchGet, sanitizeEmbeddedFailure } from "./batch.js";
 import { isEntityPermitted } from "./allowlist.js";
+import {
+  checkExpandRoutes,
+  checkNavigationPath,
+  entitySetOfSegment,
+  type NavigationLookup,
+} from "./allowlist-navigation.js";
+import { parseExpand } from "./expand.js";
 import { PACKAGE_VERSION } from "./version.js";
 import { loadConfig, type EnvironmentConfig } from "./config.js";
 import { CURSOR_VERSION, defaultCursorCodec } from "./cursor.js";
@@ -238,6 +245,71 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       defaultLocale: config.defaultLocale,
       inline: config.inline,
     };
+  }
+
+  /** Resolve a NavigationProperty to the entity set it points at, from cached metadata. */
+  const navigationLookupFor =
+    (target: EnvTarget, alias: string): NavigationLookup =>
+    async (fromEntitySet, navigationName) => {
+      const schema = await metadataService.getEntitySchema(target, alias, fromEntitySet);
+      return schema?.navigationProperties.find((p) => p.name === navigationName)?.targetEntitySet;
+    };
+
+  /**
+   * Enforce the navigation and `$expand` vectors (FR-141..FR-146): every hop is
+   * resolved to its **target entity set** and checked against the lists, and
+   * neither an unresolvable navigation nor an unparseable `$expand` is ever
+   * dispatched.
+   */
+  async function enforceNavigationVectors(
+    target: EnvTarget,
+    alias: string,
+    env: EnvironmentConfig,
+    segments: readonly string[],
+    expand: string | undefined,
+  ): Promise<void> {
+    const lookup = navigationLookupFor(target, alias);
+    const allowlist = env.entityAllowlist;
+    const denylist = env.entityDenylist;
+
+    const pathVerdict = await checkNavigationPath(segments, allowlist, denylist, lookup);
+    if (pathVerdict.kind === "denied") {
+      throw new SanitizedError(
+        "ENTITY_NOT_ALLOWED",
+        "a navigation in the entity path is not permitted by the configured entityAllowlist",
+      );
+    }
+    if (pathVerdict.kind === "unresolvable") {
+      throw new SanitizedError(
+        "NAVIGATION_NOT_ALLOWED",
+        "a navigation in the entity path could not be resolved from the cached metadata; if the catalog changed, run `ssff-mcp cache invalidate <alias>` and retry",
+      );
+    }
+
+    if (expand === undefined) {
+      return;
+    }
+    const parsed = parseExpand(expand);
+    if (!parsed.ok) {
+      throw new SanitizedError(
+        "OPTION_INVALID",
+        `expand uses syntax this server cannot verify (${parsed.reason}); it is rejected rather than dispatched unverified`,
+      );
+    }
+    const root = entitySetOfSegment(segments[0] ?? "");
+    const expandVerdict = await checkExpandRoutes(root, parsed.routes, allowlist, denylist, lookup);
+    if (expandVerdict.kind === "denied") {
+      throw new SanitizedError(
+        "ENTITY_NOT_ALLOWED",
+        "an expanded navigation is not permitted by the configured entityAllowlist",
+      );
+    }
+    if (expandVerdict.kind === "unresolvable") {
+      throw new SanitizedError(
+        "NAVIGATION_NOT_ALLOWED",
+        "an expanded navigation could not be resolved from the cached metadata; if the catalog changed, run `ssff-mcp cache invalidate <alias>` and retry",
+      );
+    }
   }
 
   async function executeTool(
@@ -478,6 +550,10 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           throw new SanitizedError("PATH_INVALID", "unknown entity set");
         }
 
+        // Navigation and $expand are resolved against the cached metadata and
+        // checked against the same lists (FR-141..FR-146), before any data request.
+        await enforceNavigationVectors(target, alias, env, validatedPath.segments, args.expand);
+
         // Exactly one fetch per call; next links are never followed.
         const result = await dispatchGet(target, pathAndQuery, {
           // Entity data in XML is Atom: SF answers 406 to `application/xml` there
@@ -590,6 +666,8 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         interface PlannedItem {
           entityPath: string;
           firstSegmentName: string;
+          segments: readonly string[];
+          expand: string | undefined;
           pathAndQuery: string;
           bindingOptions: Record<string, unknown>;
           topClamped: boolean;
@@ -635,6 +713,8 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           planned.push({
             entityPath: item.entityPath,
             firstSegmentName: validatedPath.firstSegmentName,
+            segments: validatedPath.segments,
+            expand: item.expand,
             pathAndQuery,
             bindingOptions,
             topClamped,
@@ -660,6 +740,12 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           if (verdict.kind === "unknown") {
             throw new SanitizedError("PATH_INVALID", "unknown entity set");
           }
+        }
+
+        // Pass 2b — navigation and $expand, per ITEM (never deduped by root):
+        // the same root can carry different navigations or different expands.
+        for (const item of planned) {
+          await enforceNavigationVectors(target, alias, env, item.segments, item.expand);
         }
 
         // One fixed $batch POST, GET-only envelope (D-28/DS-P2-04).
