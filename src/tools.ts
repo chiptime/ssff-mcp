@@ -20,7 +20,6 @@ import { isEntityPermitted } from "./allowlist.js";
 import {
   checkExpandRoutes,
   checkNavigationPath,
-  entitySetOfSegment,
   type NavigationLookup,
 } from "./allowlist-navigation.js";
 import { parseExpand } from "./expand.js";
@@ -296,8 +295,16 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         `expand uses syntax this server cannot verify (${parsed.reason}); it is rejected rather than dispatched unverified`,
       );
     }
-    const root = entitySetOfSegment(segments[0] ?? "");
-    const expandVerdict = await checkExpandRoutes(root, parsed.routes, allowlist, denylist, lookup);
+    // `$expand` applies to the entity the PATH reached, not to the first segment:
+    // resolving from the wrong base both rejects legitimate queries and lets a
+    // denied destination through.
+    const expandVerdict = await checkExpandRoutes(
+      pathVerdict.reached,
+      parsed.routes,
+      allowlist,
+      denylist,
+      lookup,
+    );
     if (expandVerdict.kind === "denied") {
       throw new SanitizedError(
         "ENTITY_NOT_ALLOWED",
@@ -500,8 +507,8 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
 
         // Allowlist enforcement (FR-28/D-30): checked after path validation
         // but BEFORE any network call or metadata classification. Only the
-        // FIRST segment's entity set is checked; navigation segments after
-        // an allowed first segment are not re-checked. v2 is the only active
+        // FIRST segment's entity set is checked; navigation segments are resolved
+        // and checked separately below, against the same lists. v2 is the only active
         // protocol in this phase, so entries restricted to ["v4"] are denied
         // (DS-P2-03). Generic message: the path is never echoed.
         if (!isEntityPermitted(entityAllowlist, entityDenylist, validatedPath.firstSegmentName)) {

@@ -10,10 +10,12 @@
  * a value the server half-understands is exactly where a restriction silently
  * stops applying.
  *
- * Supported: `A`, `A,B`, `A/B`, nested `A($expand=B/C)`, and `$select` sub-options
- * (which carry properties, not entities, so they are skipped).
- * Rejected: `$filter`/`$orderby` and any other sub-option (they belong to the
- * filter vector), plus wildcards and anything unparseable.
+ * Supported: `A`, `A,B`, `A/B`, nested `A($expand=B/C)`, and `$select` with a
+ * plain comma-separated property list.
+ * Rejected: percent-encoded characters (SuccessFactors decodes them, so an
+ * encoded `;` would hide a nested expand from this parser while the service still
+ * honoured it), `$filter`/`$orderby` and any other sub-option, wildcards, and
+ * anything else unparseable.
  */
 
 export type ExpandParse =
@@ -65,16 +67,20 @@ function read(cursor: Cursor, pattern: RegExp, what: string): string {
   return match[0];
 }
 
-/** `$select` carries property names, not entities: consume it without interpreting it. */
-function skipValue(cursor: Cursor): void {
-  while (cursor.index < cursor.text.length) {
-    const char = cursor.text[cursor.index]!;
-    if (char === ";" || char === ")") {
-      return;
+/**
+ * `$select` carries property names, not entities. It is still validated — as a
+ * plain identifier list — instead of skipped, so that no unbalanced or
+ * structural syntax can ride along unexamined.
+ */
+function parseSelectList(cursor: Cursor): void {
+  for (;;) {
+    read(cursor, IDENT, "a property name");
+    if (cursor.text[cursor.index] === ",") {
+      cursor.index += 1;
+      continue;
     }
-    cursor.index += 1;
+    return;
   }
-  throw new ExpandSyntaxError("unterminated expand option");
 }
 
 function parseRoutes(cursor: Cursor): string[][] {
@@ -97,7 +103,7 @@ function parseRoute(cursor: Cursor): string[][] {
         const option = read(cursor, OPTION, "an expand option");
         if (option === "$select") {
           expect(cursor, "=");
-          skipValue(cursor);
+          parseSelectList(cursor);
         } else if (option === "$expand") {
           expect(cursor, "=");
           nested.push(...parseRoutes(cursor));
@@ -126,6 +132,12 @@ function parseRoute(cursor: Cursor): string[][] {
 export function parseExpand(raw: string): ExpandParse {
   if (raw.trim().length === 0) {
     return { ok: true, routes: [] };
+  }
+  if (raw.includes("%")) {
+    return {
+      ok: false,
+      reason: "percent-encoded characters are not accepted: the service decodes them, so they can hide structure this parser would not check",
+    };
   }
   const cursor: Cursor = { text: raw, index: 0 };
   try {

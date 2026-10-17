@@ -16,20 +16,21 @@ const GRAPH: Record<string, Record<string, string>> = {
 };
 const lookup: NavigationLookup = async (from, nav) => GRAPH[from]?.[nav];
 
-test("a path with no navigation is permitted", async () => {
+test("a path with no navigation is permitted and reports the root it stayed on", async () => {
   assert.deepEqual(await checkNavigationPath(["User('1')"], undefined, undefined, lookup), {
     kind: "permitted",
+    reached: "User",
   });
 });
 
-test("a navigation whose destination is allowed is permitted", async () => {
+test("a navigation whose destination is allowed is permitted and reports the destination reached", async () => {
   const verdict = await checkNavigationPath(
     ["User('1')", "countryNav"],
     [allow("User"), allow("PicklistOption")],
     undefined,
     lookup,
   );
-  assert.deepEqual(verdict, { kind: "permitted" });
+  assert.deepEqual(verdict, { kind: "permitted", reached: "PicklistOption" });
 });
 
 test("a navigation whose destination is NOT in the allowlist is denied", async () => {
@@ -62,14 +63,14 @@ test("a deeper hop is checked: the chain is walked, not just the first navigatio
   assert.deepEqual(verdict, { kind: "denied", entitySet: "PayrollDetail" });
 });
 
-test("a chain whose every hop is allowed is permitted", async () => {
+test("a chain whose every hop is allowed is permitted and reports where it ended", async () => {
   const verdict = await checkNavigationPath(
     ["User('1')", "payrollNav", "detailNav"],
     [allow("User"), allow("Payroll"), allow("PayrollDetail")],
     undefined,
     lookup,
   );
-  assert.deepEqual(verdict, { kind: "permitted" });
+  assert.deepEqual(verdict, { kind: "permitted", reached: "PayrollDetail" });
 });
 
 test("an unresolvable navigation is reported, never passed through", async () => {
@@ -89,5 +90,5 @@ test("key predicates are stripped before resolving every hop", async () => {
 
 test("an empty allowlist narrows nothing: navigation is permitted", async () => {
   const verdict = await checkNavigationPath(["User('1')", "payrollNav"], [], undefined, lookup);
-  assert.deepEqual(verdict, { kind: "permitted" });
+  assert.deepEqual(verdict, { kind: "permitted", reached: "Payroll" });
 });

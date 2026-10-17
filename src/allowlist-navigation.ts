@@ -17,7 +17,7 @@ export type NavigationLookup = (
 ) => Promise<string | undefined>;
 
 export type NavigationVerdict =
-  | { kind: "permitted" }
+  | { kind: "permitted"; reached: string }
   | { kind: "denied"; entitySet: string }
   | { kind: "unresolvable"; navigationName: string };
 
@@ -32,9 +32,10 @@ export function entitySetOfSegment(segment: string): string {
  * navigation destination against the environment's lists.
  *
  * The first segment is the query root and is NOT re-checked here: the caller has
- * already decided it. Only a destination resolved from metadata is compared to
- * the lists, and a hop that cannot be resolved is reported instead of being
- * handed to the service.
+ * already decided it. `reached` is the entity set the path ends at, which is the
+ * one an `$expand` on the same request applies to.
+ *
+ * A hop that cannot be resolved is REPORTED, never handed to the service.
  */
 export async function checkNavigationPath(
   segments: readonly string[],
@@ -54,15 +55,17 @@ export async function checkNavigationPath(
     }
     current = target;
   }
-  return { kind: "permitted" };
+  return { kind: "permitted", reached: current };
 }
 
 /**
- * Check every route of a parsed `$expand` value, each starting from the root
- * entity set. Atomic: the first offending destination decides.
+ * Check every route of a parsed `$expand` value, each starting from
+ * `baseEntitySet`: the entity set the request's PATH reached, not necessarily
+ * the first path segment. Expanding from the wrong base both rejects legitimate
+ * queries and lets a denied destination through.
  */
 export async function checkExpandRoutes(
-  rootEntitySet: string,
+  baseEntitySet: string,
   routes: readonly (readonly string[])[],
   allowlist: AllowlistEntry[] | undefined,
   denylist: AllowlistEntry[] | undefined,
@@ -70,7 +73,7 @@ export async function checkExpandRoutes(
 ): Promise<NavigationVerdict> {
   for (const route of routes) {
     const verdict = await checkNavigationPath(
-      [rootEntitySet, ...route],
+      [baseEntitySet, ...route],
       allowlist,
       denylist,
       lookup,
@@ -79,5 +82,5 @@ export async function checkExpandRoutes(
       return verdict;
     }
   }
-  return { kind: "permitted" };
+  return { kind: "permitted", reached: baseEntitySet };
 }
