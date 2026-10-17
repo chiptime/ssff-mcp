@@ -50,11 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `$filter`/`$orderby` nested inside it — fails with `OPTION_INVALID` instead of being
   dispatched unverified.
 - **New `entityDenylist` per environment** (`SF_ENTITY_DENYLIST` in inline mode). Precedence
-  is **denylist > allowlist > the API account's own permissions**, for **direct entity
-  access**: navigation segments and `$expand` are still unfiltered, exactly like the
-  allowlist, and closing that gap is tracked separately. There is no wildcard: deny-all is
-  expressed by listing the entities to remove. It also exists for the layered model, where an
-  environment subtracts from a base inherited at tenant level.
+  is **denylist > allowlist > the API account's own permissions**. There is no wildcard:
+  deny-all is expressed by listing the entities to remove. It also exists for the layered
+  model, where an environment subtracts from a base inherited at tenant level.
 - **`sf://{env}/overview` no longer reports `allowlistDeniedAll`**, which would now always be
   `false`. It reports `denylistConfigured` instead, and `allowlistConfigured` is `false` for
   an empty list.
