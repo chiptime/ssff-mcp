@@ -188,9 +188,16 @@ async function runDiscoveryWithRetry(
       const entities = await discoverEntities({ environment, alias });
       spin.stop(`Entity catalog retrieved (${entities.length} entity sets)`);
       if (entities.length === 0) {
-        note(
-          "No entity sets were returned by this tenant; there is nothing to allow, so the environment stays unrestricted.",
-        );
+        // Nothing to pick. Never continue silently: the user asked to restrict and
+        // the outcome would be an UNRESTRICTED environment.
+        const proceed = await confirm({
+          message:
+            "No entity sets were returned by this tenant: there is nothing to allow, so the environment would stay UNRESTRICTED. Continue anyway?",
+          initialValue: false,
+        });
+        if (isCancel(proceed) || proceed !== true) {
+          return undefined;
+        }
         return [];
       }
       // The user must pick at least one entity: an empty allowlist means NO
