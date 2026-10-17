@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { loadConfig } from "../src/config.js";
 import { isSanitizedError, SanitizedError } from "../src/errors.js";
 
@@ -250,7 +251,21 @@ test("missing oauth fields are rejected", async () => {
 
 // --- entityAllowlist (FR-28, D-30 with D-15 semantics) -------------------------
 
+/** Per-environment allowlist (FR-28/D-30): the key lives inside the environment. */
 function withAllowlist(entries: unknown): string {
+  return JSON.stringify({
+    environments: {
+      a: {
+        baseUrl: "https://a.example.com",
+        auth: { type: "basic", username: "u", password: "p" },
+        entityAllowlist: entries,
+      },
+    },
+  });
+}
+
+/** Legacy root-level allowlist: now rejected with a guiding migration message. */
+function withRootAllowlist(entries: unknown): string {
   return JSON.stringify({
     environments: { a: { baseUrl: "https://a.example.com", auth: { type: "basic", username: "u", password: "p" } } },
     entityAllowlist: entries,
@@ -266,26 +281,84 @@ test("a valid entityAllowlist parses with entries preserved", async () => {
     ]),
   );
   const config = await loadConfig({ configPath: filePath });
-  assert.deepEqual(config.entityAllowlist, [
+  assert.deepEqual(config.environments.a!.entityAllowlist, [
     { entity: "User" },
     { entity: "JobRequisition", protocols: ["v2"] },
     { entity: "Foobar", protocols: ["v2", "v4"] },
   ]);
 });
 
-test("entityAllowlist absent leaves config.entityAllowlist undefined", async () => {
+test("the root-level entityAllowlist is rejected with a guiding migration message", async () => {
+  const filePath = await writeConfigRaw(withRootAllowlist([{ entity: "User" }]));
+  await assert.rejects(
+    () => loadConfig({ configPath: filePath }),
+    (error: unknown) => {
+      const err = expectSanitized(error, "CONFIG_INVALID");
+      assert.match(err.message, /entityAllowlist/);
+      assert.match(err.message, /environments\.<alias>\.entityAllowlist/);
+      return true;
+    },
+  );
+});
+
+test("the shipped config.template.json is structurally valid and activates no restriction", async () => {
+  const templatePath = fileURLToPath(new URL("../../config.template.json", import.meta.url));
+  const raw = await fs.readFile(templatePath, "utf-8");
+  // The template ships placeholders by design: fill them so only the SHAPE is under test.
+  const filled = raw
+    .replaceAll("https://<tenant-api-host>", "https://tenant.example.com")
+    .replaceAll("https://<token-endpoint-host>/oauth/token", "https://auth.example.com/oauth/token")
+    .replaceAll('"<api-username>"', '"apiuser"')
+    .replaceAll('"<api-password-or-provider>"', '"secret"')
+    .replaceAll('"<oauth-client-api-key>"', '"key"')
+    .replaceAll('"<tenant-company-id>"', '"company"')
+    .replaceAll('"<technical-user-id-without-company>"', '"SFAPI"');
+  const filePath = await writeConfigRaw(filled);
+  // Secrets stay unresolved on purpose: this test pins the config SHAPE, not credentials.
+  const config = await loadConfig({
+    configPath: filePath,
+    resolveSecretsFor: "__none__",
+    onWarning: () => {},
+  });
+  assert.ok(Object.keys(config.environments).length > 0);
+  // Copying the template must never activate a restriction silently either.
+  for (const environment of Object.values(config.environments)) {
+    assert.equal(environment.entityAllowlist, undefined);
+  }
+});
+
+test("each environment keeps its own allowlist and an absent one leaves the key unset", async () => {
+  const filePath = await writeConfigRaw(
+    JSON.stringify({
+      environments: {
+        prod: {
+          baseUrl: "https://prod.example.com",
+          auth: { type: "basic", username: "u", password: "p" },
+          entityAllowlist: [{ entity: "User" }],
+        },
+        dev: { baseUrl: "https://dev.example.com", auth: { type: "basic", username: "u", password: "p" } },
+      },
+    }),
+  );
+  const config = await loadConfig({ configPath: filePath });
+  assert.deepEqual(config.environments.prod!.entityAllowlist, [{ entity: "User" }]);
+  assert.equal("entityAllowlist" in config.environments.dev!, false);
+  assert.equal(config.environments.dev!.entityAllowlist, undefined);
+});
+
+test("entityAllowlist absent leaves the environment allowlist undefined", async () => {
   const filePath = await writeConfigRaw(JSON.stringify({
     environments: { a: { baseUrl: "https://a.example.com", auth: { type: "basic", username: "u", password: "p" } } },
   }));
   const config = await loadConfig({ configPath: filePath });
-  assert.equal("entityAllowlist" in config, false);
-  assert.equal(config.entityAllowlist, undefined);
+  assert.equal("entityAllowlist" in config.environments.a!, false);
+  assert.equal(config.environments.a!.entityAllowlist, undefined);
 });
 
 test("an empty entityAllowlist parses as a configured deny-all", async () => {
   const filePath = await writeConfigRaw(withAllowlist([]));
   const config = await loadConfig({ configPath: filePath });
-  assert.deepEqual(config.entityAllowlist, []);
+  assert.deepEqual(config.environments.a!.entityAllowlist, []);
 });
 
 test("invalid entity names are rejected", async () => {

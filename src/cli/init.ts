@@ -76,14 +76,16 @@ export function buildConfigFromAnswers(answers: ConfigAnswers): Record<string, u
           privateKey: answers.privateKey ?? "",
           tokenUrl: answers.tokenUrl ?? "",
         };
-  const config: Record<string, unknown> = {
-    environments: { [answers.alias]: { baseUrl: answers.baseUrl, auth } },
+  const environment: Record<string, unknown> = { baseUrl: answers.baseUrl, auth };
+  // The allowlist is per environment (FR-28/D-30): an empty selection is still
+  // an explicit configuration and is written as a deny-all for this environment.
+  if (answers.allowlist !== undefined) {
+    environment.entityAllowlist = answers.allowlist.map((entity) => ({ entity }));
+  }
+  return {
+    environments: { [answers.alias]: environment },
     defaultEnvironment: null,
   };
-  if (answers.allowlist !== undefined) {
-    config.entityAllowlist = answers.allowlist.map((entity) => ({ entity }));
-  }
-  return config;
 }
 
 /** Write `contents` to `filePath` atomically: temp file (0600) + rename, no TOCTOU window. */
@@ -141,6 +143,36 @@ function environmentFromAnswers(answers: ConfigAnswers): EnvironmentConfig {
   };
 }
 
+/** Seams for the "pick at least one entity" loop; injected so it is testable. */
+export interface SelectionDeps {
+  /** One multiselect round; `undefined` when the user cancels. */
+  selectOnce: () => Promise<string[] | undefined>;
+  /** Asked after an empty selection; returning false aborts the wizard. */
+  askRetry: () => Promise<boolean>;
+}
+
+/**
+ * Loop until the user picks at least one entity or cancels.
+ *
+ * An empty selection must NEVER fall through. With an empty allowlist meaning
+ * NO narrowing, writing `[]` would silently leave the environment open right
+ * after the user answered "restrict".
+ */
+export async function selectAtLeastOne(deps: SelectionDeps): Promise<string[] | undefined> {
+  for (;;) {
+    const selected = await deps.selectOnce();
+    if (selected === undefined) {
+      return undefined;
+    }
+    if (selected.length > 0) {
+      return [...selected];
+    }
+    if (!(await deps.askRetry())) {
+      return undefined;
+    }
+  }
+}
+
 /**
  * Live discovery with retry (FR-52/FR-53). Returns the selected entities, `[]`
  * when the tenant exposes none, or undefined when the user cancels.
@@ -156,18 +188,37 @@ async function runDiscoveryWithRetry(
       const entities = await discoverEntities({ environment, alias });
       spin.stop(`Entity catalog retrieved (${entities.length} entity sets)`);
       if (entities.length === 0) {
-        note("No entity sets were returned; the allowlist will not be restricted.");
+        // Nothing to pick. Never continue silently: the user asked to restrict and
+        // the outcome would be an UNRESTRICTED environment.
+        const proceed = await confirm({
+          message:
+            "No entity sets were returned by this tenant: there is nothing to allow, so the environment would stay UNRESTRICTED. Continue anyway?",
+          initialValue: false,
+        });
+        if (isCancel(proceed) || proceed !== true) {
+          return undefined;
+        }
         return [];
       }
-      const selected = await autocompleteMultiselect({
-        message: "Select allowed entities (type to filter)",
-        options: entities.map((name) => ({ value: name, label: name })),
-        required: false,
+      // The user must pick at least one entity: an empty allowlist means NO
+      // narrowing, so writing `[]` here would invert the "restrict" answer.
+      return await selectAtLeastOne({
+        selectOnce: async () => {
+          const selected = await autocompleteMultiselect({
+            message: "Select allowed entities (type to filter)",
+            options: entities.map((name) => ({ value: name, label: name })),
+            required: false,
+          });
+          return isCancel(selected) ? undefined : (selected as string[]);
+        },
+        askRetry: async () => {
+          const again = await confirm({
+            message: "No entities selected: an empty allowlist does NOT restrict anything. Select at least one?",
+            initialValue: true,
+          });
+          return !isCancel(again) && again === true;
+        },
       });
-      if (isCancel(selected)) {
-        return undefined;
-      }
-      return selected as string[];
     } catch (error) {
       spin.stop("Connection failed");
       const message = error instanceof Error ? error.message : String(error);
@@ -177,6 +228,29 @@ async function runDiscoveryWithRetry(
       }
     }
   }
+}
+
+/**
+ * The allowlist the wizard must write (FR-28/D-30).
+ *
+ * - `restrict === false` leaves the key absent: the environment is unrestricted.
+ * - `restrict === true` writes the selection.
+ * - `selected === undefined` means the caller cancelled the discovery step.
+ *
+ * An empty selection from the USER never reaches this function: `selectAtLeastOne`
+ * loops until they pick something or cancel. An empty array can still arrive when
+ * the tenant exposes no entity sets at all; in that case nothing is written,
+ * because an empty allowlist means NO narrowing and writing `[]` would both
+ * narrow nothing and mislead.
+ */
+export function allowlistFromSelection(
+  restrict: boolean,
+  selected: readonly string[] | undefined,
+): string[] | undefined {
+  if (!restrict || selected === undefined || selected.length === 0) {
+    return undefined;
+  }
+  return [...selected];
 }
 
 /** Interactive answer collection (T3 basic/OAuth; discovery and allowlist are T4). */
@@ -276,15 +350,14 @@ async function collectAnswers(): Promise<{ answers: ConfigAnswers; client: Clien
   if (isCancel(restrict)) {
     return undefined;
   }
+  let selected: string[] | undefined;
   if (restrict === true) {
-    const entities = await runDiscoveryWithRetry(environmentFromAnswers(answers), answers.alias);
-    if (entities === undefined) {
+    selected = await runDiscoveryWithRetry(environmentFromAnswers(answers), answers.alias);
+    if (selected === undefined) {
       return undefined;
     }
-    if (entities.length > 0) {
-      answers.allowlist = entities;
-    }
   }
+  answers.allowlist = allowlistFromSelection(restrict === true, selected);
 
   const client = await select({
     message: "Generate the configuration block for which client?",

@@ -16,7 +16,8 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { executeBatchGet, sanitizeEmbeddedFailure } from "./batch.js";
-import { isEntityAllowed, type AllowlistEntry } from "./allowlist.js";
+import { isEntityPermitted } from "./allowlist.js";
+import { PACKAGE_VERSION } from "./version.js";
 import { loadConfig, type EnvironmentConfig } from "./config.js";
 import { CURSOR_VERSION, defaultCursorCodec } from "./cursor.js";
 import { SanitizedError, toSanitizedError } from "./errors.js";
@@ -204,7 +205,7 @@ function encodeContinuationCursor(
 
 export function createMcpServer(deps: ServerDeps = {}): McpServer {
   const server = new McpServer(
-    { name: "ssff-mcp", version: "0.1.0" },
+    { name: "ssff-mcp", version: PACKAGE_VERSION },
     { instructions: "Read-only MCP server for SAP SuccessFactors OData v2. Name the environment explicitly; in inline mode (a single configured environment) it may be omitted." },
   );
   const log: Logger = makeLogger(deps.logSink);
@@ -217,10 +218,9 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     disableDiskCache: deps.disableDiskCache,
   });
 
-  /** Freshly loaded config per tool call: environments + optional allowlist + inline flag. */
+  /** Freshly loaded config per tool call: environments (each with its own allowlist) + inline flag. */
   interface FreshConfig {
     environments: Record<string, EnvironmentConfig>;
-    entityAllowlist?: AllowlistEntry[];
     defaultLocale?: string;
     inline?: boolean;
   }
@@ -235,7 +235,6 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     setMaxResponseBytes(config.maxResponseBytes);
     return {
       environments: config.environments,
-      entityAllowlist: config.entityAllowlist,
       defaultLocale: config.defaultLocale,
       inline: config.inline,
     };
@@ -310,8 +309,11 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     },
     async (args) =>
       await executeTool("inspect_entity", args.environment, async () => {
-        const { environments, entityAllowlist, defaultLocale, inline } = await loadFreshConfig(args.environment);
+        const { environments, defaultLocale, inline } = await loadFreshConfig(args.environment);
         const { alias, env } = resolveEnvironment(environments, args.environment, inline);
+        // The allowlist/denylist are per environment (FR-28/D-30); the denylist wins.
+        const entityAllowlist = env.entityAllowlist;
+        const entityDenylist = env.entityDenylist;
         const target: EnvTarget = envTargetFor(env, alias);
         const locale = resolveLocale({ tool: args.locale, config: defaultLocale, env: envVars.SF_DEFAULT_LOCALE });
 
@@ -324,7 +326,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
               "customOnly, employeeLinkedOnly and query only apply to the entity listing; omit entitySet or drop them",
             );
           }
-          if (entityAllowlist !== undefined && !isEntityAllowed(entityAllowlist, args.entitySet)) {
+          if (!isEntityPermitted(entityAllowlist, entityDenylist, args.entitySet)) {
             throw new SanitizedError(
               "ENTITY_NOT_ALLOWED",
               `ENTITY_NOT_ALLOWED: entity "${args.entitySet}" is not permitted by the configured allowlist`,
@@ -361,12 +363,14 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         }
 
         if (args.customOnly === true) {
-          const entities = await metadataService.listCustomMdf(
+          const listed = await metadataService.listCustomMdf(
             target,
             alias,
             entityAllowlist,
             args.employeeLinkedOnly === true,
           );
+          // The metadata service applies the allowlist; the denylist is applied here.
+          const entities = listed.filter((entity) => isEntityPermitted(undefined, entityDenylist, entity.name));
           const structured: Record<string, unknown> = {
             environment: alias,
             locale,
@@ -380,10 +384,9 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         // Full listing (FR-100): every entity that passes the allowlist and the
         // optional name filter, never truncated.
         const parsed = await metadataService.getParsedMetadata(target, alias);
-        const allowed =
-          entityAllowlist === undefined
-            ? parsed.entitySets
-            : parsed.entitySets.filter((name) => isEntityAllowed(entityAllowlist, name));
+        const allowed = parsed.entitySets.filter((name) =>
+          isEntityPermitted(entityAllowlist, entityDenylist, name),
+        );
         const needle = args.query?.toLowerCase();
         const entities = allowed
           .filter((name) => needle === undefined || name.toLowerCase().includes(needle))
@@ -403,8 +406,11 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     },
     async (args) =>
       await executeTool("query_entity", args.environment, async () => {
-        const { environments, entityAllowlist, inline } = await loadFreshConfig(args.environment);
+        const { environments, inline } = await loadFreshConfig(args.environment);
         const { alias, env } = resolveEnvironment(environments, args.environment, inline);
+        // The allowlist/denylist are per environment (FR-28/D-30); the denylist wins.
+        const entityAllowlist = env.entityAllowlist;
+        const entityDenylist = env.entityDenylist;
 
         const output = args.output ?? "json";
 
@@ -426,7 +432,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         // an allowed first segment are not re-checked. v2 is the only active
         // protocol in this phase, so entries restricted to ["v4"] are denied
         // (DS-P2-03). Generic message: the path is never echoed.
-        if (!isEntityAllowed(entityAllowlist, validatedPath.firstSegmentName)) {
+        if (!isEntityPermitted(entityAllowlist, entityDenylist, validatedPath.firstSegmentName)) {
           throw new SanitizedError(
             "ENTITY_NOT_ALLOWED",
             "the entity is not permitted by the configured entityAllowlist",
@@ -569,8 +575,11 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     },
     async (args) =>
       await executeTool("batch_get", args.environment, async () => {
-        const { environments, entityAllowlist, inline } = await loadFreshConfig(args.environment);
+        const { environments, inline } = await loadFreshConfig(args.environment);
         const { alias, env } = resolveEnvironment(environments, args.environment, inline);
+        // The allowlist/denylist are per environment (FR-28/D-30); the denylist wins.
+        const entityAllowlist = env.entityAllowlist;
+        const entityDenylist = env.entityDenylist;
 
         const output = args.output ?? "json";
         const target: EnvTarget = envTargetFor(env, alias);
@@ -594,7 +603,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
             );
           }
           const validatedPath = validateEntityPath(item.entityPath);
-          if (!isEntityAllowed(entityAllowlist, validatedPath.firstSegmentName)) {
+          if (!isEntityPermitted(entityAllowlist, entityDenylist, validatedPath.firstSegmentName)) {
             throw new SanitizedError(
               "ENTITY_NOT_ALLOWED",
               "the entity is not permitted by the configured entityAllowlist",
@@ -823,8 +832,11 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       },
     }),
     async (uri, { environment }) => {
-      const { environments, entityAllowlist, inline } = await loadFreshConfig(environment as string);
+      const { environments, inline } = await loadFreshConfig(environment as string);
       const resolved = resolveEnvironment(environments, environment as string, inline);
+      // The allowlist/denylist are per environment (FR-28/D-30); the denylist wins.
+      const entityAllowlist = resolved.env.entityAllowlist;
+      const entityDenylist = resolved.env.entityDenylist;
       const target = envTargetFor(resolved.env);
       const parsed = await metadataService.getParsedMetadata(target, resolved.alias);
 
@@ -834,8 +846,8 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         authType: resolved.env.auth.type,
         totalEntitySets: parsed.entitySets.length,
         functionImportsCount: parsed.functionImports.length,
-        allowlistConfigured: entityAllowlist !== undefined,
-        allowlistDeniedAll: entityAllowlist !== undefined && entityAllowlist.length === 0,
+        allowlistConfigured: entityAllowlist !== undefined && entityAllowlist.length > 0,
+        denylistConfigured: entityDenylist !== undefined && entityDenylist.length > 0,
       };
 
       return {
@@ -871,15 +883,16 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       },
     }),
     async (uri, { environment }) => {
-      const { environments, entityAllowlist, inline } = await loadFreshConfig(environment as string);
+      const { environments, inline } = await loadFreshConfig(environment as string);
       const resolved = resolveEnvironment(environments, environment as string, inline);
+      // The allowlist/denylist are per environment (FR-28/D-30); the denylist wins.
+      const entityAllowlist = resolved.env.entityAllowlist;
+      const entityDenylist = resolved.env.entityDenylist;
       const target = envTargetFor(resolved.env);
       const parsed = await metadataService.getParsedMetadata(target, resolved.alias);
 
       let allowedSets = parsed.entitySets;
-      if (entityAllowlist !== undefined) {
-        allowedSets = allowedSets.filter((name) => isEntityAllowed(entityAllowlist, name));
-      }
+      allowedSets = allowedSets.filter((name) => isEntityPermitted(entityAllowlist, entityDenylist, name));
 
       // Names only (decision 2026-10-14). Measured against PROD's 658 entities:
       // 142 KB with entityType, isCustom, isEmployeeLinked, isEffectiveDated and
@@ -910,11 +923,14 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     "sf_entity_schema",
     new ResourceTemplate("sf://{environment}/entities/{entitySet}", { list: undefined }),
     async (uri, { environment, entitySet }) => {
-      const { environments, entityAllowlist, defaultLocale, inline } = await loadFreshConfig(environment as string);
+      const { environments, defaultLocale, inline } = await loadFreshConfig(environment as string);
       const resolved = resolveEnvironment(environments, environment as string, inline);
+      // The allowlist/denylist are per environment (FR-28/D-30); the denylist wins.
+      const entityAllowlist = resolved.env.entityAllowlist;
+      const entityDenylist = resolved.env.entityDenylist;
       const entityName = entitySet as string;
 
-      if (entityAllowlist !== undefined && !isEntityAllowed(entityAllowlist, entityName)) {
+      if (!isEntityPermitted(entityAllowlist, entityDenylist, entityName)) {
         throw new SanitizedError(
           "ENTITY_NOT_ALLOWED",
           `ENTITY_NOT_ALLOWED: entity "${entityName}" is not permitted by the configured allowlist`,
@@ -976,11 +992,16 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       },
     }),
     async (uri, { environment }) => {
-      const { environments, entityAllowlist, inline } = await loadFreshConfig(environment as string);
+      const { environments, inline } = await loadFreshConfig(environment as string);
       const resolved = resolveEnvironment(environments, environment as string, inline);
+      // The allowlist/denylist are per environment (FR-28/D-30); the denylist wins.
+      const entityAllowlist = resolved.env.entityAllowlist;
+      const entityDenylist = resolved.env.entityDenylist;
       const target = envTargetFor(resolved.env);
       // Zero-network (D-62): classified from the cached $metadata; allowlist-filtered (D-68).
-      const entities = await metadataService.listCustomMdf(target, resolved.alias, entityAllowlist);
+      const listed = await metadataService.listCustomMdf(target, resolved.alias, entityAllowlist);
+      // The metadata service applies the allowlist; the denylist is applied here.
+      const entities = listed.filter((entity) => isEntityPermitted(undefined, entityDenylist, entity.name));
       const body = {
         environment: resolved.alias,
         totalCount: entities.length,

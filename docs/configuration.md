@@ -47,7 +47,12 @@ a non-TTY run exits with code `2`.
         "type": "basic",
         "username": "integration@mycompany",
         "password": { "fromEnv": "SF_PROD_PASSWORD" }
-      }
+      },
+      "entityAllowlist": [
+        { "entity": "User" },
+        { "entity": "PerPersonal" },
+        { "entity": "EmpJob", "protocols": ["v2"] }
+      ]
     },
     "staging": {
       "baseUrl": "https://custom-staging.example.com/api",
@@ -61,11 +66,6 @@ a non-TTY run exits with code `2`.
       }
     }
   },
-  "entityAllowlist": [
-    { "entity": "User" },
-    { "entity": "PerPersonal" },
-    { "entity": "EmpJob", "protocols": ["v2"] }
-  ],
   "defaultLocale": "es_ES",
   "maxResponseBytes": 262144
 }
@@ -79,7 +79,8 @@ a non-TTY run exits with code `2`.
 | `environments.<alias>.baseUrl` | Yes | Tenant API origin, for example `https://api4.successfactors.com`. Must be `https`, with no credentials/userinfo, no query string and no fragment. A path prefix is allowed. **Do not append `/odata/v2`** — the server adds it. |
 | `environments.<alias>.auth` | Yes | `{"type":"basic", …}` or `{"type":"oauth", …}` (see below). |
 | `defaultEnvironment` | No | If present it **MUST be `null`**. Implicit environment selection is forbidden; any non-null value is rejected. |
-| `entityAllowlist` | No | Array of `{ entity, protocols? }`. Restricts what `query_entity` and the metadata resources may read. See [Entity allowlist](#entity-allowlist). |
+| `environments.<alias>.entityAllowlist` | No | Array of `{ entity, protocols? }`. Narrows what this environment's `query_entity` and metadata resources may read. Absent **or empty** means no narrowing. See [Entity allowlist and denylist](#entity-allowlist-and-denylist). |
+| `environments.<alias>.entityDenylist` | No | Array of `{ entity, protocols? }`. Entities always denied in this environment; **wins over the allowlist**. See [Entity allowlist and denylist](#entity-allowlist-and-denylist). |
 | `defaultLocale` | No | Preferred language for Custom MDF guidance prose, for example `"es"` or `"es_ES"` (`-` also accepted). Only the format is validated; an untranslated language falls back to `en_US`. See [Guidance language](#guidance-language). |
 | `maxResponseBytes` | No | Optional cap, in bytes, for what a single tool call returns to the model. Positive integer. Takes precedence over `SF_MAX_RESPONSE_BYTES`; default **256 KiB**. See [Response size cap](#response-size-cap). |
 
@@ -141,32 +142,66 @@ so you never have to put the secret on disk:
 
 `fromCommand` is executed directly via `execFile` (no shell) with a 5s timeout.
 
-## Entity allowlist
+## Entity allowlist and denylist
 
-`entityAllowlist` restricts which entity sets `query_entity` may read. It is a
-local, explicit scope control **on top of** the tenant account's permissions.
+`entityAllowlist` **narrows** what that environment's `query_entity` may read; it
+is a local, explicit scope control **on top of** the tenant account's
+permissions. `entityDenylist` subtracts further and **always wins**. Both are
+configured **inside each environment**, so one environment can be restricted
+while another is not:
+
+```json
+{
+  "environments": {
+    "prod": {
+      "baseUrl": "https://api4.successfactors.com",
+      "auth": { "type": "basic", "username": "u", "password": "p" },
+      "entityAllowlist": [{ "entity": "User" }, { "entity": "PerPersonal" }],
+      "entityDenylist": [{ "entity": "PerPersonal" }]
+    },
+    "dev": {
+      "baseUrl": "https://dev.example.com",
+      "auth": { "type": "basic", "username": "u", "password": "p" }
+    }
+  }
+}
+```
+
+A top-level `entityAllowlist` is **rejected** with `CONFIG_INVALID`: one shared
+list cannot express per-environment scope. The message names the field and the
+fix.
 
 | Field | Meaning |
 |---|---|
 | `entity` | OData entity set name (`^[A-Za-z_][A-Za-z0-9_]*$`), matched case-sensitively and exactly against the **first** path segment. |
-| `protocols` | Optional array of `"v2"` and/or `"v4"`, without duplicates. Omitted means both protocols. This build is v2-only, so an entry that excludes `"v2"` is **denied**. |
+| `protocols` | Optional array of `"v2"` and/or `"v4"`, without duplicates. Omitted means both protocols. This build is v2-only, so an entry that excludes `"v2"` never applies. |
 
-Semantics:
+Semantics, per environment. **Precedence: denylist > allowlist > the API account's own permissions.**
 
-- **Absent** — no restriction; every entity the account can read is reachable.
-- **Present** — only the listed entities are queryable; anything else is
-  rejected with `ENTITY_NOT_ALLOWED` before any network request (not even
-  `$metadata` is fetched for a denied query).
-- **`[]` (empty array)** — configured deny-all: every `query_entity` call is
-  rejected. Deliberate fail-closed behavior.
+- **`entityAllowlist` absent or `[]`** — no narrowing: every entity the account can read is
+  reachable. An empty list is **not** a deny-all.
+- **`entityAllowlist` non-empty** — only the listed entities are queryable; anything else is
+  rejected with `ENTITY_NOT_ALLOWED` before any data request.
+- **`entityDenylist`** — the listed entities are denied for **direct entity access**, even when
+  the allowlist permits them (see `PerPersonal` in the example). There is **no wildcard**: deny
+  everything by listing what you want gone. **It does not yet apply to navigation segments or
+  `$expand`** — see the limits below.
 - **Navigation** — only the first path segment is checked; segments after it
-  (`User('123')/navProperty`) are not re-checked.
+  (`User('123')/navProperty`) are not re-checked yet. `$expand` is not filtered either. Known
+  limits, tracked separately.
 - **Metadata is filtered too** — the entity catalog, the per-entity schema
-  resource and `inspect_entity` apply the allowlist exactly like a data read.
+  resource, `inspect_entity` and the `sf://` resources apply that environment's lists exactly
+  like a data read.
+
+Using an empty value nowhere narrows anything, so an accidentally empty list
+fails **open**, not closed — that is the documented model. The `init` wizard
+therefore refuses to write an empty allowlist: it asks again until you pick at
+least one entity or cancel.
 
 The key is deliberately **not** in `config.template.json`: a copied template must
-not silently activate an allowlist. Invalid allowlists are rejected with
-`CONFIG_INVALID`.
+not silently activate a restriction. Invalid lists are rejected with
+`CONFIG_INVALID`, naming the offending field (`entityAllowlist` or
+`entityDenylist`).
 
 ## Inline mode (no config file)
 
@@ -181,7 +216,8 @@ client:
 | `SF_CLIENT_ID`, `SF_COMPANY_ID`, `SF_USER_ID`, `SF_TOKEN_URL`, `SF_PRIVATE_KEY` | OAuth 2.0 credentials (`SF_PRIVATE_KEY` accepts `\n` escapes or base64). |
 | `SF_IDP_URL` | Optional OAuth IdP helper endpoint. |
 | `SF_ENVIRONMENT` | Environment alias (default: `default`). |
-| `SF_ENTITY_ALLOWLIST` | Comma-separated entity allowlist, e.g. `User,PerPersonal,EmpJob`. |
+| `SF_ENTITY_ALLOWLIST` | Comma-separated entity allowlist for the single synthesized environment, e.g. `User,PerPersonal,EmpJob`. |
+| `SF_ENTITY_DENYLIST` | Comma-separated entity denylist for the single synthesized environment; wins over the allowlist. |
 | `SF_DEFAULT_LOCALE` | Language of the Custom MDF guidance text, e.g. `es_ES`. |
 | `SF_MAX_RESPONSE_BYTES` | Response-size cap, in bytes (a configured `maxResponseBytes` wins). |
 

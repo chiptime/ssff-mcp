@@ -27,10 +27,6 @@
         "tokenUrl": "https://<token-endpoint-host>/oauth/token"
       }
     }
-  },
-  "entityAllowlist": [
-    { "entity": "User" },
-    { "entity": "PerPersonal" }
-  ]
+  }
 }
 

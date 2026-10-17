@@ -120,7 +120,7 @@ query. Resources take no parameters (so the guidance locale uses only
 
 | Resource URI | Description |
 |---|---|
-| `sf://{environment}/overview` | Summary: `baseUrl`, `authType`, entity count, function imports count, allowlist status. |
+| `sf://{environment}/overview` | Summary: `baseUrl`, `authType`, entity count, function imports count, `allowlistConfigured` and `denylistConfigured` for that environment. |
 | `sf://{environment}/entities` | Lightweight catalog of entity **names** (`{ name }`), allowlist-filtered. |
 | `sf://{environment}/entities/{entitySet}` | Exhaustive entity schema: keys, typed properties (`Edm.*`, nullable) and navigation properties with cardinality. For Custom MDF entities it also carries `isCustom`, `isEffectiveDated`, `employeeLink` and `guidance`. |
 | `sf://{environment}/mdf/custom` | Compact catalog of the allowlisted Custom MDF (`cust_*`) entities: `totalCount`, `employeeLinkedCount`, and per entity `name`, `isEffectiveDated`, `linkType`, `targetEntity?`, `matchField?`. |

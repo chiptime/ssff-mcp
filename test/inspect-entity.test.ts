@@ -18,6 +18,21 @@ async function configPathFor(extra: Record<string, unknown> = {}, aliases = ["te
   return await writeConfigFile(JSON.stringify({ environments, ...extra }), { mode: 0o600 });
 }
 
+/** Config whose environments carry the given allowlist (FR-28/D-30: per environment). */
+async function configPathWithAllowlist(allowlist: unknown, aliases = ["tenant-a"]): Promise<string> {
+  const environments = Object.fromEntries(
+    aliases.map((alias) => [
+      alias,
+      {
+        baseUrl: "https://tenant-a.example.com",
+        auth: { type: "basic", username: "u", password: "p" },
+        entityAllowlist: allowlist,
+      },
+    ]),
+  );
+  return await writeConfigFile(JSON.stringify({ environments }), { mode: 0o600 });
+}
+
 function responder() {
   return recordingFetch((url) =>
     url.endsWith("/$metadata") ? xmlResponse(mdfMetadataXml(), 200, { "content-type": "application/xml" }) : jsonResponse({ d: { results: [] } }),
@@ -115,17 +130,18 @@ test("S9: employeeLinkedOnly is rejected when entitySet is given instead of bein
   });
 });
 
-test("a denied entity is ENTITY_NOT_ALLOWED and an empty allowlist denies everything", async () => {
+test("a denied entity is ENTITY_NOT_ALLOWED and an empty allowlist narrows nothing", async () => {
   const { fetch } = responder();
-  await withTestServer({ configPath: await configPathFor({ entityAllowlist: [{ entity: "User" }] }), fetchImpl: fetch }, async (client) => {
+  await withTestServer({ configPath: await configPathWithAllowlist([{ entity: "User" }]), fetchImpl: fetch }, async (client) => {
     const denied = await callTool(client, "inspect_entity", { environment: "tenant-a", entitySet: "cust_Equipo" });
     assert.equal(errorPayload(denied).code, "ENTITY_NOT_ALLOWED");
     const list = await callTool(client, "inspect_entity", { environment: "tenant-a", customOnly: true });
     assert.deepEqual((list.structuredContent as { entities: unknown[] }).entities, []);
   });
-  await withTestServer({ configPath: await configPathFor({ entityAllowlist: [] }), fetchImpl: fetch }, async (client) => {
-    const denied = await callTool(client, "inspect_entity", { environment: "tenant-a", entitySet: "cust_Equipo" });
-    assert.equal(errorPayload(denied).code, "ENTITY_NOT_ALLOWED");
+  // An empty allowlist narrows nothing, so the custom entity is visible again.
+  await withTestServer({ configPath: await configPathWithAllowlist([]), fetchImpl: fetch }, async (client) => {
+    const allowed = await callTool(client, "inspect_entity", { environment: "tenant-a", entitySet: "cust_Equipo" });
+    assert.ok(!allowed.isError, JSON.stringify(allowed));
   });
 });
 

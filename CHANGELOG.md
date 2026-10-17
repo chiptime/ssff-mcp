@@ -12,6 +12,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The advertised version is no longer hardcoded.** The outgoing `User-Agent` and the MCP
+  server handshake both reported `0.1.0` — two releases stale, and wrong to the SuccessFactors
+  tenant receiving every request. Both now read the version from the shipped `package.json`
+  (`src/version.ts`), so a release bump propagates on its own, and the tests derive the
+  expected value from the manifest instead of pinning a literal.
+- **The `User-Agent` claimed to run on `linux` on every OS.** macOS and Windows tenants saw
+  `linux` on every request they received. The string is now built from `process.platform`, so
+  it reports `darwin`, `win32` or `linux` truthfully. On Linux the header is byte-for-byte
+  unchanged.
+
+## [0.4.0] — 2026-10-17
+
+### Breaking
+
+- **`entityAllowlist` is now per environment.** The key moves inside each
+  environment (`environments.<alias>.entityAllowlist`) so one environment can be restricted
+  while another is not; a single shared list could not express that. A **top-level
+  `entityAllowlist` is now rejected** with `CONFIG_INVALID` naming the field and the fix —
+  move each list into the environment it applies to. `SF_ENTITY_ALLOWLIST` now populates the
+  single environment synthesized in inline mode. The shipped `config.template.json` no longer
+  carries the key, which restores the documented promise that copying the template never
+  activates a restriction silently.
+- **An empty `entityAllowlist` no longer denies everything.** `[]` now narrows nothing,
+  exactly like an absent list: the allowlist only subtracts from what the tenant account can
+  already read. This entry documents the **final** semantics — no published version ever
+  carried the previous `[]` = deny-all rule, so there is nothing to migrate on top of the key
+  move above.
+- **New `entityDenylist` per environment** (`SF_ENTITY_DENYLIST` in inline mode). Precedence
+  is **denylist > allowlist > the API account's own permissions**, for **direct entity
+  access**: navigation segments and `$expand` are still unfiltered, exactly like the
+  allowlist, and closing that gap is tracked separately. There is no wildcard: deny-all is
+  expressed by listing the entities to remove. It also exists for the layered model, where an
+  environment subtracts from a base inherited at tenant level.
+- **`sf://{env}/overview` no longer reports `allowlistDeniedAll`**, which would now always be
+  `false`. It reports `denylistConfigured` instead, and `allowlistConfigured` is `false` for
+  an empty list.
+
 ### Added
 
 - **Unified `inspect_entity` tool.** A single tool to inspect the data model, standard or
@@ -75,6 +114,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ssff-mcp init` wrote the allowlist at the top level**, which the server now rejects: the
+  wizard would have generated a config it refuses to load. It now writes the allowlist inside
+  the generated environment.
+- **`ssff-mcp init` silently ignored an empty allowlist selection.** Answering "Restrict
+  access with an entity allowlist?" and then selecting nothing produced a config with **no**
+  restriction at all, inverting the user's choice without a warning. The wizard now asks again
+  until at least one entity is picked (or the user cancels) — necessary because an empty
+  allowlist narrows nothing. A tenant that exposes no entity sets is reported honestly as
+  staying unrestricted.
 - **Filtered queries and `orderby` no longer lose their spaces.** Option values for
   `$filter`, `$orderby`, `$select` and `$expand` were assembled through
   `URLSearchParams`, which encodes a space as `+` and percent-encodes quotes, commas and
@@ -174,6 +222,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional fail-closed `entityAllowlist` enforcement.
 - GET-only `batch_get` built on the `odata-batch` retrieve pattern.
 
-[Unreleased]: https://github.com/chiptime/ssff-mcp/compare/0.3.0...HEAD
+[Unreleased]: https://github.com/chiptime/ssff-mcp/compare/0.4.0...HEAD
+[0.4.0]: https://github.com/chiptime/ssff-mcp/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/chiptime/ssff-mcp/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/chiptime/ssff-mcp/releases/tag/0.2.0

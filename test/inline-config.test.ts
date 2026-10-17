@@ -82,7 +82,7 @@ test("inline: env vars synthesize one 'default' environment when config.json is 
       assert.deepEqual(Object.keys(config.environments), ["default"]);
       assert.equal(config.environments.default!.baseUrl, "https://api2.successfactors.eu");
       assert.deepEqual(config.environments.default!.auth, { type: "basic", username: "u", password: "p" });
-      assert.equal(config.entityAllowlist, undefined);
+      assert.equal(config.environments.default!.entityAllowlist, undefined);
     },
   );
 });
@@ -156,7 +156,7 @@ test("inline: SF_ENTITY_ALLOWLIST maps to entityAllowlist (trim, drop empties)",
     },
     async () => {
       const config = await loadConfig({ configPath: missingPath() });
-      assert.deepEqual(config.entityAllowlist, [
+      assert.deepEqual(config.environments.default!.entityAllowlist, [
         { entity: "User" },
         { entity: "PerPersonal" },
         { entity: "EmpJob" },

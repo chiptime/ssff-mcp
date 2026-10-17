@@ -50,11 +50,11 @@ test("protocols [\"v2\",\"v4\"] allows both", () => {
   assert.equal(isEntityAllowed(allowlist, "User", "v4"), true);
 });
 
-test("an empty allowlist array denies everything (configured deny-all)", () => {
+test("an empty allowlist array means NO narrowing (open), exactly like absent", () => {
   const allowlist: AllowlistEntry[] = [];
-  assert.equal(isEntityAllowed(allowlist, "User"), false);
-  assert.equal(isEntityAllowed(allowlist, "User", "v4"), false);
-  assert.equal(isEntityAllowed(allowlist, "Whatever"), false);
+  assert.equal(isEntityAllowed(allowlist, "User"), true);
+  assert.equal(isEntityAllowed(allowlist, "User", "v4"), true);
+  assert.equal(isEntityAllowed(allowlist, "Whatever"), true);
 });
 
 test("entries are independent: one restricted entry does not affect others", () => {

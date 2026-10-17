@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { dispatchGet, envTargetFor, MAX_REDIRECT_HOPS, USER_AGENT } from "../src/http.js";
+import { PACKAGE_VERSION } from "../src/version.js";
 import { isSanitizedError } from "../src/errors.js";
 import {
   FakeResponse,
@@ -44,7 +45,8 @@ test("every request is GET with exactly the allowed header set", async () => {
   assert.equal(requests[0]!.headers.Authorization, expectedAuth);
   assert.equal(requests[0]!.headers.Accept, "application/json");
   assert.equal(requests[0]!.headers["User-Agent"], USER_AGENT);
-  assert.match(USER_AGENT, /^ssff-mcp\/0\.1\.0/);
+  // The version is NOT hardcoded here: it comes from the shipped package.json.
+  assert.ok(USER_AGENT.startsWith(`ssff-mcp/${PACKAGE_VERSION} `), USER_AGENT);
 });
 
 test("URL host and path come only from the configured environment", async () => {

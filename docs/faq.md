@@ -17,9 +17,10 @@ talks directly to your SuccessFactors host over HTTPS. Nothing is proxied throug
 a third party.
 
 **Which entities can it read?**
-Any entity set your SuccessFactors API account can read, optionally narrowed by
-[`entityAllowlist`](configuration.md#entity-allowlist). What the account can read,
-the server can read — nothing more.
+Any entity set your SuccessFactors API account can read, optionally narrowed **per
+environment** by
+[`entityAllowlist`](configuration.md#entity-allowlist-and-denylist) and subtracted
+by `entityDenylist`. What the account can read, the server can read — nothing more.
 
 **Do I need a special SuccessFactors account or admin work?**
 You need an API user (Basic or OAuth 2.0). For OAuth, the client machine's IP must
