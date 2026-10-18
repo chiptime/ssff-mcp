@@ -62,11 +62,10 @@ data are ever cached.** Force a reload with [`ssff-mcp cache invalidate`](config
   points at and checked, and neither an unresolvable hop nor an unparseable `$expand` is ever
   dispatched. Entity paths also reject URL-structural syntax (`%`, `#`, `?`, `\` and `.`/`..`
   segments) with `PATH_INVALID`, because normalisation and service parsing happen **after**
-  validation. `$filter`/`$orderby` are scanned for navigation references (`navProp/field`,
-  the production-verified shape) and checked like any other hop; the scan is deliberately
-  conservative rather than a full expression parser. **Remaining limit:** a filter that
-  references a navigation in a shape the scanner does not recognise is not checked, so treat
-  the lists as a narrowing control, **not** as a complete confidentiality boundary.
+  validation.   Every reference in `$filter`, `$orderby` and `$select` is extracted by identifier — a path is
+  walked hop by hop, and a bare name is rejected when it is an association of that entity — and
+  a `$select` inside `$expand` is checked against the expanded entity. **A denied entity is not
+  nameable through any query option**, not even to obtain a `__deferred` link.
 - **OData v2 only.** OData v4 is deferred until a tenant with a verified v4
   endpoint exists.
 - **No function imports / custom service operations** (`FUNCTION_IMPORT_UNSUPPORTED`).

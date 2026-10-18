@@ -19,6 +19,7 @@ import { executeBatchGet, sanitizeEmbeddedFailure } from "./batch.js";
 import { isEntityPermitted } from "./allowlist.js";
 import {
   checkExpandRoutes,
+  checkExpandSelections,
   checkExpressionReferences,
   checkNavigationPath,
   expressionReferences,
@@ -318,6 +319,28 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         throw new SanitizedError(
           "NAVIGATION_NOT_ALLOWED",
           "an expanded navigation could not be resolved from the cached metadata; if the catalog changed, run `ssff-mcp cache invalidate <alias>` and retry",
+        );
+      }
+      // A `$select` inside `$expand` names properties of the expanded entity: one
+      // of them may be an association to a denied entity, and it only takes a
+      // deferred link to name what the lists exclude.
+      const selectionVerdict = await checkExpandSelections(
+        pathVerdict.reached,
+        parsed.selections,
+        allowlist,
+        denylist,
+        lookup,
+      );
+      if (selectionVerdict.kind === "denied") {
+        throw new SanitizedError(
+          "ENTITY_NOT_ALLOWED",
+          "a $select inside $expand names an association that is not permitted by the configured entityAllowlist",
+        );
+      }
+      if (selectionVerdict.kind === "unresolvable") {
+        throw new SanitizedError(
+          "NAVIGATION_NOT_ALLOWED",
+          "a $select inside $expand could not be resolved from the cached metadata; if the catalog changed, run `ssff-mcp cache invalidate <alias>` and retry",
         );
       }
     }

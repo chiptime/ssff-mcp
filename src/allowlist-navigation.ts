@@ -9,6 +9,7 @@
  */
 
 import { isEntityPermitted, type AllowlistEntry } from "./allowlist.js";
+import type { ExpandSelection } from "./expand.js";
 
 /** Resolve `navigationName` declared on `fromEntitySet` to its target entity set. */
 export type NavigationLookup = (
@@ -97,6 +98,45 @@ export async function checkExpressionReferences(
     }
   }
   return { kind: "permitted", reached: rootEntitySet };
+}
+
+/**
+ * Check the `$select` lists attached to `$expand` routes.
+ *
+ * A property that IS a navigation of the expanded entity reaches a denied entity
+ * even though it only returns a `__deferred` link, so it is rejected like any
+ * other reference. Scalar properties pass untouched.
+ */
+export async function checkExpandSelections(
+  baseEntitySet: string,
+  selections: readonly ExpandSelection[],
+  allowlist: AllowlistEntry[] | undefined,
+  denylist: AllowlistEntry[] | undefined,
+  lookup: NavigationLookup,
+): Promise<NavigationVerdict> {
+  for (const selection of selections) {
+    const reached = await checkNavigationPath(
+      [baseEntitySet, ...selection.route],
+      allowlist,
+      denylist,
+      lookup,
+    );
+    if (reached.kind !== "permitted") {
+      return reached;
+    }
+    const properties = selection.properties.map((name) => ({ kind: "name" as const, name }));
+    const verdict = await checkExpressionReferences(
+      reached.reached,
+      properties,
+      allowlist,
+      denylist,
+      lookup,
+    );
+    if (verdict.kind !== "permitted") {
+      return verdict;
+    }
+  }
+  return { kind: "permitted", reached: baseEntitySet };
 }
 
 /**
