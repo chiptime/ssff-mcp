@@ -70,7 +70,14 @@ data are ever cached.** Force a reload with [`ssff-mcp cache invalidate`](config
   that entity exposes. The response payload is redacted to those properties (keys always
   readable), references to others are rejected, and the schema surfaces hide them. When
   `fields` apply, `output: "xml"` is downgraded to JSON with `outputDowngraded: true`, because
-  redacting Atom reliably is not worth the tokens it saves.
+  redacting Atom reliably is not worth the tokens it saves. A configured field list whose
+  schema cannot be resolved **refuses the read** (`ENTITY_NOT_ALLOWED`) instead of returning
+  unredacted data.
+  **Known gap, declared:** expression extraction in `$filter`/`$orderby` is deliberately
+  conservative — quoted literals are skipped and recognized identifier paths are checked, but
+  an unrecognized expression form is **not** checked and is left to the service. The allowlist
+  is a hard boundary for direct access, navigation paths and `$expand`; it is not a full OData
+  expression parser.
 - **OData v2 only.** OData v4 is deferred until a tenant with a verified v4
   endpoint exists.
 - **No function imports / custom service operations** (`FUNCTION_IMPORT_UNSUPPORTED`).
