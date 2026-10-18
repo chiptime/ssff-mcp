@@ -48,3 +48,10 @@ test("operators and functions are not mistaken for paths", () => {
 test("orderby expressions work the same way", () => {
   assert.deepEqual(navigationPathsInExpression("externalCodeNav/userId desc"), [["externalCodeNav"]]);
 });
+
+test("whitespace around the slash is still treated as a navigation", () => {
+  // OData v2 rejects this form, but checking it beats ignoring it.
+  assert.deepEqual(navigationPathsInExpression("externalCodeNav / userId eq '1'"), [["externalCodeNav"]]);
+  assert.deepEqual(navigationPathsInExpression("externalCodeNav/ userId eq '1'"), [["externalCodeNav"]]);
+  assert.deepEqual(navigationPathsInExpression("externalCodeNav /userId eq '1'"), [["externalCodeNav"]]);
+});

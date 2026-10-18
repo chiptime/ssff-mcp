@@ -132,13 +132,23 @@ export function navigationPathsInExpression(raw: string): string[][] {
         index += 1;
       }
       parts.push(raw.slice(start, index));
-      if (raw[index] !== "/") {
+      // OData v2 does not accept whitespace around the slash, but tolerating it
+      // is the fail-closed choice: the path gets CHECKED instead of ignored.
+      let after = index;
+      while (/\s/.test(raw[after] ?? "")) {
+        after += 1;
+      }
+      if (raw[after] !== "/") {
         break;
       }
-      index += 1;
-      if (!isNameStart(raw[index])) {
+      after += 1;
+      while (/\s/.test(raw[after] ?? "")) {
+        after += 1;
+      }
+      if (!isNameStart(raw[after])) {
         break;
       }
+      index = after;
     }
     // The final element is a property; the navigations are everything before it.
     if (parts.length > 1) {

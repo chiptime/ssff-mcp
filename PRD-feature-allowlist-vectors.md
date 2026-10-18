@@ -25,6 +25,7 @@ Este PRD cierra **ambos** vectores de forma fail-closed. La tercera vía (`filte
 | La ruta ya viene parseada en segmentos, con comillas respetadas | `validateEntityPath` devuelve `{ segments, firstSegmentName }` (`src/odata.ts:83-111`), máximo 4 segmentos |
 | La metadata ya modela la navegación a su entidad destino | `EntitySchema.navigationProperties: { name, targetEntitySet, relationship, multiplicity }` (`src/metadata.ts`) |
 | El hueco estaba reconocido como cuestión abierta desde el PRD original | `archive/PRD.md:470` (FR-05, Q-2) |
+| **SAP decodifica `%27` dentro de una clave** (premisa del rechazo de percent-encoding) | **Validado contra TEST el 2026-10-18**: `User('1211902%27)/empInfo` devuelve **200** con el `EmpEmployment` de `1211902`, y `User('1211902%27)` devuelve **200** con `User('1211902')`. SAP cierra la clave y trata el resto como navegación, así que la ruta validada y la despachada difieren de verdad. |
 
 La consecuencia técnica central: **la allowlist está expresada en términos de entity sets, pero las rutas de navegación y `$expand` usan nombres de `NavigationProperty`**. Comparar nombres directamente sería incorrecto. Hay que **resolver cada propiedad de navegación a su `targetEntitySet`** usando la metadata ya cacheada.
 
