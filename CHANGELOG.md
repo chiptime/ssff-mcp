@@ -12,8 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-18
+
 ### Added
 
+- **Multi-tenant config shape: `tenants.<id>`.** The config accepts a tenants level where
+  each tenant carries its own environments, tenant-level allowlist/denylist defaults and
+  hashed API keys; a per-environment list **replaces** (never merges) the tenant-level one.
+  The flat legacy shape keeps working and resolves as a single `default` tenant, with a
+  one-time migration warning. stdio resolves exactly one tenant; two or more are rejected,
+  pointing at the future serve mode.
 - **Field-level granularity: `fields` on each `entityAllowlist` entry.**
   `{ "entity": "User", "fields": ["userId", "firstName"] }` restricts the properties that
   entity exposes. Absent or `[]` means every property, exactly like the entity list itself.
@@ -262,7 +270,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional fail-closed `entityAllowlist` enforcement.
 - GET-only `batch_get` built on the `odata-batch` retrieve pattern.
 
-[Unreleased]: https://github.com/chiptime/ssff-mcp/compare/0.4.0...HEAD
+[Unreleased]: https://github.com/chiptime/ssff-mcp/compare/0.5.0...HEAD
+[0.5.0]: https://github.com/chiptime/ssff-mcp/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/chiptime/ssff-mcp/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/chiptime/ssff-mcp/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/chiptime/ssff-mcp/releases/tag/0.2.0
