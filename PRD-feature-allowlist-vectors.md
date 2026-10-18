@@ -187,9 +187,10 @@ La metadata de los tests debe incluir navegaciones con `targetEntitySet`. Hoy `S
 | Vector / Capacidad | Estado |
 |---|---|
 | `$filter` / `$orderby` con rutas de navegación (`navProp/campo`) | **Aplazado.** Requiere entender el lenguaje de expresiones OData v2; se decidirá con patrones de filtros reales de producción. **Sigue siendo un vector abierto tras este PRD.** |
+| **Normalización de URL en claves entrecomilladas** (`User('x/../Payroll#')`) | **Conocido, preexistente, NO cerrado.** El `'/../'` se colapsa en la capa HTTP y el `#` corta la ruta, así que la petición despachada apunta a otro entity set. Detectado por la verificación final; reproduce igual en `ea20c4d`. Cierre propuesto: rechazar segmentos de normalización y `#` en `validateEntityPath`, exactamente como ya se hace con `%`. |
 | Granularidad por campo (`$select` a nivel de propiedad) | Fuera de alcance. No forma parte del modelo de la allowlist. |
 | Fase 2 (usuarios y roles dentro del tenant) | Aplazada por decisión del usuario. |
 | Servicio multi-tenant (Streamable HTTP) | Aplazada. Cambiará la clave de caché a `metadata-<tenant>-<alias>.json`. |
 | Wiring interactivo del asistente `init` | Sin muelle de inyección de prompts: se cubre de forma indirecta. |
 
-> **Advertencia de cierre:** mientras §9 mantenga abierto el vector de `filter`/`orderby`, la allowlist **no debe presentarse como una frontera de confidencialidad completa** en la documentación de seguridad. Debe declararse su alcance exacto (ruta + `expand`), tal como exige FR-150.
+> **Advertencia de cierre:** mientras §9 mantenga abierto alguno de sus vectores, la allowlist **no debe presentarse como una frontera de confidencialidad completa** en la documentación de seguridad. Debe declararse su alcance exacto (acceso directo + rutas de navegación + `$expand`) y sus dos huecos conocidos, tal como exige FR-150.
