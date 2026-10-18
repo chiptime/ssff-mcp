@@ -3,7 +3,7 @@
 | Metadato | Valor |
 |---|---|
 | **Documento** | PRD-feature-multitenant-hosting.md |
-| **Versión** | v1.0.0 |
+| **Versión** | v1.1.0 — añade §11: mapa de implementación y repercusión |
 | **Estado** | PROPUESTO / LISTO PARA REVISIÓN |
 | **Fecha** | 2026-10-18 |
 | **Componente** | `ssff-mcp` — transporte remoto, tenancy y despliegue |
@@ -219,3 +219,78 @@ En Cloud Foundry el egreso **suele** ir por **IPs compartidas**, no dedicadas �
 - **Fase 3**: identidad de usuario, roles y **allowlist por rol** (IdP: SAP IAS). Incluye verificar PKCE, registro de cliente (CIMD/DCR) y el claim de grupos en el `.well-known` de IAS.
 - **Alta de tenants por API**: en esta fase el alta es **manual** en el fichero, con helper de hash.
 - **Rate-limit por clave**: no en v1; el tope de sesiones global es suficiente para el piloto.
+
+---
+
+## 11. Mapa de implementación y repercusión
+
+Estado real del repositorio frente a este PRD: qué está **implementado y dónde**, qué queda **por construir**, y qué **repercusión** tiene cada pieza.
+
+```mermaid
+flowchart TD
+  subgraph F1["FASE 1 · IMPLEMENTADO (en main)"]
+    A1["src/config.ts — esquema estricto<br/>entityAllowlist + entityDenylist POR ENTORNO<br/>la raíz se rechaza"]
+    A2["src/allowlist.ts — isEntityPermitted<br/>denylist gana a allowlist · vacía o ausente = no acota<br/>una entidad denegada es inalcanzable<br/>por cualquier opción de query"]
+    A3["src/allowlist-navigation.ts + src/expand.ts<br/>navegación, $expand y $select dentro de $expand"]
+    A4["$filter y $orderby — referencias<br/>de navegación comprobadas"]
+    A5["endurecimiento del path — percent-encoding,<br/>sintaxis URL-estructural, espacios"]
+    A6["src/cli/init.ts — wizard exige elegir una entidad"]
+    A7["test/ — suite 450+ · navigation · denylist · wizard"]
+  end
+
+  subgraph MOTOR["MOTOR · IMPLEMENTADO (NO cambia en esta fase)"]
+    B1["src/tools.ts — createMcpServer()<br/>9 puntos de enforcement · el motor<br/>NO sabe de tenancy"]
+    B2["src/metadata.ts — caché metadata-&lt;alias&gt;.json<br/>(aún SIN tenant)"]
+    B3["src/index.ts — stdio<br/>src/http.ts · oauth.ts · odata.ts · batch.ts · cursor.ts"]
+  end
+
+  subgraph F2["FASE 2 · POR CONSTRUIR (este PRD, D-115..D-124)"]
+    C1["src/tenancy.ts (nuevo)<br/>resolveTenant — clave hasheada → tenant + entornos"]
+    C2["src/server-http.ts (nuevo)<br/>Streamable HTTP · auth · /healthz · SIGTERM"]
+    C3["src/cli/serve.ts (nuevo) — serve + PORT"]
+    C4["src/config.ts — nivel tenants + auto-migración"]
+    C5["src/metadata.ts — caché por tenant + entorno"]
+    C6["Dockerfile no-root + .dockerignore"]
+    C7["helper — ssff-mcp key hash"]
+  end
+
+  subgraph IMP["REPERCUSIONES"]
+    D1["BREAKING — config a tenants ⇒ próxima major<br/>(Fase 1 ya rompió en 0.4.0, publicado)"]
+    D2["RIESGO — el aislamiento pasa a ser<br/>responsabilidad del CÓDIGO"]
+    D3["OPERACIÓN — proxy sin buffering<br/>· IP del VPS registrada en SF por cliente"]
+    D4["FUTURO — Cloud Foundry: egreso con IP compartida,<br/>choca con el whitelisting de SAP"]
+    D5["SIN CAMBIOS — stdio local, clientes actuales<br/>y el plano MCP → SAP (cuenta de servicio)"]
+  end
+
+  A1 --> A2 --> A3 --> A4 --> A5
+  A6 --> B1
+  A5 --> B1
+  B1 --> B2
+  A7 -.-> B1
+  C4 -.-> C1
+  C3 --> C2
+  C1 --> C2
+  C2 ==> B1
+  C5 -.-> B2
+  C4 -.-> D1
+  C2 -.-> D2
+  C6 -.-> D3
+  D4 -.-> C6
+  B3 -.-> D5
+
+  classDef hecho fill:#c8e6c9,stroke:#2e7d32,color:#1b5e20
+  classDef motor fill:#bbdefb,stroke:#1565c0,color:#0d47a1
+  classDef nuevo fill:#ffe0b2,stroke:#ef6c00,color:#e65100
+  classDef reper fill:#ffcdd2,stroke:#c62828,color:#b71c1c
+  class A1,A2,A3,A4,A5,A6,A7 hecho
+  class B1,B2,B3 motor
+  class C1,C2,C3,C4,C5,C6,C7 nuevo
+  class D1,D2,D3,D4,D5 reper
+```
+
+**Lectura:**
+
+- **Verde (Fase 1):** todo integrado en `main` — permisos por entorno, navegación, `$expand` (incluido `$select` anidado), `$filter`/`$orderby` y el path blindado. Es la base de esta fase.
+- **Azul (motor):** lo que **no se toca**. La flecha gruesa `server-http ⇒ createMcpServer()` es la **costura clave**: el HTTP nuevo entra por el borde y el motor queda intacto.
+- **Naranja (Fase 2):** lo que falta — tres ficheros nuevos (`tenancy.ts`, `server-http.ts`, `cli/serve.ts`), dos modificados (`config.ts`, `metadata.ts`) y el empaquetado.
+- **Rojo (repercusiones):** la única **breaking** es el config (`D1`); el riesgo estructural es `D2` (el aislamiento vive en código); `D5` es la garantía — el usuario local y el plano hacia SAP no cambian.
