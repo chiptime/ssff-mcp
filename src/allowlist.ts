@@ -26,6 +26,11 @@ export interface AllowlistEntry {
   entity: string;
   /** Omitted = both protocols (D-15); otherwise a non-empty, duplicate-free subset. */
   protocols?: AllowlistProtocol[];
+  /**
+   * Property names this entity exposes. ABSENT or EMPTY means every property:
+   * like the entity list itself, a field list only narrows.
+   */
+  fields?: string[];
 }
 
 /**
@@ -80,4 +85,42 @@ export function isEntityPermitted(
     return false;
   }
   return isEntityAllowed(allowlist, entityName, protocol);
+}
+
+/**
+ * The property names `entityName` exposes, or `undefined` when the allowlist does
+ * not restrict them.
+ *
+ * ABSENT and EMPTY both mean "no narrowing", exactly like the entity list itself:
+ * a list that names nothing narrows nothing. Callers MUST treat `undefined` as
+ * "every property".
+ */
+export function permittedFieldsFor(
+  allowlist: AllowlistEntry[] | undefined,
+  entityName: string,
+  protocol: AllowlistProtocol = "v2",
+): string[] | undefined {
+  if (allowlist === undefined) {
+    return undefined;
+  }
+  const entry = allowlist.find(
+    (candidate) =>
+      candidate.entity === entityName &&
+      (candidate.protocols === undefined || candidate.protocols.includes(protocol)),
+  );
+  if (entry === undefined || entry.fields === undefined || entry.fields.length === 0) {
+    return undefined;
+  }
+  return entry.fields;
+}
+
+/** True when `field` may be read from `entityName` under `allowlist`. */
+export function isFieldPermitted(
+  allowlist: AllowlistEntry[] | undefined,
+  entityName: string,
+  field: string,
+  protocol: AllowlistProtocol = "v2",
+): boolean {
+  const fields = permittedFieldsFor(allowlist, entityName, protocol);
+  return fields === undefined || fields.includes(field);
 }
