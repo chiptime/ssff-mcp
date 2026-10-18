@@ -19,8 +19,9 @@ import { executeBatchGet, sanitizeEmbeddedFailure } from "./batch.js";
 import { isEntityPermitted } from "./allowlist.js";
 import {
   checkExpandRoutes,
+  checkExpressionReferences,
   checkNavigationPath,
-  navigationPathsInExpression,
+  expressionReferences,
   type NavigationLookup,
 } from "./allowlist-navigation.js";
 import { parseExpand } from "./expand.js";
@@ -269,6 +270,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     expand: string | undefined,
     filter: string | undefined,
     orderby: string | undefined,
+    select: string | undefined,
   ): Promise<void> {
     const lookup = navigationLookupFor(target, alias);
     const allowlist = env.entityAllowlist;
@@ -320,16 +322,21 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       }
     }
 
-    // `$filter`/`$orderby` can reference a navigation (`navProp/field`). The
-    // production shapes are narrow, so this is a conservative scan rather than a
-    // full expression parser.
-    for (const expression of [filter, orderby]) {
+    // A denied entity must be unreachable through ANY option, so filter, orderby
+    // and select are all inspected: a path is walked hop by hop, and a bare
+    // identifier is rejected when it happens to be a navigation of this entity
+    // (`$select=empInfo` names a denied association and is never dispatched).
+    for (const [name, expression] of [
+      ["filter", filter],
+      ["orderby", orderby],
+      ["select", select],
+    ] as const) {
       if (expression === undefined) {
         continue;
       }
-      const expressionVerdict = await checkExpandRoutes(
+      const expressionVerdict = await checkExpressionReferences(
         pathVerdict.reached,
-        navigationPathsInExpression(expression),
+        expressionReferences(expression),
         allowlist,
         denylist,
         lookup,
@@ -337,13 +344,13 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       if (expressionVerdict.kind === "denied") {
         throw new SanitizedError(
           "ENTITY_NOT_ALLOWED",
-          "a navigation in the filter or orderby is not permitted by the configured entityAllowlist",
+          `a navigation referenced by ${name} is not permitted by the configured entityAllowlist`,
         );
       }
       if (expressionVerdict.kind === "unresolvable") {
         throw new SanitizedError(
           "NAVIGATION_NOT_ALLOWED",
-          "a navigation in the filter or orderby could not be resolved from the cached metadata; if the catalog changed, run `ssff-mcp cache invalidate <alias>` and retry",
+          `a navigation referenced by ${name} could not be resolved from the cached metadata; if the catalog changed, run \`ssff-mcp cache invalidate <alias>\` and retry`,
         );
       }
     }
@@ -597,6 +604,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           args.expand,
           args.filter,
           args.orderby,
+          args.select,
         );
 
         // Exactly one fetch per call; next links are never followed.
@@ -715,6 +723,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           expand: string | undefined;
           filter: string | undefined;
           orderby: string | undefined;
+          select: string | undefined;
           pathAndQuery: string;
           bindingOptions: Record<string, unknown>;
           topClamped: boolean;
@@ -764,6 +773,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
             expand: item.expand,
             filter: item.filter,
             orderby: item.orderby,
+            select: item.select,
             pathAndQuery,
             bindingOptions,
             topClamped,
@@ -802,6 +812,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
             item.expand,
             item.filter,
             item.orderby,
+            item.select,
           );
         }
 
