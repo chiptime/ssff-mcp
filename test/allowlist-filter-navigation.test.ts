@@ -1,57 +1,76 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { navigationPathsInExpression } from "../src/allowlist-navigation.js";
+import { expressionReferences } from "../src/allowlist-navigation.js";
 
 /**
- * `$filter`/`$orderby` can reference a navigation (`navProp/field`). The
- * production-verified shapes are narrow — `externalCodeNav/userId eq '<id>'` and
- * `cust_centro/externalCode eq '<id>'` — so the extractor targets exactly that:
- * `name/name[...]` sequences outside quoted literals, with the final property
- * dropped because it is not a navigation.
+ * A denied entity must be unreachable through ANY query option, so references are
+ * extracted per IDENTIFIER rather than per pattern: a path (`A/B`) is walked, and
+ * a bare identifier matters when it happens to be a NavigationProperty
+ * (`$select=empInfo`, `$filter=empInfo ne null`).
+ *
+ * Operators (`eq`, `ne`, `and`, …) are identifier-shaped too. They are reported
+ * and then ignored by the checker, because they are never navigation names.
  */
 
-test("a plain scalar field yields no navigation route", () => {
-  assert.deepEqual(navigationPathsInExpression("userId eq '1'"), []);
-  assert.deepEqual(navigationPathsInExpression("externalCode eq 'X'"), []);
+function pathsOf(raw: string): string[][] {
+  return expressionReferences(raw).flatMap((reference) =>
+    reference.kind === "path" ? [reference.segments] : [],
+  );
+}
+
+function namesOf(raw: string): string[] {
+  return expressionReferences(raw).flatMap((reference) =>
+    reference.kind === "name" ? [reference.name] : [],
+  );
+}
+
+test("a plain scalar field is reported as a bare name, never as a path", () => {
+  assert.ok(namesOf("userId eq '1'").includes("userId"));
+  assert.deepEqual(pathsOf("userId eq '1'"), []);
 });
 
-test("the production navigation shapes yield their leading navigation", () => {
-  assert.deepEqual(navigationPathsInExpression("externalCodeNav/userId eq '1'"), [["externalCodeNav"]]);
-  assert.deepEqual(navigationPathsInExpression("cust_centro/externalCode eq 'C'"), [["cust_centro"]]);
+test("a bare navigation is reported, so $select and bare filters can be checked", () => {
+  assert.ok(namesOf("empInfo ne null").includes("empInfo"));
+  assert.ok(namesOf("userId,empInfo").includes("userId"));
+  assert.ok(namesOf("userId,empInfo").includes("empInfo"));
 });
 
-test("a deeper path keeps every hop except the final property", () => {
-  assert.deepEqual(navigationPathsInExpression("job/manager/id eq '1'"), [["job", "manager"]]);
+test("the production navigation shapes are reported as paths", () => {
+  assert.deepEqual(pathsOf("externalCodeNav/userId eq '1'"), [["externalCodeNav", "userId"]]);
+  assert.deepEqual(pathsOf("cust_centro/externalCode eq 'C'"), [["cust_centro", "externalCode"]]);
 });
 
-test("a slash inside a quoted literal is not a navigation", () => {
-  assert.deepEqual(navigationPathsInExpression("userId eq 'a/b'"), []);
-  assert.deepEqual(navigationPathsInExpression("userId eq 'it''s/a'"), []);
+test("a deeper path keeps every segment", () => {
+  assert.deepEqual(pathsOf("job/manager/id eq '1'"), [["job", "manager", "id"]]);
+});
+
+test("a slash inside a quoted literal is not a path", () => {
+  assert.deepEqual(pathsOf("userId eq 'a/b'"), []);
+  assert.deepEqual(pathsOf("userId eq 'it''s/a'"), []);
+  assert.ok(namesOf("userId eq 'a/b'").includes("userId"));
+  assert.ok(!namesOf("userId eq 'a/b'").includes("a"));
 });
 
 test("every predicate is inspected, not just the first", () => {
-  assert.deepEqual(
-    navigationPathsInExpression("externalCodeNav/userId eq '1' and cust_centro/externalCode eq 'C'"),
-    [["externalCodeNav"], ["cust_centro"]],
-  );
-  assert.deepEqual(
-    navigationPathsInExpression("userId eq '1' or externalCodeNav/userId eq '2'"),
-    [["externalCodeNav"]],
-  );
+  assert.deepEqual(pathsOf("externalCodeNav/userId eq '1' and cust_centro/externalCode eq 'C'"), [
+    ["externalCodeNav", "userId"],
+    ["cust_centro", "externalCode"],
+  ]);
+  assert.deepEqual(pathsOf("userId eq '1' or externalCodeNav/userId eq '2'"), [
+    ["externalCodeNav", "userId"],
+  ]);
 });
 
-test("operators and functions are not mistaken for paths", () => {
-  assert.deepEqual(navigationPathsInExpression("substringof('x',userId) eq true"), []);
-  assert.deepEqual(navigationPathsInExpression(""), []);
+test("functions and operators are not mistaken for paths", () => {
+  assert.deepEqual(pathsOf("substringof('x',externalCodeNav/userId) eq true"), [
+    ["externalCodeNav", "userId"],
+  ]);
+  assert.deepEqual(pathsOf(""), []);
 });
 
-test("orderby expressions work the same way", () => {
-  assert.deepEqual(navigationPathsInExpression("externalCodeNav/userId desc"), [["externalCodeNav"]]);
-});
-
-test("whitespace around the slash is still treated as a navigation", () => {
+test("whitespace around the slash is still treated as a path", () => {
   // OData v2 rejects this form, but checking it beats ignoring it.
-  assert.deepEqual(navigationPathsInExpression("externalCodeNav / userId eq '1'"), [["externalCodeNav"]]);
-  assert.deepEqual(navigationPathsInExpression("externalCodeNav/ userId eq '1'"), [["externalCodeNav"]]);
-  assert.deepEqual(navigationPathsInExpression("externalCodeNav /userId eq '1'"), [["externalCodeNav"]]);
+  assert.deepEqual(pathsOf("externalCodeNav / userId eq '1'"), [["externalCodeNav", "userId"]]);
+  assert.deepEqual(pathsOf("externalCodeNav/ userId eq '1'"), [["externalCodeNav", "userId"]]);
+  assert.deepEqual(pathsOf("externalCodeNav /userId eq '1'"), [["externalCodeNav", "userId"]]);
 });

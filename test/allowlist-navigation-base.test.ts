@@ -184,3 +184,29 @@ test("an encoded path cannot move the entity an $expand resolves from", async ()
     assert.equal(requests.filter((r) => !r.url.includes("$metadata")).length, 0);
   });
 });
+
+test("$select inside $expand naming a denied association is rejected", async () => {
+  const { fetch } = responder();
+  await withTestServer({ configPath: await configPath(), fetchImpl: fetch }, async (client) => {
+    // The path is User, but the select applies to EmpJob (via `job`), whose
+    // `manager` points at the denied Payroll.
+    const result = await callTool(client, "query_entity", {
+      environment: "prod",
+      entityPath: "User",
+      expand: "job($select=manager)",
+    });
+    assert.equal(errorPayload(result).code, "ENTITY_NOT_ALLOWED");
+  });
+});
+
+test("$select inside $expand with scalar properties still works", async () => {
+  const { fetch } = responder();
+  await withTestServer({ configPath: await configPath(), fetchImpl: fetch }, async (client) => {
+    const result = await callTool(client, "query_entity", {
+      environment: "prod",
+      entityPath: "User",
+      expand: "job($select=id)",
+    });
+    assert.equal(result.isError, undefined, JSON.stringify(result));
+  });
+});

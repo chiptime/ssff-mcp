@@ -181,3 +181,54 @@ test("a scalar $filter is not disturbed, even with a slash in its literal", asyn
     },
   );
 });
+
+test("$select naming a denied association is rejected", async () => {
+  const { fetch, requests } = responder();
+  await withTestServer(
+    { configPath: await configPath([{ entity: "cust_Equipo" }]), fetchImpl: fetch },
+    async (client) => {
+      // `externalCodeNav` points at User, which is not allowed. Even though
+      // $select alone returns only a deferred link, the denied entity must not be
+      // nameable through any option.
+      const result = await callTool(client, "query_entity", {
+        environment: "prod",
+        entityPath: "cust_Equipo",
+        select: "externalCode,externalCodeNav",
+      });
+      assert.equal(errorPayload(result).code, "ENTITY_NOT_ALLOWED");
+      assert.equal(dataRequests(requests), 0);
+    },
+  );
+});
+
+test("$select with only scalar properties still works", async () => {
+  const { fetch } = responder();
+  await withTestServer(
+    { configPath: await configPath([{ entity: "cust_Equipo" }]), fetchImpl: fetch },
+    async (client) => {
+      const result = await callTool(client, "query_entity", {
+        environment: "prod",
+        entityPath: "cust_Equipo",
+        select: "externalCode",
+      });
+      assert.equal(result.isError, undefined, JSON.stringify(result));
+    },
+  );
+});
+
+test("a bare navigation in $filter is rejected instead of reaching SAP", async () => {
+  const { fetch, requests } = responder();
+  await withTestServer(
+    { configPath: await configPath([{ entity: "cust_Equipo" }]), fetchImpl: fetch },
+    async (client) => {
+      // SAP answers 500 for this shape; rejecting it here is both safer and clearer.
+      const result = await callTool(client, "query_entity", {
+        environment: "prod",
+        entityPath: "cust_Equipo",
+        filter: "externalCodeNav ne null",
+      });
+      assert.equal(errorPayload(result).code, "ENTITY_NOT_ALLOWED");
+      assert.equal(dataRequests(requests), 0);
+    },
+  );
+});

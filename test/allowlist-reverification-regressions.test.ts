@@ -17,15 +17,22 @@ test("S6/S8 and O2: a plain $select list accepts whitespace around its commas", 
     "manager($select= a , b )",
     "manager($select=cust_employeeId , cust_costCenter_1)",
   ]) {
-    assert.deepEqual(parseExpand(expand), { ok: true, routes: [["manager"]] }, expand);
+    const parsed = parseExpand(expand);
+    assert.ok(parsed.ok, expand);
+    assert.deepEqual(parsed.routes, [["manager"]], expand);
   }
 });
 
 test("whitespace is tolerated around separators in every position", () => {
-  assert.deepEqual(parseExpand(" a , b / c "), { ok: true, routes: [["a"], ["b", "c"]] });
+  assert.deepEqual(parseExpand(" a , b / c "), {
+    ok: true,
+    routes: [["a"], ["b", "c"]],
+    selections: [],
+  });
   assert.deepEqual(parseExpand("a( $select = x , y ; $expand = b )"), {
     ok: true,
     routes: [["a"], ["a", "b"]],
+    selections: [{ route: ["a"], properties: ["x", "y"] }],
   });
 });
 
