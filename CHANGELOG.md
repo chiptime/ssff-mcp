@@ -14,6 +14,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Hosted mode: `ssff-mcp serve` over Streamable HTTP** (FR-154..FR-164). One
+  `/mcp` endpoint (POST/GET/DELETE) plus a public `GET /healthz`, no framework
+  beyond `node:http`. Every request re-authenticates (`Authorization: Bearer` or
+  `X-API-Key`), the presented key resolves a tenant **and** an environment scope,
+  and each session is bound to the key, tenant and scope that opened it — another
+  key cannot ride an existing session, not even inside the same tenant. Sessions
+  are capped (`SSFF_MAX_SESSIONS`, default 50) and swept when idle
+  (`SSFF_SESSION_IDLE_MS`, default 5 min) so vanished clients do not leak.
+  `SIGTERM`/`SIGINT` drain in-flight work for up to 10 s. Host headers are checked
+  against `SSFF_ALLOWED_HOSTS` (loopback only by default) and a browser `Origin`
+  must match the request host. A non-empty `PORT` with no command selects HTTP;
+  STDIO behavior is unchanged.
+- **`ssff-mcp key hash`** (FR-170): reads one line from stdin and prints only the
+  sha-256 digest, so a key never reaches argv, history or logs.
+- **Official container image** (`Dockerfile`, FR-169): multi-stage, Node 22
+  alpine, runs as the unprivileged `node` user, with a `/healthz` healthcheck.
+  `.dockerignore` allowlists the build inputs, so no tenant config or `.env` can
+  enter the build context. `config.hosted.template.json` documents the hosted
+  file shape with placeholders that fail validation until replaced.
+- **Hosting guide** (`docs/hosting.md`): Dokploy + TLS pilot path, mounted config
+  and cache volumes, the key model, server settings, and connection examples for
+  OpenCode, Codex, VS Code/Copilot, Claude Desktop, Pi and agy — with their
+  unverified limitations stated explicitly.
+
+### Changed
+
+- **Every tenant boundary is now explicit** (FR-160/FR-161/FR-166). Environment
+  listings and resources only expose aliases the presented key may use. OAuth
+  token caches are keyed by tenant, alias and credential identity instead of the
+  bare alias, and the shared `lastExpiresInSeconds` race is gone. Continuation
+  cursors are bound to the tenant as well as the alias, path and options. The
+  response-size cap is resolved per request instead of mutating process-global
+  state. A key hash matching several tenants/environments is denied instead of
+  picking one.
+- Metadata cache file names now escape the separator inside each component, so
+  `("a-b", "c")` and `("a", "b-c")` can no longer collide.
+
+### Fixed
+
 - **Multi-tenant configuration shape** (groundwork for the hosted mode,
   `PRD-feature-multitenant-hosting.md`). The config file now also accepts a
   `tenants` level: `tenants.<id>` carries its own environments plus tenant-level

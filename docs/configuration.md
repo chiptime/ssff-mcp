@@ -81,7 +81,8 @@ The file accepts **two shapes**:
 - **Tenants:** everything nests under `tenants.<id>`. This is the shape for
   `ssff-mcp serve` (multi-tenant hosting); in `stdio` it must declare exactly
   **one** tenant — two or more are rejected with `CONFIG_INVALID` pointing at
-  `serve`.
+  `serve`. The HTTP edge authenticates each request and loads only the matching
+  tenant slice; see [Hosting](hosting.md) for the mounted-file, TLS and key setup.
 
 ```json
 {
