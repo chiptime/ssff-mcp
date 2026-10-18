@@ -71,6 +71,50 @@ a non-TTY run exits with code `2`.
 }
 ```
 
+## Multi-tenant shape
+
+The file accepts **two shapes**:
+
+- **Flat (legacy):** `environments` at the root, as in the example above. It
+  auto-migrates to a single tenant **`default`** (a warning is printed once);
+  everything keeps working unchanged.
+- **Tenants:** everything nests under `tenants.<id>`. This is the shape for
+  `ssff-mcp serve` (multi-tenant hosting); in `stdio` it must declare exactly
+  **one** tenant — two or more are rejected with `CONFIG_INVALID` pointing at
+  `serve`.
+
+```json
+{
+  "tenants": {
+    "acme": {
+      "apiKeyHash": "64-hex sha-256 digest of the client-wide key",
+      "entityAllowlist": [ { "entity": "User" }, { "entity": "EmpJob" } ],
+      "entityDenylist":  [ { "entity": "PerPersonal" } ],
+      "environments": {
+        "dev":  { "baseUrl": "…", "auth": { "…": "…" }, "apiKeyHash": "…only reaches dev…" },
+        "prod": { "baseUrl": "…", "auth": { "…": "…" } }
+      }
+    }
+  },
+  "defaultLocale": "es_ES",
+  "maxResponseBytes": 262144
+}
+```
+
+Semantics:
+
+- **Lists — tenant base, environment override.** A tenant-level
+  `entityAllowlist`/`entityDenylist` is the default for every environment; an
+  environment's own list **replaces** it (never merges). Precedence inside an
+  environment is unchanged: `denylist > allowlist > the API account's permissions`.
+- **`apiKeyHash`** is the sha-256 hex digest of an API key, stored hashed
+  (never in clear). At **tenant** level it reaches **all** the tenant's
+  environments; at **environment** level it reaches **only that environment**.
+  It is consumed by the hosted mode (`serve`) and ignored by `stdio`.
+- **Combining both shapes** (`environments` and `tenants` at the root) is
+  ambiguous and rejected.
+- `defaultLocale` and `maxResponseBytes` stay **global** in both shapes.
+
 ## Fields
 
 | Field | Required | Meaning |
@@ -175,6 +219,7 @@ fix.
 |---|---|
 | `entity` | OData entity set name (`^[A-Za-z_][A-Za-z0-9_]*$`), matched case-sensitively and exactly against the **first** path segment. |
 | `protocols` | Optional array of `"v2"` and/or `"v4"`, without duplicates. Omitted means both protocols. This build is v2-only, so an entry that excludes `"v2"` never applies. |
+| `fields` | **Allowlist only.** Optional array of property names. Present (and non-empty) means the entity exposes only those properties — plus its keys, which are always readable. Absent or `[]` means every property. Rejected on `entityDenylist`. |
 
 Semantics, per environment. **Precedence: denylist > allowlist > the API account's own permissions.**
 
@@ -194,6 +239,25 @@ Semantics, per environment. **Precedence: denylist > allowlist > the API account
 - **Metadata is filtered too** — the entity catalog, the per-entity schema
   resource, `inspect_entity` and the `sf://` resources apply that environment's lists exactly
   like a data read.
+
+**Field-level granularity.** An allowlist entry may carry `fields`, restricting the properties
+that entity exposes:
+
+```json
+{ "entity": "User", "fields": ["userId", "firstName"] }
+```
+
+- Absent or `[]` means every property; a non-empty list narrows.
+- The entity's **keys are always readable** (added implicitly), so `__metadata.uri` never leaks
+  a denied property and every record stays referenceable.
+- References to a non-permitted property — in `$select`, `$filter`, `$orderby` (including
+  `navProp/property`, checked against the entity the path reaches) or `$select` inside
+  `$expand` — fail with `ENTITY_NOT_ALLOWED`.
+- The **response payload is redacted** to the permitted properties; expanded records use their
+  own entity's `fields`. The schema surfaces (`inspect_entity`,
+  `sf://{env}/entities/{entitySet}`) hide non-permitted properties.
+- When `fields` apply, `output: "xml"` is **downgraded to JSON** with `outputDowngraded: true`
+  in the response: redacting Atom reliably would cost more than the verbose format saves.
 
 Using an empty value nowhere narrows anything, so an accidentally empty list
 fails **open**, not closed — that is the documented model. The `init` wizard

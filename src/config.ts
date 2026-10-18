@@ -72,6 +72,13 @@ export interface EnvironmentConfig {
 }
 
 export interface SsffConfig {
+  /**
+   * Identifier of the tenant this config was resolved from (D-118/D-119):
+   * the declared id in the tenants shape, "default" for the migrated flat
+   * shape and inline mode. Namespaces the metadata cache (D-121); the engine
+   * itself never reads it.
+   */
+  tenantId?: string;
   environments: Record<string, EnvironmentConfig>;
   /** Preferred language for guidance prose (FR-76); absent when not configured. */
   defaultLocale?: string;
@@ -124,27 +131,26 @@ const authSchema = z.discriminatedUnion("type", [basicAuthSchema, oauthAuthSchem
 // OData entity set name (case-sensitive exact match; no predicates here).
 const ENTITY_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-/**
- * Build the schema for one entity list (`entityAllowlist` or `entityDenylist`),
- * so validation messages always name the field the user actually wrote.
- */
-function entityListSchema(field: "entityAllowlist" | "entityDenylist") {
-  const protocols = z
-    .array(z.enum(["v2", "v4"]))
-    .min(1, `${field} protocols must be a non-empty array`)
-    .refine((values) => new Set(values).size === values.length, {
-      message: `${field} protocols must not contain duplicates`,
-    });
-  const entry = z
-    .object({
-      entity: z.string().regex(ENTITY_NAME_PATTERN, {
-        message: `${field} entity must be an OData entity set name matching ^[A-Za-z_][A-Za-z0-9_]*$`,
-      }),
-      protocols: protocols.optional(),
-    })
-    .strict();
-  // Duplicate entities are ambiguous (which protocols apply?) => rejected.
-  return z.array(entry).superRefine((entries, ctx) => {
+const allowlistProtocolsSchema = z
+  .array(z.enum(["v2", "v4"]))
+  .min(1, "protocols must be a non-empty array")
+  .refine((values) => new Set(values).size === values.length, {
+    message: "protocols must not contain duplicates",
+  });
+
+const fieldNamesSchema = z
+  .array(
+    z.string().regex(ENTITY_NAME_PATTERN, {
+      message: "fields must be property names matching ^[A-Za-z_][A-Za-z0-9_]*$",
+    }),
+  )
+  .refine((values) => new Set(values).size === values.length, {
+    message: "fields must not contain duplicates",
+  });
+
+/** Duplicate entities are ambiguous (which protocols/fields apply?) => rejected. */
+function rejectDuplicateEntities(field: "entityAllowlist" | "entityDenylist") {
+  return (entries: Array<{ entity: string }>, ctx: z.RefinementCtx): void => {
     const seen = new Set<string>();
     for (const [index, item] of entries.entries()) {
       if (seen.has(item.entity)) {
@@ -156,11 +162,37 @@ function entityListSchema(field: "entityAllowlist" | "entityDenylist") {
       }
       seen.add(item.entity);
     }
-  });
+  };
 }
 
-const entityAllowlistSchema = entityListSchema("entityAllowlist");
-const entityDenylistSchema = entityListSchema("entityDenylist");
+// `fields` exists ONLY on the allowlist: a property denylist would add a second,
+// ambiguous precedence rule on top of the entity denylist.
+const entityAllowlistSchema = z
+  .array(
+    z
+      .object({
+        entity: z.string().regex(ENTITY_NAME_PATTERN, {
+          message: "entityAllowlist entity must be an OData entity set name matching ^[A-Za-z_][A-Za-z0-9_]*$",
+        }),
+        protocols: allowlistProtocolsSchema.optional(),
+        fields: fieldNamesSchema.optional(),
+      })
+      .strict(),
+  )
+  .superRefine(rejectDuplicateEntities("entityAllowlist"));
+
+const entityDenylistSchema = z
+  .array(
+    z
+      .object({
+        entity: z.string().regex(ENTITY_NAME_PATTERN, {
+          message: "entityDenylist entity must be an OData entity set name matching ^[A-Za-z_][A-Za-z0-9_]*$",
+        }),
+        protocols: allowlistProtocolsSchema.optional(),
+      })
+      .strict(),
+  )
+  .superRefine(rejectDuplicateEntities("entityDenylist"));
 
 const environmentSchema = z
   .object({
@@ -171,6 +203,15 @@ const environmentSchema = z
     entityAllowlist: entityAllowlistSchema.optional(),
     // Always denied in this environment, whatever the allowlist says.
     entityDenylist: entityDenylistSchema.optional(),
+    // D-120: per-environment API key (sha-256 hex digest). A key declared here
+    // reaches ONLY this environment; consumed by `ssff-mcp serve`, ignored by
+    // stdio. Absent => the tenant-level key (or no key) applies.
+    apiKeyHash: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/, {
+        message: "apiKeyHash must be the sha-256 hex digest of the key (64 hex characters)",
+      })
+      .optional(),
   })
   .strict();
 
@@ -181,23 +222,67 @@ const aliasSchema = z.string().refine((value) => value.trim().length > 0, {
 /** A4: the Windows ACL warning is informative, so one per process is enough. */
 let windowsAclWarningEmitted = false;
 
+/** D-119: the legacy-shape migration warning is informative; once per process. */
+let legacyShapeWarningEmitted = false;
+
+// Global settings shared by both config shapes. `defaultLocale`: lax BCP-47
+// (`es`, `es_ES`, `es-ES`) — the format is validated, not whether a catalog
+// exists for it (an untranslated locale falls back to en_US at use time).
+const defaultLocaleSchema = z
+  .string()
+  .regex(/^[A-Za-z]{2}([-_][A-Za-z]{2})?$/, {
+    message: "defaultLocale must be a language or language_REGION code such as es or es_ES",
+  })
+  .optional();
+
+// Optional cap, in bytes, for what is returned to the model (D-75/FR-86).
+// Positive integer; absent falls back to SF_MAX_RESPONSE_BYTES, then 256 KiB.
+const maxResponseBytesSchema = z.number().int().positive().optional();
+
+/** Legacy flat shape (auto-migrates to a single "default" tenant, D-119). */
 const configSchema = z
   .object({
     environments: z.record(aliasSchema, environmentSchema),
     // Implicit environment selection is forbidden: null/absent only.
     defaultEnvironment: z.null().optional(),
-    // Optional language preference for guidance prose (FR-76/D-70). Lax BCP-47
-    // (`es`, `es_ES`, `es-ES`): the format is validated, not whether a catalog
-    // exists for it (an untranslated locale falls back to en_US at use time).
-    defaultLocale: z
+    defaultLocale: defaultLocaleSchema,
+    maxResponseBytes: maxResponseBytesSchema,
+  })
+  .strict();
+
+const tenantIdSchema = z.string().refine((value) => value.trim().length > 0, {
+  message: "tenant id must be a non-empty string",
+});
+
+/**
+ * One tenant (D-119): its environments plus tenant-level defaults. The lists
+ * are the BASE for every environment; a per-environment list REPLACES it
+ * (never merges). `apiKeyHash` is the client-wide key (reaches every
+ * environment); per-environment keys narrow it to that environment (D-120).
+ */
+const tenantSchema = z
+  .object({
+    apiKeyHash: z
       .string()
-      .regex(/^[A-Za-z]{2}([-_][A-Za-z]{2})?$/, {
-        message: "defaultLocale must be a language or language_REGION code such as es or es_ES",
+      .regex(/^[0-9a-f]{64}$/, {
+        message: "apiKeyHash must be the sha-256 hex digest of the key (64 hex characters)",
       })
       .optional(),
-    // Optional cap, in bytes, for what is returned to the model (D-75/FR-86).
-    // Positive integer; absent falls back to SF_MAX_RESPONSE_BYTES, then 256 KiB.
-    maxResponseBytes: z.number().int().positive().optional(),
+    entityAllowlist: entityAllowlistSchema.optional(),
+    entityDenylist: entityDenylistSchema.optional(),
+    environments: z.record(aliasSchema, environmentSchema),
+  })
+  .strict();
+
+/** Multi-tenant shape (PRD-feature-multitenant-hosting D-119). */
+const tenantsFormSchema = z
+  .object({
+    tenants: z.record(tenantIdSchema, tenantSchema).refine((map) => Object.keys(map).length > 0, {
+      message: "tenants must declare at least one tenant",
+    }),
+    defaultEnvironment: z.null().optional(),
+    defaultLocale: defaultLocaleSchema,
+    maxResponseBytes: maxResponseBytesSchema,
   })
   .strict();
 
@@ -514,7 +599,7 @@ function synthesizeInlineConfig(env: NodeJS.ProcessEnv): SsffConfig {
   if (entityDenylist !== undefined) {
     inlineEnvironment.entityDenylist = entityDenylist;
   }
-  return { environments: { [alias]: inlineEnvironment }, inline: true };
+  return { tenantId: "default", environments: { [alias]: inlineEnvironment }, inline: true };
 }
 
 export async function loadConfig(options: LoadConfigOptions = {}): Promise<SsffConfig> {
@@ -574,19 +659,74 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<SsffC
     );
   }
 
-  const result = configSchema.safeParse(parsed);
-  if (!result.success) {
+  // Shape detection (D-119): the tenants shape wins only when present; the
+  // flat shape auto-migrates to a single "default" tenant. Both at once is
+  // ambiguous and rejected fail-closed.
+  const usingTenantsShape = hasOwnKey(parsed, "tenants");
+  if (usingTenantsShape && hasOwnKey(parsed, "environments")) {
     throw new SanitizedError(
       "CONFIG_INVALID",
-      `configuration file at ${CONFIG_TILDE_PATH} is invalid: ${sanitizeIssueText(formatIssues(result.error))}`,
+      `configuration file at ${CONFIG_TILDE_PATH} is invalid: "environments" and "tenants" together is ambiguous; keep the flat shape OR move everything under "tenants"`,
     );
+  }
+
+  let tenantId: string;
+  let tenantEnvironments: Record<string, z.infer<typeof environmentSchema>>;
+  let tenantAllowlist: AllowlistEntry[] | undefined;
+  let tenantDenylist: AllowlistEntry[] | undefined;
+  let globalLocale: string | undefined;
+  let globalMaxBytes: number | undefined;
+
+  if (usingTenantsShape) {
+    const parsedTenants = tenantsFormSchema.safeParse(parsed);
+    if (!parsedTenants.success) {
+      throw new SanitizedError(
+        "CONFIG_INVALID",
+        `configuration file at ${CONFIG_TILDE_PATH} is invalid: ${sanitizeIssueText(formatIssues(parsedTenants.error))}`,
+      );
+    }
+    const ids = Object.keys(parsedTenants.data.tenants);
+    if (ids.length > 1) {
+      // stdio resolves exactly one tenant (D-118); several require `serve`.
+      throw new SanitizedError(
+        "CONFIG_INVALID",
+        `configuration file at ${CONFIG_TILDE_PATH} declares ${ids.length} tenants; this mode resolves exactly one tenant and multiple tenants are served by ssff-mcp serve`,
+      );
+    }
+    tenantId = ids[0]!;
+    const tenant = parsedTenants.data.tenants[tenantId]!;
+    tenantEnvironments = tenant.environments;
+    tenantAllowlist = tenant.entityAllowlist;
+    tenantDenylist = tenant.entityDenylist;
+    globalLocale = parsedTenants.data.defaultLocale;
+    globalMaxBytes = parsedTenants.data.maxResponseBytes;
+  } else {
+    const parsedFlat = configSchema.safeParse(parsed);
+    if (!parsedFlat.success) {
+      throw new SanitizedError(
+        "CONFIG_INVALID",
+        `configuration file at ${CONFIG_TILDE_PATH} is invalid: ${sanitizeIssueText(formatIssues(parsedFlat.error))}`,
+      );
+    }
+    tenantId = "default";
+    tenantEnvironments = parsedFlat.data.environments;
+    tenantAllowlist = undefined;
+    tenantDenylist = undefined;
+    globalLocale = parsedFlat.data.defaultLocale;
+    globalMaxBytes = parsedFlat.data.maxResponseBytes;
+    if (!legacyShapeWarningEmitted) {
+      legacyShapeWarningEmitted = true;
+      onWarning(
+        `ssff-mcp warning: configuration file at ${CONFIG_TILDE_PATH} uses the legacy flat shape; treating it as a single tenant "default" — wrap it under "tenants" to adopt the multi-tenant shape`,
+      );
+    }
   }
 
   const environments: Record<string, EnvironmentConfig> = {};
   const shouldResolve = (alias: string) =>
     options.resolveSecretsFor === undefined || options.resolveSecretsFor === alias;
 
-  for (const [alias, env] of Object.entries(result.data.environments)) {
+  for (const [alias, env] of Object.entries(tenantEnvironments)) {
     const resolve = shouldResolve(alias);
     if (env.auth.type === "basic") {
       const password = resolve
@@ -605,21 +745,24 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<SsffC
         auth: materializeOAuthAuth(env.auth, privateKey),
       };
     }
-    // Both keys stay ABSENT when not configured. An empty allowlist is
-    // preserved as-is: it narrows nothing (it is NOT a deny-all).
-    if (env.entityAllowlist !== undefined) {
-      environments[alias]!.entityAllowlist = env.entityAllowlist;
+    // Lists resolve as: per-environment override, else tenant base (D-119).
+    // Both keys stay ABSENT when neither configures them. An empty allowlist
+    // is preserved as-is: it narrows nothing (it is NOT a deny-all).
+    const allowlist = env.entityAllowlist ?? tenantAllowlist;
+    const denylist = env.entityDenylist ?? tenantDenylist;
+    if (allowlist !== undefined) {
+      environments[alias]!.entityAllowlist = allowlist;
     }
-    if (env.entityDenylist !== undefined) {
-      environments[alias]!.entityDenylist = env.entityDenylist;
+    if (denylist !== undefined) {
+      environments[alias]!.entityDenylist = denylist;
     }
   }
-  const config: SsffConfig = { environments };
-  if (result.data.defaultLocale !== undefined) {
-    config.defaultLocale = result.data.defaultLocale;
+  const config: SsffConfig = { tenantId, environments };
+  if (globalLocale !== undefined) {
+    config.defaultLocale = globalLocale;
   }
-  if (result.data.maxResponseBytes !== undefined) {
-    config.maxResponseBytes = result.data.maxResponseBytes;
+  if (globalMaxBytes !== undefined) {
+    config.maxResponseBytes = globalMaxBytes;
   }
 
   // A present config.json always wins; make a silently-ignored inline mode explicit.

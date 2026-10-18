@@ -12,6 +12,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Field-level granularity: `fields` on each `entityAllowlist` entry.**
+  `{ "entity": "User", "fields": ["userId", "firstName"] }` restricts the properties that
+  entity exposes. Absent or `[]` means every property, exactly like the entity list itself.
+  The entity's **keys are always readable** (added implicitly), so `__metadata.uri` never
+  leaks a denied property and every record stays referenceable. Enforcement is complete:
+  references to a non-permitted property in `$select`, `$filter`, `$orderby` — including
+  `navProp/property` paths, which are checked against the entity the path reaches — and in
+  `$select` inside `$expand` fail with `ENTITY_NOT_ALLOWED`; the **response payload is
+  redacted** (without this, omitting `$select` would return every property); expanded records
+  are redacted with their own entity's `fields`; and `inspect_entity` plus the
+  `sf://{env}/entities/{entitySet}` resource hide non-permitted properties from the schema —
+  if you cannot read it, you cannot discover it. `fields` is rejected on `entityDenylist`:
+  a property denylist would add a second, ambiguous precedence rule.
+- **`output: "xml"` is downgraded when `fields` apply.** Redacting Atom means rewriting
+  namespaces, `m:properties`, `m:null` and nested entries; instead the response comes back as
+  JSON with `outputDowngraded: true`. SuccessFactors Atom is also 2–3× the tokens of the same
+  JSON, so the downgrade is the cheaper answer for the model. XML is untouched when no
+  `fields` are configured.
+
 ### Fixed
 
 - **The advertised version is no longer hardcoded.** The outgoing `User-Agent` and the MCP
