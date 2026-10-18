@@ -1,0 +1,11 @@
+# Allowlist the build inputs: config files, .env, git, caches and tests never
+# enter the context, including arbitrary tenant configs beside the project.
+**
+!Dockerfile
+!.dockerignore
+!package.json
+!pnpm-lock.yaml
+!tsconfig.json
+!LICENSE
+!src/
+!src/**

@@ -1,7 +1,7 @@
 {
   "name": "ssff-mcp",
   "version": "0.4.0",
-  "description": "Local read-only MCP server for SAP SuccessFactors OData v2 (STDIO transport)",
+  "description": "Read-only MCP server for SAP SuccessFactors OData v2 (STDIO and authenticated Streamable HTTP)",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -30,7 +30,8 @@
   "files": [
     "dist/src",
     "assets",
-    "config.template.json"
+    "config.template.json",
+    "config.hosted.template.json"
   ],
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",

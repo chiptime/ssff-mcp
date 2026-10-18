@@ -1,0 +1,24 @@
+{
+  "tenants": {
+    "pilot": {
+      "entityAllowlist": [{ "entity": "User" }, { "entity": "EmpJob" }],
+      "environments": {
+        "dev": {
+          "apiKeyHash": "REPLACE_WITH_SHA256_DIGEST_OF_DEV_KEY",
+          "baseUrl": "https://replace-dev.successfactors.com",
+          "auth": { "type": "basic", "username": "integration@dev", "password": { "fromEnv": "SF_PILOT_DEV_PASSWORD" } }
+        },
+        "test": {
+          "apiKeyHash": "REPLACE_WITH_SHA256_DIGEST_OF_TEST_KEY",
+          "baseUrl": "https://replace-test.successfactors.com",
+          "auth": { "type": "basic", "username": "integration@test", "password": { "fromEnv": "SF_PILOT_TEST_PASSWORD" } }
+        },
+        "prod": {
+          "apiKeyHash": "REPLACE_WITH_SHA256_DIGEST_OF_PROD_KEY",
+          "baseUrl": "https://replace-prod.successfactors.com",
+          "auth": { "type": "basic", "username": "integration@prod", "password": { "fromEnv": "SF_PILOT_PROD_PASSWORD" } }
+        }
+      }
+    }
+  }
+}
