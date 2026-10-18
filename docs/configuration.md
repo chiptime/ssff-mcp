@@ -71,6 +71,50 @@ a non-TTY run exits with code `2`.
 }
 ```
 
+## Multi-tenant shape
+
+The file accepts **two shapes**:
+
+- **Flat (legacy):** `environments` at the root, as in the example above. It
+  auto-migrates to a single tenant **`default`** (a warning is printed once);
+  everything keeps working unchanged.
+- **Tenants:** everything nests under `tenants.<id>`. This is the shape for
+  `ssff-mcp serve` (multi-tenant hosting); in `stdio` it must declare exactly
+  **one** tenant — two or more are rejected with `CONFIG_INVALID` pointing at
+  `serve`.
+
+```json
+{
+  "tenants": {
+    "acme": {
+      "apiKeyHash": "64-hex sha-256 digest of the client-wide key",
+      "entityAllowlist": [ { "entity": "User" }, { "entity": "EmpJob" } ],
+      "entityDenylist":  [ { "entity": "PerPersonal" } ],
+      "environments": {
+        "dev":  { "baseUrl": "…", "auth": { "…": "…" }, "apiKeyHash": "…only reaches dev…" },
+        "prod": { "baseUrl": "…", "auth": { "…": "…" } }
+      }
+    }
+  },
+  "defaultLocale": "es_ES",
+  "maxResponseBytes": 262144
+}
+```
+
+Semantics:
+
+- **Lists — tenant base, environment override.** A tenant-level
+  `entityAllowlist`/`entityDenylist` is the default for every environment; an
+  environment's own list **replaces** it (never merges). Precedence inside an
+  environment is unchanged: `denylist > allowlist > the API account's permissions`.
+- **`apiKeyHash`** is the sha-256 hex digest of an API key, stored hashed
+  (never in clear). At **tenant** level it reaches **all** the tenant's
+  environments; at **environment** level it reaches **only that environment**.
+  It is consumed by the hosted mode (`serve`) and ignored by `stdio`.
+- **Combining both shapes** (`environments` and `tenants` at the root) is
+  ambiguous and rejected.
+- `defaultLocale` and `maxResponseBytes` stay **global** in both shapes.
+
 ## Fields
 
 | Field | Required | Meaning |
