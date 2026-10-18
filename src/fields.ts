@@ -25,7 +25,14 @@ export interface EntitySchemaLike {
 /** Resolves the schema of an entity set (from the cached metadata). */
 export type SchemaLookup = (entitySet: string) => Promise<EntitySchemaLike | undefined>;
 
-/** The property names `entitySet` may expose, or undefined when unrestricted. */
+/**
+ * The property names `entitySet` may expose, or undefined when the allowlist does
+ * not restrict them.
+ *
+ * A configured field list whose schema cannot be resolved is NOT treated as
+ * "unrestricted": that would silently return the very properties the config
+ * wanted hidden. It fails closed instead.
+ */
 export async function allowedProperties(
   allowlist: AllowlistEntry[] | undefined,
   entitySet: string,
@@ -37,7 +44,9 @@ export async function allowedProperties(
   }
   const schema = await schemaLookup(entitySet);
   if (schema === undefined) {
-    return undefined;
+    throw new FieldNotPermittedError(
+      `"${entitySet}" declares fields but its schema could not be resolved from the cached metadata; refusing to return data that cannot be redacted`,
+    );
   }
   return new Set([...configured, ...schema.keys]);
 }
@@ -111,11 +120,15 @@ export async function redactValue(
   schemaLookup: SchemaLookup,
   navigationLookup: NavigationLookup,
 ): Promise<unknown> {
+  // Resolved first on purpose: a configured field list with no resolvable schema
+  // throws here, before any payload could be returned unredacted.
+  const allowed = await allowedProperties(allowlist, entitySet, schemaLookup);
   const schema = await schemaLookup(entitySet);
   if (schema === undefined) {
+    // Only reachable when the entity has NO configured fields, so there is
+    // nothing to redact; the value passes through untouched.
     return value;
   }
-  const allowed = await allowedProperties(allowlist, entitySet, schemaLookup);
   const navByName = new Map(schema.navigationProperties.map((nav) => [nav.name, nav]));
 
   if (Array.isArray(value)) {

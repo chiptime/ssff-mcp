@@ -407,13 +407,19 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     if (root === undefined) {
       return records;
     }
-    return await redactValue(
-      records,
-      root,
-      allowlist,
-      schemaLookupFor(target, alias),
-      navigationLookupFor(target, alias),
-    );
+    try {
+      return await redactValue(
+        records,
+        root,
+        allowlist,
+        schemaLookupFor(target, alias),
+        navigationLookupFor(target, alias),
+      );
+    } catch (cause) {
+      // A configured field list that cannot be enforced refuses the read rather
+      // than returning the payload unredacted.
+      throw toEntityNotAllowed(cause);
+    }
   }
 
   /** Hide non-permitted properties from a schema payload (keys stay visible). */

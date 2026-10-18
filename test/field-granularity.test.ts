@@ -5,6 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import { loadConfig } from "../src/config.js";
 import { permittedFieldsFor, type AllowlistEntry } from "../src/allowlist.js";
+import {
+  allowedProperties,
+  FieldNotPermittedError,
+  redactValue,
+} from "../src/fields.js";
 import { parseExpand } from "../src/expand.js";
 import {
   callTool,
@@ -297,6 +302,77 @@ test("parseExpand selections carry the property lists the field policy needs", (
   if (parsed.ok) {
     assert.deepEqual(parsed.selections, [{ route: ["job"], properties: ["id", "amount"] }]);
   }
+});
+
+test("a slash inside a $select within $expand never reaches the field checker", () => {
+  // `$select` accepts a flat property list only; a navigation path is a parse
+  // error, so no slash-containing string can reach assertPropertyPermitted.
+  assert.equal(parseExpand("job($select=nav/field)").ok, false);
+  assert.equal(parseExpand("job($select=nav)").ok, true);
+});
+
+/**
+ * The metadata lists the entity set but omits its EntityType, so classification
+ * passes while the schema does not resolve. A configured `fields` cannot be
+ * enforced there, and silently returning the payload would leak exactly what the
+ * config wanted hidden.
+ */
+const SCHEMALESS_METADATA = `<?xml version="1.0" encoding="utf-8"?>
+<edmx:Edmx xmlns:edmx="http://schemas.microsoft.com/ado/2007/06/edmx" Version="1.0">
+  <edmx:DataServices>
+    <Schema xmlns="http://schemas.microsoft.com/ado/2008/09/edm" Namespace="SFOData">
+      <EntityContainer Name="EntityContainer">
+        <EntitySet Name="User" EntityType="SFOData.Missing"/>
+      </EntityContainer>
+    </Schema>
+  </edmx:DataServices>
+</edmx:Edmx>
+`;
+
+/**
+ * A configured field list that cannot be enforced must refuse, never pass the
+ * payload through. The metadata fixture below cannot even reach this state: an
+ * EntitySet without its EntityType still yields an (empty) schema, so the guard
+ * is pinned directly rather than through a contrived document.
+ */
+test("a configured field list with an unresolvable schema fails closed", async () => {
+  const allowlist: AllowlistEntry[] = [{ entity: "User", fields: ["firstName"] }];
+  const noSchema = async (): Promise<undefined> => undefined;
+  const noNavigation = async (): Promise<undefined> => undefined;
+
+  await assert.rejects(
+    () => allowedProperties(allowlist, "User", noSchema),
+    (error: unknown) =>
+      error instanceof FieldNotPermittedError && /schema could not be resolved/.test(error.message),
+  );
+  await assert.rejects(
+    () => redactValue({ firstName: "Ana", salary: 45000 }, "User", allowlist, noSchema, noNavigation),
+    (error: unknown) => error instanceof FieldNotPermittedError,
+  );
+  // Without configured fields the same unresolvable schema is harmless: there is
+  // nothing to redact, so the value passes through.
+  assert.equal(await allowedProperties([{ entity: "User" }], "User", noSchema), undefined);
+});
+
+test("the same unresolvable schema stays usable when no fields are configured", async () => {
+  const configPath = await configFor([{ entity: "User" }]);
+  await withTestServer(
+    {
+      configPath,
+      disableDiskCache: true,
+      logSink: () => {},
+      fetchImpl: async (url) => {
+        if (url.endsWith("/$metadata")) return xmlResponse(SCHEMALESS_METADATA);
+        return jsonResponse({ d: { results: [RECORD] } });
+      },
+    },
+    async (client) => {
+      const result = await callTool(client, "query_entity", { environment: "prod", entityPath: "User" });
+      assert.equal(result.isError, undefined, JSON.stringify(result));
+      const record = (result.structuredContent as { records: Array<Record<string, unknown>> }).records[0]!;
+      assert.equal(record.salary, 45000, "without fields there is nothing to redact");
+    },
+  );
 });
 
 for (const tool of ["query_entity", "batch_get"] as const) {
