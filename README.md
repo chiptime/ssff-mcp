@@ -13,10 +13,11 @@ Cursor, Codex, Pi, or any MCP client — read your SuccessFactors data through
 natural language, safely: read-only by construction, one page per call, and with
 no way to write anything.
 
-> **Release status.** The published npm version is **0.3.0**. The `inspect_entity`
-> tool, the `ssff-mcp cache invalidate` command, the configurable response-size
-> cap and the Custom MDF improvements are on `main` and land in the next release.
-> If you need them today, [build from source](docs/development.md#build-and-test).
+> **Release status.** Published on npm — the
+> [registry page](https://www.npmjs.com/package/ssff-mcp) always shows the latest
+> published version, and [CHANGELOG.md](CHANGELOG.md) documents what each release
+> contains. Anything described here but missing from the changelog is still on
+> `main`: [build from source](docs/development.md#build-and-test) if you need it today.
 
 ## 🆚 ssff-mcp vs calling OData directly
 

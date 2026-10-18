@@ -33,11 +33,12 @@ Use a read-only, least-privileged account, restrict the config file to owner-onl
 secret sits on disk, and optionally pin an entity allowlist. Details in
 [Security](security.md).
 
-**The docs mention `inspect_entity`, but npm says 0.3.0 — why?**
-The **published** npm version is 0.3.0. `inspect_entity`, the `cache invalidate`
-command, the configurable size cap and the Custom MDF improvements are on `main`
-and land in the **next** release; until then, [build from source](development.md#build-and-test)
-if you need them.
+**Are the docs ahead of the published npm package?**
+The [npm registry page](https://www.npmjs.com/package/ssff-mcp) always shows the
+latest published version, and [CHANGELOG.md](../CHANGELOG.md) documents what each
+release contains. Anything described in these docs but missing from the changelog
+is still on `main`; until it ships, [build from source](development.md#build-and-test)
+if you need it.
 
 **Does it support OData v4?**
 No — OData v2 only. v4 is deferred until a tenant with a verified v4 endpoint
