@@ -16,6 +16,7 @@ Every tool error is a sanitized object `{ code, message }` (plus optional
 | `ENVIRONMENT_REQUIRED` | The call omitted `environment`. Only inline mode may omit it. |
 | `ENVIRONMENT_UNKNOWN` | The named environment is not configured. The server never falls back to another one. |
 | `ENTITY_NOT_ALLOWED` | Blocked by [`entityAllowlist` or `entityDenylist`](configuration.md#entity-allowlist-and-denylist). |
+| `NAVIGATION_NOT_ALLOWED` | A navigation segment or `$expand` route could not be resolved from the cached metadata. If the catalog changed, run `ssff-mcp cache invalidate <alias>` and retry. |
 | `PATH_INVALID` | Bad `entityPath`, unknown entity set, or a rejected `$`-segment. |
 | `OPTION_INVALID` | Bad or conflicting option (e.g. `skip` + `cursor`, `asOfDate` + `fromDate`, listing options with `entitySet`, control characters, malformed dates). |
 | `CURSOR_INVALID` | Cursor altered, reused with different arguments, or issued before a server restart. Re-run the query. |

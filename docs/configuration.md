@@ -182,13 +182,15 @@ Semantics, per environment. **Precedence: denylist > allowlist > the API account
   reachable. An empty list is **not** a deny-all.
 - **`entityAllowlist` non-empty** — only the listed entities are queryable; anything else is
   rejected with `ENTITY_NOT_ALLOWED` before any data request.
-- **`entityDenylist`** — the listed entities are denied for **direct entity access**, even when
-  the allowlist permits them (see `PerPersonal` in the example). There is **no wildcard**: deny
-  everything by listing what you want gone. **It does not yet apply to navigation segments or
-  `$expand`** — see the limits below.
-- **Navigation** — only the first path segment is checked; segments after it
-  (`User('123')/navProperty`) are not re-checked yet. `$expand` is not filtered either. Known
-  limits, tracked separately.
+- **`entityDenylist`** — the listed entities are denied for **direct entity access and for
+  navigation destinations**, even when the allowlist permits them (see `PerPersonal` in the
+  example). There is **no wildcard**: deny everything by listing what you want gone.
+- **Navigation and `$expand` are checked too.** Every hop is resolved to the entity set it
+  points at — a navigation segment names a NavigationProperty, not an entity set — and the
+  destination is checked against the same lists. A hop the metadata does not model fails with
+  `NAVIGATION_NOT_ALLOWED`, and an `$expand` the server cannot fully parse fails with
+  `OPTION_INVALID`; neither is ever dispatched. `$filter`/`$orderby` that reference navigation
+  paths remain unfiltered.
 - **Metadata is filtered too** — the entity catalog, the per-entity schema
   resource, `inspect_entity` and the `sf://` resources apply that environment's lists exactly
   like a data read.

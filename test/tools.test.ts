@@ -944,9 +944,10 @@ test("an entry restricted to [\"v2\"] allows the entity", async () => {
   });
 });
 
-test("navigation after an allowed first segment is not re-checked against the allowlist", async () => {
-  // FOOBar is NOT in the allowlist, but the check only covers the FIRST
-  // segment's entity set (D-30: navigation may only start from a listed entity).
+test("a navigation whose target cannot be resolved from the metadata is never dispatched", async () => {
+  // The fixture metadata models no navigation, so FOOBar cannot be resolved as a
+  // hop from User. It used to be passed straight through to the service, which is
+  // what made the allowlist bypassable; now it fails closed with zero DATA fetches.
   const configPath = await writeConfigFile(allowlistConfigJson([{ entity: "User" }]), { mode: 0o600 });
   const { fetch, requests } = recordingFetch(standardSfResponder(feed([{ id: "x1" }])));
   await withTestServer({ configPath, fetchImpl: fetch }, async (client) => {
@@ -954,11 +955,8 @@ test("navigation after an allowed first segment is not re-checked against the al
       environment: "tenant-a",
       entityPath: "User('u1')/FOOBar",
     });
-    assert.equal(result.isError, undefined);
-    const structured = result.structuredContent as { recordCount: number };
-    assert.equal(structured.recordCount, 1);
-    const dataUrl = new URL(requests.filter((r) => !r.url.includes("$metadata"))[0]!.url);
-    assert.equal(dataUrl.pathname, "/odata/v2/User('u1')/FOOBar");
+    assert.equal(errorPayload(result).code, "NAVIGATION_NOT_ALLOWED");
+    assert.equal(requests.filter((r) => !r.url.includes("$metadata")).length, 0);
   });
 });
 
