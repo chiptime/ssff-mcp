@@ -87,14 +87,38 @@ export function validateEntityPath(entityPath: string): ValidatedPath {
   if (entityPath.length > MAX_PATH_LENGTH) {
     throw new SanitizedError("PATH_INVALID", `entity path exceeds the maximum length of ${MAX_PATH_LENGTH} characters`);
   }
-  // Percent-encoded characters hide structure from THIS parser while the service
-  // still decodes it: `User('a%27)/payrollNav(%27x')` looks like ONE segment here
-  // and like a real navigation there, which silently defeats the allowlist.
-  if (entityPath.includes("%")) {
-    throw new SanitizedError(
-      "PATH_INVALID",
-      "entity path must not contain percent-encoded characters: the service decodes them, so they can hide structure this server would not check",
-    );
+  // Characters the URL layer gives structural meaning to, or that the service
+  // reads differently from this parser. Any of them can move the dispatched
+  // request to another entity set or append query options:
+  // - `%` the service and the URL parser decode it
+  // - `#` starts a fragment: everything after it never reaches the service path
+  // - `?` starts a query string
+  // - `\` is treated as a path separator by URL parsers
+  const structural: ReadonlyArray<readonly [string, string]> = [
+    ["%", "percent-encoded characters (the service decodes them)"],
+    ["#", "a fragment delimiter"],
+    ["?", "a query delimiter"],
+    ["\\", "a backslash, which URL parsers treat as a path separator"],
+  ];
+  for (const [char, what] of structural) {
+    if (entityPath.includes(char)) {
+      throw new SanitizedError(
+        "PATH_INVALID",
+        `entity path must not contain ${what}: it can hide structure or change the dispatched path`,
+      );
+    }
+  }
+  // `.` and `..` segments are collapsed by URL normalisation AFTER this check, so
+  // the request that leaves this process could point at a different entity set
+  // than the one that was validated. Split without quote awareness on purpose:
+  // the URL parser does not care that the segments sit inside a quoted key.
+  for (const segment of entityPath.split("/")) {
+    if (segment === "." || segment === "..") {
+      throw new SanitizedError(
+        "PATH_INVALID",
+        "entity path must not contain '.' or '..' path segments: they are normalised away and can change the entity set that is dispatched",
+      );
+    }
   }
   const segments = splitSegments(entityPath);
   if (segments === null) {

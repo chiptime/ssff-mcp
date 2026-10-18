@@ -49,6 +49,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NAVIGATION_NOT_ALLOWED`, and an `$expand` the server cannot fully parse — including
   `$filter`/`$orderby` nested inside it — fails with `OPTION_INVALID` instead of being
   dispatched unverified.
+- **Entity paths reject URL-structural syntax.** `validateEntityPath` now refuses `%`, `#`,
+  `?`, `\` and `.`/`..` path segments with `PATH_INVALID`. Those characters are interpreted
+  **after** validation — by URL normalisation and by SuccessFactors — so a path validated as
+  `User` could be dispatched as another entity set: `User('x/../Payroll#')` collapsed to
+  `/odata/v2/Payroll` while the allowlist had only ever seen `User`. A key that legitimately
+  needs a quote keeps using OData's doubled-quote escaping (`''`).
 - **New `entityDenylist` per environment** (`SF_ENTITY_DENYLIST` in inline mode). Precedence
   is **denylist > allowlist > the API account's own permissions**. There is no wildcard:
   deny-all is expressed by listing the entities to remove. It also exists for the layered

@@ -187,7 +187,7 @@ La metadata de los tests debe incluir navegaciones con `targetEntitySet`. Hoy `S
 | Vector / Capacidad | Estado |
 |---|---|
 | `$filter` / `$orderby` con rutas de navegación (`navProp/campo`) | **Aplazado.** Requiere entender el lenguaje de expresiones OData v2; se decidirá con patrones de filtros reales de producción. **Sigue siendo un vector abierto tras este PRD.** |
-| **Normalización de URL en claves entrecomilladas** (`User('x/../Payroll#')`) | **Conocido, preexistente, NO cerrado.** El `'/../'` se colapsa en la capa HTTP y el `#` corta la ruta, así que la petición despachada apunta a otro entity set. Detectado por la verificación final; reproduce igual en `ea20c4d`. Cierre propuesto: rechazar segmentos de normalización y `#` en `validateEntityPath`, exactamente como ya se hace con `%`. |
+| **Normalización de URL en claves entrecomilladas** (`User('x/../Payroll#')`) | **CERRADO.** `validateEntityPath` rechaza `%`, `#`, `?`, `\` y los segmentos `.` / `..` con `PATH_INVALID`: la normalización de URL y el parseo del servicio ocurren **después** de la comprobación, así que la ruta validada y la despachada podían diferir. Añadido en la rama `fix/entity-path-normalisation`. |
 | Granularidad por campo (`$select` a nivel de propiedad) | Fuera de alcance. No forma parte del modelo de la allowlist. |
 | Fase 2 (usuarios y roles dentro del tenant) | Aplazada por decisión del usuario. |
 | Servicio multi-tenant (Streamable HTTP) | Aplazada. Cambiará la clave de caché a `metadata-<tenant>-<alias>.json`. |
