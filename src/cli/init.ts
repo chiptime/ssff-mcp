@@ -12,6 +12,8 @@ import { discoverEntities } from "./discovery.js";
 
 export type CliCommand =
   | { kind: "serve" }
+  | { kind: "serve-http"; port?: number; host?: string; configPath?: string }
+  | { kind: "key-hash" }
   | { kind: "init" }
   | { kind: "cache-invalidate"; alias?: string; all: boolean }
   | { kind: "help" }
@@ -42,6 +44,31 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
   const first = argv[0];
   if (first === undefined) {
     return { kind: "serve" };
+  }
+  if (first === "key") {
+    return argv.length === 2 && argv[1] === "hash" ? { kind: "key-hash" } : { kind: "unknown", arg: "key" };
+  }
+  if (first === "serve") {
+    const values = new Map<string, string>();
+    for (let i = 1; i < argv.length; i += 1) {
+      const token = argv[i]!;
+      if (["--help", "-h"].includes(token)) return { kind: "help" };
+      const separator = token.indexOf("=");
+      let flag = separator < 0 ? token : token.slice(0, separator);
+      if (flag === "-p") flag = "--port";
+      if (!["--port", "--host", "--config"].includes(flag) || values.has(flag)) {
+        return { kind: "unknown", arg: "serve options" };
+      }
+      const value = separator < 0 ? argv[++i] : token.slice(separator + 1);
+      if (!value || value.startsWith("-")) return { kind: "unknown", arg: "serve options" };
+      values.set(flag, value);
+    }
+    const rawPort = values.get("--port");
+    const port = rawPort === undefined ? undefined : Number(rawPort);
+    if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65535)) {
+      return { kind: "unknown", arg: "serve port" };
+    }
+    return { kind: "serve-http", port, host: values.get("--host"), configPath: values.get("--config") };
   }
   if (first === "init") {
     return { kind: "init" };
