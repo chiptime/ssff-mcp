@@ -186,7 +186,7 @@ La metadata de los tests debe incluir navegaciones con `targetEntitySet`. Hoy `S
 
 | Vector / Capacidad | Estado |
 |---|---|
-| `$filter` / `$orderby` con rutas de navegación (`navProp/campo`) | **Aplazado.** Requiere entender el lenguaje de expresiones OData v2; se decidirá con patrones de filtros reales de producción. **Sigue siendo un vector abierto tras este PRD.** |
+| `$filter` / `$orderby` con rutas de navegación (`navProp/campo`) | **CERRADO para las formas de producción.** `navigationPathsInExpression` extrae las secuencias `nombre/nombre` fuera de literales entrecomillados y comprueba el destino, igual que una ruta o un `$expand`. Es un escaneo **deliberadamente conservador**, no un parser del lenguaje de expresiones: una forma no reconocida no se comprueba, y eso queda declarado en `docs/security.md`. |
 | **Normalización de URL en claves entrecomilladas** (`User('x/../Payroll#')`) | **CERRADO.** `validateEntityPath` rechaza `%`, `#`, `?`, `\` y los segmentos `.` / `..` con `PATH_INVALID`: la normalización de URL y el parseo del servicio ocurren **después** de la comprobación, así que la ruta validada y la despachada podían diferir. Añadido en la rama `fix/entity-path-normalisation`. |
 | Granularidad por campo (`$select` a nivel de propiedad) | Fuera de alcance. No forma parte del modelo de la allowlist. |
 | Fase 2 (usuarios y roles dentro del tenant) | Aplazada por decisión del usuario. |

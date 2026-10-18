@@ -134,3 +134,50 @@ test("$expand with a sub-$filter is rejected: that belongs to the filter vector"
     },
   );
 });
+
+test("a $filter that navigates to a denied entity set is denied", async () => {
+  const { fetch, requests } = responder();
+  await withTestServer(
+    { configPath: await configPath([{ entity: "cust_Equipo" }]), fetchImpl: fetch },
+    async (client) => {
+      // The production-verified shape: <navProp>/<field> eq '<value>'.
+      const result = await callTool(client, "query_entity", {
+        environment: "prod",
+        entityPath: "cust_Equipo",
+        filter: "externalCodeNav/userId eq '1'",
+      });
+      assert.equal(errorPayload(result).code, "ENTITY_NOT_ALLOWED");
+      assert.equal(dataRequests(requests), 0);
+    },
+  );
+});
+
+test("the same $filter is allowed when its destination is allowed", async () => {
+  const { fetch } = responder();
+  await withTestServer(
+    { configPath: await configPath([{ entity: "cust_Equipo" }, { entity: "User" }]), fetchImpl: fetch },
+    async (client) => {
+      const result = await callTool(client, "query_entity", {
+        environment: "prod",
+        entityPath: "cust_Equipo",
+        filter: "externalCodeNav/userId eq '1'",
+      });
+      assert.equal(result.isError, undefined, JSON.stringify(result));
+    },
+  );
+});
+
+test("a scalar $filter is not disturbed, even with a slash in its literal", async () => {
+  const { fetch } = responder();
+  await withTestServer(
+    { configPath: await configPath([{ entity: "cust_Equipo" }]), fetchImpl: fetch },
+    async (client) => {
+      const result = await callTool(client, "query_entity", {
+        environment: "prod",
+        entityPath: "cust_Equipo",
+        filter: "userId eq 'a/b'",
+      });
+      assert.equal(result.isError, undefined, JSON.stringify(result));
+    },
+  );
+});

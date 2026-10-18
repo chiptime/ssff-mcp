@@ -55,6 +55,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `User` could be dispatched as another entity set: `User('x/../Payroll#')` collapsed to
   `/odata/v2/Payroll` while the allowlist had only ever seen `User`. A key that legitimately
   needs a quote keeps using OData's doubled-quote escaping (`''`).
+- **`$filter`/`$orderby` navigation references are checked.** A filter path such as
+  `externalCodeNav/userId eq '<id>'` — the production-verified shape — reached the navigation
+  target untouched. The scanner extracts `name/name` sequences outside quoted literals and
+  checks the destination against the lists, for both tools. It is deliberately conservative
+  rather than a full expression parser, so a shape it does not recognise is simply not
+  checked; that limit is documented in `docs/security.md`.
 - **New `entityDenylist` per environment** (`SF_ENTITY_DENYLIST` in inline mode). Precedence
   is **denylist > allowlist > the API account's own permissions**. There is no wildcard:
   deny-all is expressed by listing the entities to remove. It also exists for the layered
