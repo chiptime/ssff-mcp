@@ -60,12 +60,11 @@ data are ever cached.** Force a reload with [`ssff-mcp cache invalidate`](config
   `batch_get`, `inspect_entity` and the `sf://` resources) **and on navigation destinations**:
   every hop of a navigation path or of an `$expand` value is resolved to the entity set it
   points at and checked, and neither an unresolvable hop nor an unparseable `$expand` is ever
-  dispatched. **Two known vectors remain unfiltered:** `$filter`/`$orderby` that reference
-  navigation paths, and a quoted key containing URL-normalising segments
-  (`User('x/../Payroll#')`), which the HTTP layer collapses before dispatch and which can
-  therefore reach an entity the lists exclude. Both are tracked in
-  `PRD-feature-allowlist-vectors.md`; until they are closed, treat the lists as a narrowing
-  control, **not** as a complete confidentiality boundary.
+  dispatched. Entity paths also reject URL-structural syntax (`%`, `#`, `?`, `\` and `.`/`..`
+  segments) with `PATH_INVALID`, because normalisation and service parsing happen **after**
+  validation. **One known vector remains unfiltered:** `$filter`/`$orderby` that reference
+  navigation paths. It is tracked in `PRD-feature-allowlist-vectors.md`; until it is closed,
+  treat the lists as a narrowing control, **not** as a complete confidentiality boundary.
 - **OData v2 only.** OData v4 is deferred until a tenant with a verified v4
   endpoint exists.
 - **No function imports / custom service operations** (`FUNCTION_IMPORT_UNSUPPORTED`).
