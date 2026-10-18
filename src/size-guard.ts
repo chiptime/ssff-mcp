@@ -27,7 +27,8 @@ export function setMaxResponseBytes(configured?: number): void {
  * Effective cap: `config.json` wins, then `SF_MAX_RESPONSE_BYTES` when it holds
  * a positive integer, then the 256 KiB default.
  */
-export function resolveMaxResponseBytes(): number {
+export function resolveMaxResponseBytes(configured?: number): number {
+  if (configured !== undefined) return configured;
   if (configuredMaxResponseBytes !== undefined) {
     return configuredMaxResponseBytes;
   }

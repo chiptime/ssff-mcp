@@ -36,6 +36,7 @@ import { SanitizedError, redactUrls, sanitizeMessage } from "./errors.js";
 import { getAuthorizationHeader, invalidateOAuthToken } from "./oauth.js";
 import {
   defaultFetch,
+  oauthCacheKey,
   hostOf,
   MAX_REDIRECT_HOPS,
   USER_AGENT,
@@ -337,7 +338,7 @@ export class SsffBatchRepository implements ODataBatchRepository {
       // replay the whole batch exactly once — safe, every inner op is a GET.
       // Basic environments never retry (no error amplification).
       if (response.status === 401 && this.context.env.auth.kind === "oauth" && !authRetried) {
-        invalidateOAuthToken(this.context.env.alias);
+        invalidateOAuthToken(oauthCacheKey(this.context.env));
         authRetried = true;
         continue;
       }
@@ -366,7 +367,7 @@ export class SsffBatchRepository implements ODataBatchRepository {
     if (auth.kind === "basic") {
       return "Basic " + Buffer.from(`${auth.username}:${auth.password}`, "utf-8").toString("base64");
     }
-    return await getAuthorizationHeader(this.context.env.alias, auth.config, {
+    return await getAuthorizationHeader(oauthCacheKey(this.context.env), auth.config, {
       fetchImpl: this.context.fetchImpl,
       now: this.context.now,
       sleep: this.context.sleep,

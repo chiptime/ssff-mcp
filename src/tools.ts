@@ -35,7 +35,7 @@ import { resolveLocale } from "./i18n.js";
 import { makeLogger, type LogSink, type Logger } from "./logger.js";
 import { isCustomMdfEntity, isEmployeeLinkedType } from "./mdf.js";
 import { MetadataService } from "./metadata.js";
-import { exceedsResponseCap, responseTooLargeError, setMaxResponseBytes } from "./size-guard.js";
+import { exceedsResponseCap, responseTooLargeError, resolveMaxResponseBytes } from "./size-guard.js";
 import {
   buildQuery,
   extractSkiptoken,
@@ -85,6 +85,17 @@ export interface ServerDeps {
   disableDiskCache?: boolean;
   /** Environment variables read for SF_DEFAULT_LOCALE (defaults to process.env; tests). */
   env?: NodeJS.ProcessEnv;
+  /**
+   * Tenant the edge resolved (hosted mode, D-118): pins `loadConfig` to that
+   * tenant's slice. Undefined => the stdio rule (exactly one tenant).
+   */
+  tenantId?: string;
+  /**
+   * Environment scope granted by the presented key (hosted mode, D-120/FR-160).
+   * The engine stays tenant-agnostic: it only enforces this optional alias
+   * scope, fail-closed, before any network request.
+   */
+  allowedEnvironments?: string[];
 }
 
 interface ToolOutcome {
@@ -204,12 +215,14 @@ function encodeContinuationCursor(
   entityPath: string,
   options: Record<string, unknown>,
   nextUrl: string,
+  tenantId?: string,
 ): string | undefined {
   const skiptoken = extractSkiptoken(nextUrl);
   if (skiptoken === null) {
     return undefined;
   }
-  return defaultCursorCodec.encode({ v: CURSOR_VERSION, env, path: entityPath, options, skiptoken });
+  return defaultCursorCodec.encode({ v: CURSOR_VERSION, env, path: entityPath, options, skiptoken,
+    ...(tenantId === undefined || tenantId === "default" ? {} : { tenantId }) });
 }
 
 export function createMcpServer(deps: ServerDeps = {}): McpServer {
@@ -249,21 +262,42 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     inline?: boolean;
     /** Tenant the config resolved from; namespaces the metadata cache (D-121). */
     tenantId?: string;
+    capBytes: number;
   }
 
   async function loadFreshConfig(resolveSecretsFor?: string | null): Promise<FreshConfig> {
+    // FR-160 (fail-closed, before any network request): in the hosted mode the
+    // presented key grants an explicit environment scope; an alias outside it
+    // is rejected even though the tenant configures it. The parameter doubles
+    // as the requested alias (tools and resources pass it through).
+    if (
+      deps.allowedEnvironments !== undefined &&
+      typeof resolveSecretsFor === "string" &&
+      resolveSecretsFor.length > 0 &&
+      !deps.allowedEnvironments.includes(resolveSecretsFor)
+    ) {
+      throw new SanitizedError(
+        "ENVIRONMENT_NOT_ALLOWED",
+        `environment "${resolveSecretsFor}" is not permitted for this key; permitted: ${deps.allowedEnvironments.join(", ") || "(none)"}`,
+      );
+    }
     const config = await loadConfig({
       configPath: deps.configPath,
       onWarning: deps.onConfigWarning,
       resolveSecretsFor,
+      tenantId: deps.tenantId,
     });
-    // FR-86: the configured cap outranks SF_MAX_RESPONSE_BYTES and the default.
-    setMaxResponseBytes(config.maxResponseBytes);
+    // A mounted file may change while other sessions are in flight. Keep the
+    // response cap request-local rather than mutating module-global state.
+    const environments = deps.allowedEnvironments === undefined ? config.environments :
+      Object.fromEntries(Object.entries(config.environments)
+        .filter(([alias]) => deps.allowedEnvironments!.includes(alias)));
     return {
-      environments: config.environments,
+      environments,
       defaultLocale: config.defaultLocale,
       inline: config.inline,
       tenantId: config.tenantId,
+      capBytes: resolveMaxResponseBytes(config.maxResponseBytes),
     };
   }
 
@@ -472,7 +506,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         // The allowlist/denylist are per environment (FR-28/D-30); the denylist wins.
         const entityAllowlist = env.entityAllowlist;
         const entityDenylist = env.entityDenylist;
-        const target: EnvTarget = envTargetFor(env, alias);
+        const target: EnvTarget = envTargetFor(env, alias, tenantId);
         const locale = resolveLocale({ tool: args.locale, config: defaultLocale, env: envVars.SF_DEFAULT_LOCALE });
 
         if (args.entitySet !== undefined) {
@@ -564,7 +598,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     },
     async (args) =>
       await executeTool("query_entity", args.environment, async () => {
-        const { environments, inline, tenantId } = await loadFreshConfig(args.environment);
+        const { environments, inline, tenantId, capBytes } = await loadFreshConfig(args.environment);
         const { alias, env } = resolveEnvironment(environments, args.environment, inline);
         // The allowlist/denylist are per environment (FR-28/D-30); the denylist wins.
         const entityAllowlist = env.entityAllowlist;
@@ -603,6 +637,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         let skiptoken: string | undefined;
         if (args.cursor !== undefined) {
           const payload = defaultCursorCodec.decode(args.cursor, {
+            tenantId,
             env: alias,
             path: args.entityPath,
             options: bindingOptions,
@@ -624,7 +659,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           skiptoken,
         });
 
-        const target: EnvTarget = envTargetFor(env, alias);
+        const target: EnvTarget = envTargetFor(env, alias, tenantId);
         const verdict = await metadataServiceFor(tenantId).classifyFirstSegment(target, alias, validatedPath.firstSegmentName);
         if (verdict.kind === "function-import") {
           throw new SanitizedError(
@@ -677,7 +712,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
             structured.totalCount = paging.totalCount;
           }
           if (paging.hasMore && paging.nextUrl !== null) {
-            const cursor = encodeContinuationCursor(alias, args.entityPath, bindingOptions, paging.nextUrl);
+            const cursor = encodeContinuationCursor(alias, args.entityPath, bindingOptions, paging.nextUrl, tenantId);
             if (cursor !== undefined) {
               structured.cursor = cursor;
             }
@@ -686,8 +721,8 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           // derived from the ORIGINAL href above; the returned text must never
           // expose the service URL or the raw $skiptoken.
           const xmlText = sanitizeXmlNextLinks(result.body);
-          if (exceedsResponseCap(xmlText)) {
-            throw responseTooLargeError(xmlText);
+          if (exceedsResponseCap(xmlText, capBytes)) {
+            throw responseTooLargeError(xmlText, capBytes);
           }
           return { structured, text: xmlText };
         }
@@ -719,15 +754,15 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         if (unwrapped.hasMore && unwrapped.nextUrl !== null) {
           // Cursor only when a real $skiptoken exists; the __next URL itself
           // never leaves the process.
-          const cursor = encodeContinuationCursor(alias, args.entityPath, bindingOptions, unwrapped.nextUrl);
+          const cursor = encodeContinuationCursor(alias, args.entityPath, bindingOptions, unwrapped.nextUrl, tenantId);
           if (cursor !== undefined) {
             structured.cursor = cursor;
           }
         }
         const text = JSON.stringify(structured);
         // Size guard (D-75): only what is returned to the model is measured.
-        if (exceedsResponseCap(text)) {
-          throw responseTooLargeError(text);
+        if (exceedsResponseCap(text, capBytes)) {
+          throw responseTooLargeError(text, capBytes);
         }
         return {
           structured,
@@ -747,14 +782,14 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     },
     async (args) =>
       await executeTool("batch_get", args.environment, async () => {
-        const { environments, inline, tenantId } = await loadFreshConfig(args.environment);
+        const { environments, inline, tenantId, capBytes } = await loadFreshConfig(args.environment);
         const { alias, env } = resolveEnvironment(environments, args.environment, inline);
         // The allowlist/denylist are per environment (FR-28/D-30); the denylist wins.
         const entityAllowlist = env.entityAllowlist;
         const entityDenylist = env.entityDenylist;
 
         const output = args.output ?? "json";
-        const target: EnvTarget = envTargetFor(env, alias);
+        const target: EnvTarget = envTargetFor(env, alias, tenantId);
 
         // Pass 1 — pure preflight for EVERY item (no network at all):
         // path grammar, allowlist, cursor+skip exclusivity, cursor binding
@@ -790,6 +825,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           let skiptoken: string | undefined;
           if (item.cursor !== undefined) {
             const payload = defaultCursorCodec.decode(item.cursor, {
+              tenantId,
               env: alias,
               path: item.entityPath,
               options: bindingOptions,
@@ -881,8 +917,8 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         // sanitized per-item failure and stops counting toward the aggregate ceiling.
         const pushGuarded = (entry: Record<string, unknown>, index: number, path: string): void => {
           const measured = JSON.stringify(entry);
-          if (entry.success === true && exceedsResponseCap(measured)) {
-            const error = responseTooLargeError(measured);
+          if (entry.success === true && exceedsResponseCap(measured, capBytes)) {
+            const error = responseTooLargeError(measured, capBytes);
             recordsReturned -= typeof entry.recordCount === "number" ? entry.recordCount : 0;
             results.push({
               index,
@@ -944,7 +980,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
               entry.totalCount = paging.totalCount;
             }
             if (paging.hasMore && paging.nextUrl !== null) {
-              const cursor = encodeContinuationCursor(alias, item.entityPath, item.bindingOptions, paging.nextUrl);
+              const cursor = encodeContinuationCursor(alias, item.entityPath, item.bindingOptions, paging.nextUrl, tenantId);
               if (cursor !== undefined) {
                 entry.cursor = cursor;
               }
@@ -986,7 +1022,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
             entry.totalCount = unwrapped.totalCount;
           }
           if (unwrapped.hasMore && unwrapped.nextUrl !== null) {
-            const cursor = encodeContinuationCursor(alias, item.entityPath, item.bindingOptions, unwrapped.nextUrl);
+            const cursor = encodeContinuationCursor(alias, item.entityPath, item.bindingOptions, unwrapped.nextUrl, tenantId);
             if (cursor !== undefined) {
               entry.cursor = cursor;
             }
@@ -1035,7 +1071,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       // The allowlist/denylist are per environment (FR-28/D-30); the denylist wins.
       const entityAllowlist = resolved.env.entityAllowlist;
       const entityDenylist = resolved.env.entityDenylist;
-      const target = envTargetFor(resolved.env);
+      const target = envTargetFor(resolved.env, resolved.alias, tenantId);
       const parsed = await metadataServiceFor(tenantId).getParsedMetadata(target, resolved.alias);
 
       const overview = {
@@ -1086,7 +1122,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       // The allowlist/denylist are per environment (FR-28/D-30); the denylist wins.
       const entityAllowlist = resolved.env.entityAllowlist;
       const entityDenylist = resolved.env.entityDenylist;
-      const target = envTargetFor(resolved.env);
+      const target = envTargetFor(resolved.env, resolved.alias, tenantId);
       const parsed = await metadataServiceFor(tenantId).getParsedMetadata(target, resolved.alias);
 
       let allowedSets = parsed.entitySets;
@@ -1135,7 +1171,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         );
       }
 
-      const target = envTargetFor(resolved.env);
+      const target = envTargetFor(resolved.env, resolved.alias, tenantId);
       const schema = await metadataServiceFor(tenantId).getEntitySchema(target, resolved.alias, entityName);
       if (!schema) {
         throw new SanitizedError(
@@ -1195,7 +1231,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       // The allowlist/denylist are per environment (FR-28/D-30); the denylist wins.
       const entityAllowlist = resolved.env.entityAllowlist;
       const entityDenylist = resolved.env.entityDenylist;
-      const target = envTargetFor(resolved.env);
+      const target = envTargetFor(resolved.env, resolved.alias, tenantId);
       // Zero-network (D-62): classified from the cached $metadata; allowlist-filtered (D-68).
       const listed = await metadataServiceFor(tenantId).listCustomMdf(target, resolved.alias, entityAllowlist);
       // The metadata service applies the allowlist; the denylist is applied here.

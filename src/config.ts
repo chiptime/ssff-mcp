@@ -442,6 +442,12 @@ export interface LoadConfigOptions {
    * Skipped environments carry an empty secret and must never be used.
    */
   resolveSecretsFor?: string | null;
+  /**
+   * Pin the resolution to ONE tenant (D-118): the hosted mode resolves the
+   * tenant at the edge and then loads only that tenant's slice, even when the
+   * file declares several. Undefined => the stdio rule (exactly one tenant).
+   */
+  tenantId?: string;
 }
 
 interface StatLike {
@@ -686,20 +692,37 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<SsffC
       );
     }
     const ids = Object.keys(parsedTenants.data.tenants);
-    if (ids.length > 1) {
+    if (options.tenantId !== undefined) {
+      // Hosted mode (D-118): the edge already resolved the tenant; load only
+      // its slice, regardless of how many the file declares.
+      const pinned = parsedTenants.data.tenants[options.tenantId];
+      if (pinned === undefined) {
+        throw new SanitizedError(
+          "CONFIG_INVALID",
+          `configuration file at ${CONFIG_TILDE_PATH} does not declare tenant "${options.tenantId}"`,
+        );
+      }
+      tenantId = options.tenantId;
+      tenantEnvironments = pinned.environments;
+      tenantAllowlist = pinned.entityAllowlist;
+      tenantDenylist = pinned.entityDenylist;
+      globalLocale = parsedTenants.data.defaultLocale;
+      globalMaxBytes = parsedTenants.data.maxResponseBytes;
+    } else if (ids.length > 1) {
       // stdio resolves exactly one tenant (D-118); several require `serve`.
       throw new SanitizedError(
         "CONFIG_INVALID",
         `configuration file at ${CONFIG_TILDE_PATH} declares ${ids.length} tenants; this mode resolves exactly one tenant and multiple tenants are served by ssff-mcp serve`,
       );
+    } else {
+      tenantId = ids[0]!;
+      const tenant = parsedTenants.data.tenants[tenantId]!;
+      tenantEnvironments = tenant.environments;
+      tenantAllowlist = tenant.entityAllowlist;
+      tenantDenylist = tenant.entityDenylist;
+      globalLocale = parsedTenants.data.defaultLocale;
+      globalMaxBytes = parsedTenants.data.maxResponseBytes;
     }
-    tenantId = ids[0]!;
-    const tenant = parsedTenants.data.tenants[tenantId]!;
-    tenantEnvironments = tenant.environments;
-    tenantAllowlist = tenant.entityAllowlist;
-    tenantDenylist = tenant.entityDenylist;
-    globalLocale = parsedTenants.data.defaultLocale;
-    globalMaxBytes = parsedTenants.data.maxResponseBytes;
   } else {
     const parsedFlat = configSchema.safeParse(parsed);
     if (!parsedFlat.success) {
@@ -709,6 +732,12 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<SsffC
       );
     }
     tenantId = "default";
+    if (options.tenantId !== undefined && options.tenantId !== "default") {
+      throw new SanitizedError(
+        "CONFIG_INVALID",
+        `configuration file at ${CONFIG_TILDE_PATH} does not declare tenant "${options.tenantId}"`,
+      );
+    }
     tenantEnvironments = parsedFlat.data.environments;
     tenantAllowlist = undefined;
     tenantDenylist = undefined;
@@ -778,4 +807,57 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<SsffC
 /** Collapse whitespace and clamp length of zod issue text (bounded, no body echo). */
 function sanitizeIssueText(text: string): string {
   return text.replace(/\s+/g, " ").slice(0, 500);
+}
+
+/**
+ * The key directory for the hosted mode (D-120): tenantId → its key material,
+ * WITHOUT resolving any secret. A flat (legacy) file declares no keys, so it
+ * yields an empty directory — every hosted request then fails closed at the
+ * edge with a pointed message instead of silently authenticating.
+ */
+export async function loadTenantKeyDirectory(
+  options: Pick<LoadConfigOptions, "configPath" | "readFile"> = {},
+): Promise<Record<string, { apiKeyHash?: string; environments: Record<string, string | undefined> }>> {
+  const filePath = options.configPath ?? defaultConfigPath();
+  const readFile = options.readFile ?? ((p: string) => fs.readFile(p, "utf-8"));
+
+  let raw: string;
+  try {
+    raw = await readFile(filePath);
+  } catch {
+    throw new SanitizedError("CONFIG_INVALID", `configuration file at ${CONFIG_TILDE_PATH} could not be read`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new SanitizedError("CONFIG_INVALID", `configuration file at ${CONFIG_TILDE_PATH} is not valid JSON`);
+  }
+  if (!hasOwnKey(parsed, "tenants")) {
+    // Flat shape: no hosted keys exist. Fail closed with guidance.
+    throw new SanitizedError(
+      "CONFIG_INVALID",
+      `configuration file at ${CONFIG_TILDE_PATH} has no "tenants" level; hosted mode requires tenants with apiKeyHash`,
+    );
+  }
+  const result = tenantsFormSchema.safeParse(parsed);
+  if (!result.success) {
+    throw new SanitizedError(
+      "CONFIG_INVALID",
+      `configuration file at ${CONFIG_TILDE_PATH} is invalid: ${sanitizeIssueText(formatIssues(result.error))}`,
+    );
+  }
+  const directory: Record<string, { apiKeyHash?: string; environments: Record<string, string | undefined> }> = {};
+  for (const [id, tenant] of Object.entries(result.data.tenants)) {
+    const environments: Record<string, string | undefined> = {};
+    for (const [alias, env] of Object.entries(tenant.environments)) {
+      environments[alias] = env.apiKeyHash;
+    }
+    const entry: { apiKeyHash?: string; environments: Record<string, string | undefined> } = { environments };
+    if (tenant.apiKeyHash !== undefined) {
+      entry.apiKeyHash = tenant.apiKeyHash;
+    }
+    directory[id] = entry;
+  }
+  return directory;
 }

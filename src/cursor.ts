@@ -23,6 +23,7 @@ export const CURSOR_VERSION = 1;
 export const MAX_CURSOR_TOKEN_LENGTH = 4096;
 
 export interface CursorPayload {
+  tenantId?: string;
   v: typeof CURSOR_VERSION;
   env: string;
   path: string;
@@ -33,6 +34,7 @@ export interface CursorPayload {
 
 /** The call-side binding a cursor must match to be accepted. */
 export interface CursorBinding {
+  tenantId?: string;
   env: string;
   path: string;
   options: Record<string, unknown>;
@@ -138,6 +140,7 @@ export function createCursorCodec(config: { secret?: Buffer } = {}): CursorCodec
       // Binding check against the CURRENT call: same environment, same entity
       // path, same canonical options. Generic error; nothing is echoed.
       if (
+        (record.tenantId ?? "default") !== (expectedBinding.tenantId ?? "default") ||
         record.env !== expectedBinding.env ||
         record.path !== expectedBinding.path ||
         stableStringify(record.options) !== stableStringify(expectedBinding.options)
@@ -147,6 +150,7 @@ export function createCursorCodec(config: { secret?: Buffer } = {}): CursorCodec
 
       return {
         v: CURSOR_VERSION,
+        ...(record.tenantId === undefined ? {} : { tenantId: record.tenantId as string }),
         env: record.env,
         path: record.path,
         options: payloadOptions,

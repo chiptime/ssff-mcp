@@ -15,6 +15,7 @@
 import { SanitizedError, redactUrls, sanitizeMessage } from "./errors.js";
 import type { EnvironmentConfig, OAuthAuthConfig } from "./config.js";
 import { getAuthorizationHeader, invalidateOAuthToken } from "./oauth.js";
+import { createHash } from "node:crypto";
 import type { OAuthFetch, OAuthPostInit } from "./oauth.js";
 import { PACKAGE_VERSION } from "./version.js";
 
@@ -40,6 +41,8 @@ export function buildHeaders(accept: string, authorization: string): Record<stri
 }
 
 export interface EnvTarget {
+  /** Namespace for the hosted edge; absent preserves the local API contract. */
+  tenantId?: string;
   /** Environment alias (OAuth token cache key; "" only in basic-auth unit tests). */
   alias: string;
   /** Absolute service root, always ending with `/` (e.g. https://host/odata/v2/). */
@@ -60,11 +63,12 @@ export function hostOf(url: URL): string {
   return port === "" ? url.hostname : `${url.hostname}:${port}`;
 }
 
-export function envTargetFor(env: EnvironmentConfig, alias = ""): EnvTarget {
+export function envTargetFor(env: EnvironmentConfig, alias = "", tenantId?: string): EnvTarget {
   const rootUrl = new URL(env.baseUrl);
   const serviceRoot = env.baseUrl.replace(/\/+$/, "") + "/odata/v2/";
   return {
     alias,
+    ...(tenantId === undefined ? {} : { tenantId }),
     serviceRoot,
     expectedHost: hostOf(rootUrl),
     auth:
@@ -133,11 +137,16 @@ async function buildAuthorization(env: EnvTarget, options: DispatchOptions): Pro
   if (env.auth.kind === "basic") {
     return "Basic " + Buffer.from(`${env.auth.username}:${env.auth.password}`, "utf-8").toString("base64");
   }
-  return await getAuthorizationHeader(env.alias, env.auth.config, {
+  return await getAuthorizationHeader(oauthCacheKey(env), env.auth.config, {
     fetchImpl: options.fetchImpl,
     now: options.now,
     sleep: options.sleep,
   });
+}
+
+export function oauthCacheKey(env: EnvTarget): string {
+  return env.tenantId === undefined ? env.alias : createHash("sha256")
+    .update(JSON.stringify([env.tenantId, env.alias, env.serviceRoot, env.auth])).digest("hex");
 }
 
 export async function dispatchGet(
@@ -217,7 +226,7 @@ export async function dispatchGet(
     // exactly once with a freshly acquired header. Basic environments never
     // retry (no error amplification).
     if (response.status === 401 && env.auth.kind === "oauth" && !authRetried) {
-      invalidateOAuthToken(env.alias);
+      invalidateOAuthToken(oauthCacheKey(env));
       authRetried = true;
       continue;
     }

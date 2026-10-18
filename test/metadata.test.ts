@@ -207,7 +207,7 @@ test("MetadataService caches parsed metadata to local disk and reloads it withou
     assert.equal(parsed1.entitySets.length, 3);
 
     // Verify cache file was created on disk
-    const cacheFile = path.join(tmpCacheDir, "metadata-default-test-tenant.json");
+    const cacheFile = path.join(tmpCacheDir, "metadata-default-test%2Dtenant.json");
     const diskContent = await fs.readFile(cacheFile, "utf-8");
     const json = JSON.parse(diskContent) as { fetchedAt: number; data: unknown };
     assert.equal(json.fetchedAt, clock);
@@ -241,4 +241,3 @@ test("MetadataService caches parsed metadata to local disk and reloads it withou
     await fs.rm(tmpCacheDir, { recursive: true, force: true });
   }
 });
-

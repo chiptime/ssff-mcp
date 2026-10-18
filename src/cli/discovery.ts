@@ -25,6 +25,6 @@ export async function discoverEntities(options: DiscoverOptions): Promise<string
     disableDiskCache: options.disableDiskCache,
     tenantId: options.tenantId,
   });
-  const parsed = await service.getParsedMetadata(envTargetFor(options.environment, options.alias), options.alias);
+  const parsed = await service.getParsedMetadata(envTargetFor(options.environment, options.alias, options.tenantId), options.alias);
   return [...parsed.entitySets].sort((a, b) => a.localeCompare(b));
 }

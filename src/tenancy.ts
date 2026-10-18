@@ -56,6 +56,7 @@ export function resolveTenant(
     return null;
   }
   const digest = sha256Hex(presentedKey);
+  let match: TenantResolution | null = null;
 
   // Sorted iteration: same directory shape always resolves the same way.
   for (const tenantId of Object.keys(directory).sort()) {
@@ -67,17 +68,20 @@ export function resolveTenant(
 
     // Innermost first: a per-environment key is more specific than the
     // client-wide one and wins when both would match.
+    let environmentMatch: string | undefined;
     for (const alias of aliases) {
       const environmentDigest = tenant.environments[alias];
       if (environmentDigest !== undefined && digestEquals(environmentDigest, digest)) {
-        return { tenantId, allowedEnvironments: [alias] };
+        if (environmentMatch !== undefined) return null;
+        environmentMatch = alias;
       }
     }
-
-    if (tenant.apiKeyHash !== undefined && digestEquals(tenant.apiKeyHash, digest)) {
-      return { tenantId, allowedEnvironments: aliases };
+    if (environmentMatch !== undefined ||
+        (tenant.apiKeyHash !== undefined && digestEquals(tenant.apiKeyHash, digest))) {
+      if (match !== null) return null;
+      match = { tenantId, allowedEnvironments: environmentMatch === undefined ? aliases : [environmentMatch] };
     }
   }
 
-  return null;
+  return match;
 }

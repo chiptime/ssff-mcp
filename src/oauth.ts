@@ -96,11 +96,11 @@ export async function getAuthorizationHeader(
     return await state.inflight;
   }
   const pending = acquireBearerToken(config, options)
-    .then((accessToken) => {
+    .then(({ accessToken, expiresInSeconds }) => {
       state.token = {
         accessToken,
         obtainedAtMs: (options.now ?? Date.now)(),
-        expiresInSeconds: lastExpiresInSeconds,
+        expiresInSeconds,
       };
       return `Bearer ${accessToken}`;
     })
@@ -111,18 +111,13 @@ export async function getAuthorizationHeader(
   return await pending;
 }
 
-/** Set by acquireBearerToken so the cache builder can read the observed expiry. */
-let lastExpiresInSeconds = 0;
-
-async function acquireBearerToken(config: OAuthAuthConfig, options: OAuthRuntimeOptions): Promise<string> {
+async function acquireBearerToken(config: OAuthAuthConfig, options: OAuthRuntimeOptions): Promise<TokenPayload> {
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   let lastError: unknown;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
       const assertion = await requestAssertion(config, options);
-      const { accessToken, expiresInSeconds } = await requestToken(config, assertion, options);
-      lastExpiresInSeconds = expiresInSeconds;
-      return accessToken;
+      return await requestToken(config, assertion, options);
     } catch (error) {
       lastError = error;
       if (attempt < MAX_ATTEMPTS) {
@@ -272,5 +267,4 @@ async function requestToken(
 /** Test-only: reset all cached token state (module-level singletons). */
 export function resetOAuthStateForTests(): void {
   states.clear();
-  lastExpiresInSeconds = 0;
 }

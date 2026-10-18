@@ -345,7 +345,10 @@ export interface MetadataServiceOptions {
  * `ssff-mcp cache invalidate` builds the same name from this function.
  */
 export function metadataCacheFileName(tenantId: string, alias: string): string {
-  return `metadata-${encodeURIComponent(tenantId)}-${encodeURIComponent(alias)}.json`;
+  // Escape the separator inside each component as well (encodeURIComponent
+  // leaves '-' intact). Otherwise ('a-b', 'c') collides with ('a', 'b-c').
+  const component = (value: string) => encodeURIComponent(value).replace(/-/g, "%2D");
+  return `metadata-${component(tenantId)}-${component(alias)}.json`;
 }
 
 export class MetadataService {
