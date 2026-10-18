@@ -253,16 +253,52 @@ test("xml is downgraded to JSON with a flag when fields apply", async () => {
 });
 
 test("without fields configured nothing changes: xml stays xml, salary stays", async () => {
-  const { fetchImpl } = responder({ d: { results: [RECORD] } });
+  const atomFeed = `<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry><id>https://t.example.com/odata/v2/User('1027740')</id>
+    <content type="application/xml">
+      <m:properties xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata"
+        xmlns:d="http://schemas.microsoft.com/ado/2007/08/dataservices">
+        <d:userId>1027740</d:userId><d:firstName>Ana</d:firstName><d:salary>45000</d:salary>
+      </m:properties>
+    </content>
+  </entry>
+</feed>`;
+  const fetchImpl = (async (url: string, init?: { headers?: unknown }) => {
+    if (url.endsWith("/$metadata")) {
+      return xmlResponse(METADATA, 200, { "content-type": "application/xml" });
+    }
+    // The tool asks for Atom only when it means to return XML; every other data
+    // request is the JSON call.
+    if (JSON.stringify(init?.headers ?? {}).includes("application/atom+xml")) {
+      return xmlResponse(atomFeed, 200, { "content-type": "application/atom+xml" });
+    }
+    return jsonResponse({ d: { results: [RECORD] } });
+  }) as unknown as typeof fetch;
   await withTestServer(
     { configPath: await configFor([{ entity: "User" }, { entity: "EmpJob" }]), fetchImpl },
     async (client) => {
-      const result = await callTool(client, "query_entity", {
+      // JSON path: salary survives untouched.
+      const json = await callTool(client, "query_entity", { environment: "prod", entityPath: "User" });
+      assert.equal(json.isError, undefined, JSON.stringify(json));
+      const record = (json.structuredContent as { records: Array<Record<string, unknown>> }).records[0]!;
+      assert.equal(record.salary, 45000, "without fields there is nothing to redact");
+      assert.equal(record.firstName, "Ana");
+
+      // XML path: the downgrade fires only when a restriction exists, so an
+      // unrestricted entity keeps its Atom representation and every property.
+      const xml = await callTool(client, "query_entity", {
         environment: "prod",
         entityPath: "User",
-        select: "userId,salary",
+        output: "xml",
       });
-      assert.equal(result.isError, undefined, JSON.stringify(result));
+      assert.equal(xml.isError, undefined, JSON.stringify(xml));
+      const structured = xml.structuredContent as Record<string, unknown>;
+      assert.equal(structured.contentType, "xml");
+      assert.equal(structured.outputDowngraded, undefined, "no restriction configured, no downgrade");
+      const text = (xml.content[0] as { text: string }).text;
+      assert.ok(text.includes("<d:salary>45000</d:salary>"), "salary survives the unrestricted xml path");
+      assert.ok(text.includes("<d:firstName>Ana</d:firstName>"));
     },
   );
 });
