@@ -84,3 +84,67 @@ export async function checkExpandRoutes(
   }
   return { kind: "permitted", reached: baseEntitySet };
 }
+
+/**
+ * Navigation ROUTES referenced by a `$filter`/`$orderby` expression.
+ *
+ * Only the production-verified shapes matter: `<navProp>/<field> eq '<value>'`
+ * and `and`/`or` combinations of it. Rather than parsing the whole OData
+ * expression language, this scans for `name/name[/name...]` sequences OUTSIDE
+ * single-quoted literals (with `''` escaping) and returns the leading
+ * navigations of each — the last element is a property, not a navigation.
+ *
+ * A slash inside a literal is never mistaken for a path, and a plain scalar
+ * field yields no route at all.
+ */
+export function navigationPathsInExpression(raw: string): string[][] {
+  const routes: string[][] = [];
+  const isNameStart = (c: string | undefined): boolean => c !== undefined && /[A-Za-z_]/.test(c);
+  const isNamePart = (c: string | undefined): boolean => c !== undefined && /[A-Za-z0-9_]/.test(c);
+
+  let index = 0;
+  while (index < raw.length) {
+    const char = raw[index]!;
+    if (char === "'") {
+      // Skip the literal, honouring OData's doubled-quote escape.
+      index += 1;
+      while (index < raw.length) {
+        if (raw[index] === "'") {
+          if (raw[index + 1] === "'") {
+            index += 2;
+            continue;
+          }
+          index += 1;
+          break;
+        }
+        index += 1;
+      }
+      continue;
+    }
+    if (!isNameStart(char)) {
+      index += 1;
+      continue;
+    }
+    const parts: string[] = [];
+    for (;;) {
+      const start = index;
+      while (isNamePart(raw[index])) {
+        index += 1;
+      }
+      parts.push(raw.slice(start, index));
+      if (raw[index] !== "/") {
+        break;
+      }
+      index += 1;
+      if (!isNameStart(raw[index])) {
+        break;
+      }
+    }
+    // The final element is a property; the navigations are everything before it.
+    if (parts.length > 1) {
+      routes.push(parts.slice(0, -1));
+    }
+  }
+  return routes;
+}
+

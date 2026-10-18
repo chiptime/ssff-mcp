@@ -20,6 +20,7 @@ import { isEntityPermitted } from "./allowlist.js";
 import {
   checkExpandRoutes,
   checkNavigationPath,
+  navigationPathsInExpression,
   type NavigationLookup,
 } from "./allowlist-navigation.js";
 import { parseExpand } from "./expand.js";
@@ -266,6 +267,8 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     env: EnvironmentConfig,
     segments: readonly string[],
     expand: string | undefined,
+    filter: string | undefined,
+    orderby: string | undefined,
   ): Promise<void> {
     const lookup = navigationLookupFor(target, alias);
     const allowlist = env.entityAllowlist;
@@ -285,37 +288,64 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       );
     }
 
-    if (expand === undefined) {
-      return;
-    }
-    const parsed = parseExpand(expand);
-    if (!parsed.ok) {
-      throw new SanitizedError(
-        "OPTION_INVALID",
-        `expand uses syntax this server cannot verify (${parsed.reason}); it is rejected rather than dispatched unverified`,
+    if (expand !== undefined) {
+      const parsed = parseExpand(expand);
+      if (!parsed.ok) {
+        throw new SanitizedError(
+          "OPTION_INVALID",
+          `expand uses syntax this server cannot verify (${parsed.reason}); it is rejected rather than dispatched unverified`,
+        );
+      }
+      // `$expand` applies to the entity the PATH reached, not to the first segment:
+      // resolving from the wrong base both rejects legitimate queries and lets a
+      // denied destination through.
+      const expandVerdict = await checkExpandRoutes(
+        pathVerdict.reached,
+        parsed.routes,
+        allowlist,
+        denylist,
+        lookup,
       );
+      if (expandVerdict.kind === "denied") {
+        throw new SanitizedError(
+          "ENTITY_NOT_ALLOWED",
+          "an expanded navigation is not permitted by the configured entityAllowlist",
+        );
+      }
+      if (expandVerdict.kind === "unresolvable") {
+        throw new SanitizedError(
+          "NAVIGATION_NOT_ALLOWED",
+          "an expanded navigation could not be resolved from the cached metadata; if the catalog changed, run `ssff-mcp cache invalidate <alias>` and retry",
+        );
+      }
     }
-    // `$expand` applies to the entity the PATH reached, not to the first segment:
-    // resolving from the wrong base both rejects legitimate queries and lets a
-    // denied destination through.
-    const expandVerdict = await checkExpandRoutes(
-      pathVerdict.reached,
-      parsed.routes,
-      allowlist,
-      denylist,
-      lookup,
-    );
-    if (expandVerdict.kind === "denied") {
-      throw new SanitizedError(
-        "ENTITY_NOT_ALLOWED",
-        "an expanded navigation is not permitted by the configured entityAllowlist",
+
+    // `$filter`/`$orderby` can reference a navigation (`navProp/field`). The
+    // production shapes are narrow, so this is a conservative scan rather than a
+    // full expression parser.
+    for (const expression of [filter, orderby]) {
+      if (expression === undefined) {
+        continue;
+      }
+      const expressionVerdict = await checkExpandRoutes(
+        pathVerdict.reached,
+        navigationPathsInExpression(expression),
+        allowlist,
+        denylist,
+        lookup,
       );
-    }
-    if (expandVerdict.kind === "unresolvable") {
-      throw new SanitizedError(
-        "NAVIGATION_NOT_ALLOWED",
-        "an expanded navigation could not be resolved from the cached metadata; if the catalog changed, run `ssff-mcp cache invalidate <alias>` and retry",
-      );
+      if (expressionVerdict.kind === "denied") {
+        throw new SanitizedError(
+          "ENTITY_NOT_ALLOWED",
+          "a navigation in the filter or orderby is not permitted by the configured entityAllowlist",
+        );
+      }
+      if (expressionVerdict.kind === "unresolvable") {
+        throw new SanitizedError(
+          "NAVIGATION_NOT_ALLOWED",
+          "a navigation in the filter or orderby could not be resolved from the cached metadata; if the catalog changed, run `ssff-mcp cache invalidate <alias>` and retry",
+        );
+      }
     }
   }
 
@@ -559,7 +589,15 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
 
         // Navigation and $expand are resolved against the cached metadata and
         // checked against the same lists (FR-141..FR-146), before any data request.
-        await enforceNavigationVectors(target, alias, env, validatedPath.segments, args.expand);
+        await enforceNavigationVectors(
+          target,
+          alias,
+          env,
+          validatedPath.segments,
+          args.expand,
+          args.filter,
+          args.orderby,
+        );
 
         // Exactly one fetch per call; next links are never followed.
         const result = await dispatchGet(target, pathAndQuery, {
@@ -675,6 +713,8 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           firstSegmentName: string;
           segments: readonly string[];
           expand: string | undefined;
+          filter: string | undefined;
+          orderby: string | undefined;
           pathAndQuery: string;
           bindingOptions: Record<string, unknown>;
           topClamped: boolean;
@@ -722,6 +762,8 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
             firstSegmentName: validatedPath.firstSegmentName,
             segments: validatedPath.segments,
             expand: item.expand,
+            filter: item.filter,
+            orderby: item.orderby,
             pathAndQuery,
             bindingOptions,
             topClamped,
@@ -752,7 +794,15 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         // Pass 2b — navigation and $expand, per ITEM (never deduped by root):
         // the same root can carry different navigations or different expands.
         for (const item of planned) {
-          await enforceNavigationVectors(target, alias, env, item.segments, item.expand);
+          await enforceNavigationVectors(
+            target,
+            alias,
+            env,
+            item.segments,
+            item.expand,
+            item.filter,
+            item.orderby,
+          );
         }
 
         // One fixed $batch POST, GET-only envelope (D-28/DS-P2-04).
