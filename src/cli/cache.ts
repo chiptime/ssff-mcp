@@ -13,18 +13,13 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config.js";
-import { defaultCacheDir } from "../metadata.js";
+import { defaultCacheDir, metadataCacheFileName } from "../metadata.js";
 
 export interface CacheInvalidateDeps {
   configPath?: string;
   cacheDir?: string;
   stdout?: (message: string) => void;
   stderr?: (message: string) => void;
-}
-
-/** Must match `MetadataService`'s naming exactly. */
-function cacheFileFor(cacheDir: string, alias: string): string {
-  return path.join(cacheDir, `metadata-${encodeURIComponent(alias)}.json`);
 }
 
 /** Exit codes: 0 success, 1 config unreadable, 2 usage error (FR-98). */
@@ -37,9 +32,11 @@ export async function runCacheInvalidate(
   const err = deps.stderr ?? ((message: string) => process.stderr.write(message));
 
   let configured: string[];
+  let tenantId: string;
   try {
     const config = await loadConfig({ configPath: deps.configPath });
     configured = Object.keys(config.environments).sort();
+    tenantId = config.tenantId ?? "default";
   } catch {
     err("ssff-mcp: the configuration could not be read; nothing was invalidated\n");
     return 1;
@@ -58,7 +55,8 @@ export async function runCacheInvalidate(
   const cacheDir = deps.cacheDir ?? defaultCacheDir();
   for (const target of all ? configured : [alias as string]) {
     try {
-      await fs.rm(cacheFileFor(cacheDir, target));
+      // Same naming as MetadataService (D-121): namespaced by tenant.
+      await fs.rm(path.join(cacheDir, metadataCacheFileName(tenantId, target)));
       out(`invalidated ${target} (${cacheDir})\n`);
     } catch {
       // Already absent: idempotent, still a success.

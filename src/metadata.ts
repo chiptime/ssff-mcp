@@ -332,6 +332,20 @@ export interface MetadataServiceOptions {
   diskTtlMs?: number;
   cacheDir?: string;
   disableDiskCache?: boolean;
+  /**
+   * Tenant namespace for the disk cache (D-121/FR-161): two tenants sharing
+   * an environment alias must never share an entry. Defaults to "default"
+   * (the migrated flat shape and inline mode).
+   */
+  tenantId?: string;
+}
+
+/**
+ * Cache file name, namespaced by tenant (D-121). Single source of truth —
+ * `ssff-mcp cache invalidate` builds the same name from this function.
+ */
+export function metadataCacheFileName(tenantId: string, alias: string): string {
+  return `metadata-${encodeURIComponent(tenantId)}-${encodeURIComponent(alias)}.json`;
 }
 
 export class MetadataService {
@@ -342,6 +356,7 @@ export class MetadataService {
   private readonly diskTtlMs: number;
   private readonly cacheDir: string;
   private readonly disableDiskCache: boolean;
+  private readonly tenantId: string;
 
   constructor(options: MetadataServiceOptions = {}) {
     this.fetchImpl = options.fetchImpl;
@@ -352,6 +367,7 @@ export class MetadataService {
     this.disableDiskCache =
       options.disableDiskCache ??
       (options.cacheDir !== undefined ? false : options.fetchImpl !== undefined);
+    this.tenantId = options.tenantId ?? "default";
   }
 
   private async fetchFreshMetadata(env: EnvTarget): Promise<ParsedMetadata> {
@@ -389,7 +405,7 @@ export class MetadataService {
       let backed = true;
       if (!this.disableDiskCache) {
         try {
-          await fs.stat(path.join(this.cacheDir, `metadata-${encodeURIComponent(alias)}.json`));
+          await fs.stat(path.join(this.cacheDir, metadataCacheFileName(this.tenantId, alias)));
         } catch {
           backed = false;
         }
@@ -403,7 +419,7 @@ export class MetadataService {
     // Try reading disk cache
     if (!this.disableDiskCache) {
       try {
-        const cacheFile = path.join(this.cacheDir, `metadata-${encodeURIComponent(alias)}.json`);
+        const cacheFile = path.join(this.cacheDir, metadataCacheFileName(this.tenantId, alias));
         const content = await fs.readFile(cacheFile, "utf-8");
         const diskEntry = JSON.parse(content) as { fetchedAt: number; data: ParsedMetadata };
         if (
@@ -439,7 +455,7 @@ export class MetadataService {
     if (!this.disableDiskCache) {
       try {
         await fs.mkdir(this.cacheDir, { recursive: true });
-        const cacheFile = path.join(this.cacheDir, `metadata-${encodeURIComponent(alias)}.json`);
+        const cacheFile = path.join(this.cacheDir, metadataCacheFileName(this.tenantId, alias));
         await fs.writeFile(
           cacheFile,
           JSON.stringify({ fetchedAt: this.now(), data }),

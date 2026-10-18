@@ -1310,7 +1310,7 @@ test("sf://{env}/entities uses disk cache when configured via createMcpServer", 
 
         // Verify disk cache file exists
         const files = await fs.readdir(dir);
-        assert.ok(files.some((f) => f.startsWith("metadata-tenant-a")));
+        assert.ok(files.some((f) => f.startsWith("metadata-default-tenant-a")));
 
         // Second read hits disk cache and avoids network fetch
         const res2 = await client.readResource({ uri: "sf://tenant-a/entities" });

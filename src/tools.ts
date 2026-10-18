@@ -220,18 +220,35 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
   const log: Logger = makeLogger(deps.logSink);
   const fetchImpl = deps.fetchImpl;
   const envVars = deps.env ?? process.env;
-  const metadataService = new MetadataService({
-    fetchImpl: deps.fetchImpl,
-    now: deps.now,
-    cacheDir: deps.cacheDir,
-    disableDiskCache: deps.disableDiskCache,
-  });
+  const metadataServices = new Map<string, MetadataService>();
+  /**
+   * One MetadataService per tenant (D-121/FR-161): disk cache and in-memory
+   * entries are namespaced by tenant and never shared. stdio resolves exactly
+   * one tenant per process; the hosted mode will own its own instances.
+   */
+  function metadataServiceFor(tenantId: string | undefined): MetadataService {
+    const key = tenantId ?? "default";
+    let service = metadataServices.get(key);
+    if (service === undefined) {
+      service = new MetadataService({
+        fetchImpl: deps.fetchImpl,
+        now: deps.now,
+        cacheDir: deps.cacheDir,
+        disableDiskCache: deps.disableDiskCache,
+        tenantId: key,
+      });
+      metadataServices.set(key, service);
+    }
+    return service;
+  }
 
   /** Freshly loaded config per tool call: environments (each with its own allowlist) + inline flag. */
   interface FreshConfig {
     environments: Record<string, EnvironmentConfig>;
     defaultLocale?: string;
     inline?: boolean;
+    /** Tenant the config resolved from; namespaces the metadata cache (D-121). */
+    tenantId?: string;
   }
 
   async function loadFreshConfig(resolveSecretsFor?: string | null): Promise<FreshConfig> {
@@ -246,14 +263,15 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       environments: config.environments,
       defaultLocale: config.defaultLocale,
       inline: config.inline,
+      tenantId: config.tenantId,
     };
   }
 
   /** Resolve a NavigationProperty to the entity set it points at, from cached metadata. */
   const navigationLookupFor =
-    (target: EnvTarget, alias: string): NavigationLookup =>
+    (target: EnvTarget, alias: string, tenantId: string | undefined): NavigationLookup =>
     async (fromEntitySet, navigationName) => {
-      const schema = await metadataService.getEntitySchema(target, alias, fromEntitySet);
+      const schema = await metadataServiceFor(tenantId).getEntitySchema(target, alias, fromEntitySet);
       return schema?.navigationProperties.find((p) => p.name === navigationName)?.targetEntitySet;
     };
 
@@ -266,6 +284,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
   async function enforceNavigationVectors(
     target: EnvTarget,
     alias: string,
+    tenantId: string | undefined,
     env: EnvironmentConfig,
     segments: readonly string[],
     expand: string | undefined,
@@ -273,7 +292,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     orderby: string | undefined,
     select: string | undefined,
   ): Promise<void> {
-    const lookup = navigationLookupFor(target, alias);
+    const lookup = navigationLookupFor(target, alias, tenantId);
     const allowlist = env.entityAllowlist;
     const denylist = env.entityDenylist;
 
@@ -448,7 +467,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     },
     async (args) =>
       await executeTool("inspect_entity", args.environment, async () => {
-        const { environments, defaultLocale, inline } = await loadFreshConfig(args.environment);
+        const { environments, defaultLocale, inline, tenantId } = await loadFreshConfig(args.environment);
         const { alias, env } = resolveEnvironment(environments, args.environment, inline);
         // The allowlist/denylist are per environment (FR-28/D-30); the denylist wins.
         const entityAllowlist = env.entityAllowlist;
@@ -474,7 +493,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           // Same contract as sf://{env}/entities/{entitySet} (FR-101): Custom MDF
           // entities get additive MDF fields; any other entity keeps the plain schema.
           if (isCustomMdfEntity(args.entitySet)) {
-            const details = await metadataService.getCustomMdfDetails(
+            const details = await metadataServiceFor(tenantId).getCustomMdfDetails(
               target,
               alias,
               args.entitySet,
@@ -486,7 +505,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
               return { structured, text: JSON.stringify(structured) };
             }
           }
-          const schema = await metadataService.getEntitySchema(target, alias, args.entitySet);
+          const schema = await metadataServiceFor(tenantId).getEntitySchema(target, alias, args.entitySet);
           if (schema === undefined) {
             throw new SanitizedError(
               "RESOURCE_NOT_FOUND",
@@ -502,7 +521,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         }
 
         if (args.customOnly === true) {
-          const listed = await metadataService.listCustomMdf(
+          const listed = await metadataServiceFor(tenantId).listCustomMdf(
             target,
             alias,
             entityAllowlist,
@@ -522,7 +541,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
 
         // Full listing (FR-100): every entity that passes the allowlist and the
         // optional name filter, never truncated.
-        const parsed = await metadataService.getParsedMetadata(target, alias);
+        const parsed = await metadataServiceFor(tenantId).getParsedMetadata(target, alias);
         const allowed = parsed.entitySets.filter((name) =>
           isEntityPermitted(entityAllowlist, entityDenylist, name),
         );
@@ -545,7 +564,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     },
     async (args) =>
       await executeTool("query_entity", args.environment, async () => {
-        const { environments, inline } = await loadFreshConfig(args.environment);
+        const { environments, inline, tenantId } = await loadFreshConfig(args.environment);
         const { alias, env } = resolveEnvironment(environments, args.environment, inline);
         // The allowlist/denylist are per environment (FR-28/D-30); the denylist wins.
         const entityAllowlist = env.entityAllowlist;
@@ -606,7 +625,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         });
 
         const target: EnvTarget = envTargetFor(env, alias);
-        const verdict = await metadataService.classifyFirstSegment(target, alias, validatedPath.firstSegmentName);
+        const verdict = await metadataServiceFor(tenantId).classifyFirstSegment(target, alias, validatedPath.firstSegmentName);
         if (verdict.kind === "function-import") {
           throw new SanitizedError(
             "FUNCTION_IMPORT_UNSUPPORTED",
@@ -622,6 +641,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         await enforceNavigationVectors(
           target,
           alias,
+          tenantId,
           env,
           validatedPath.segments,
           args.expand,
@@ -727,7 +747,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     },
     async (args) =>
       await executeTool("batch_get", args.environment, async () => {
-        const { environments, inline } = await loadFreshConfig(args.environment);
+        const { environments, inline, tenantId } = await loadFreshConfig(args.environment);
         const { alias, env } = resolveEnvironment(environments, args.environment, inline);
         // The allowlist/denylist are per environment (FR-28/D-30); the denylist wins.
         const entityAllowlist = env.entityAllowlist;
@@ -812,7 +832,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
             continue;
           }
           classified.add(item.firstSegmentName);
-          const verdict = await metadataService.classifyFirstSegment(target, alias, item.firstSegmentName);
+          const verdict = await metadataServiceFor(tenantId).classifyFirstSegment(target, alias, item.firstSegmentName);
           if (verdict.kind === "function-import") {
             throw new SanitizedError(
               "FUNCTION_IMPORT_UNSUPPORTED",
@@ -830,6 +850,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           await enforceNavigationVectors(
             target,
             alias,
+            tenantId,
             env,
             item.segments,
             item.expand,
@@ -1009,13 +1030,13 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       },
     }),
     async (uri, { environment }) => {
-      const { environments, inline } = await loadFreshConfig(environment as string);
+      const { environments, inline, tenantId } = await loadFreshConfig(environment as string);
       const resolved = resolveEnvironment(environments, environment as string, inline);
       // The allowlist/denylist are per environment (FR-28/D-30); the denylist wins.
       const entityAllowlist = resolved.env.entityAllowlist;
       const entityDenylist = resolved.env.entityDenylist;
       const target = envTargetFor(resolved.env);
-      const parsed = await metadataService.getParsedMetadata(target, resolved.alias);
+      const parsed = await metadataServiceFor(tenantId).getParsedMetadata(target, resolved.alias);
 
       const overview = {
         environment: resolved.alias,
@@ -1060,13 +1081,13 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       },
     }),
     async (uri, { environment }) => {
-      const { environments, inline } = await loadFreshConfig(environment as string);
+      const { environments, inline, tenantId } = await loadFreshConfig(environment as string);
       const resolved = resolveEnvironment(environments, environment as string, inline);
       // The allowlist/denylist are per environment (FR-28/D-30); the denylist wins.
       const entityAllowlist = resolved.env.entityAllowlist;
       const entityDenylist = resolved.env.entityDenylist;
       const target = envTargetFor(resolved.env);
-      const parsed = await metadataService.getParsedMetadata(target, resolved.alias);
+      const parsed = await metadataServiceFor(tenantId).getParsedMetadata(target, resolved.alias);
 
       let allowedSets = parsed.entitySets;
       allowedSets = allowedSets.filter((name) => isEntityPermitted(entityAllowlist, entityDenylist, name));
@@ -1100,7 +1121,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     "sf_entity_schema",
     new ResourceTemplate("sf://{environment}/entities/{entitySet}", { list: undefined }),
     async (uri, { environment, entitySet }) => {
-      const { environments, defaultLocale, inline } = await loadFreshConfig(environment as string);
+      const { environments, defaultLocale, inline, tenantId } = await loadFreshConfig(environment as string);
       const resolved = resolveEnvironment(environments, environment as string, inline);
       // The allowlist/denylist are per environment (FR-28/D-30); the denylist wins.
       const entityAllowlist = resolved.env.entityAllowlist;
@@ -1115,7 +1136,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       }
 
       const target = envTargetFor(resolved.env);
-      const schema = await metadataService.getEntitySchema(target, resolved.alias, entityName);
+      const schema = await metadataServiceFor(tenantId).getEntitySchema(target, resolved.alias, entityName);
       if (!schema) {
         throw new SanitizedError(
           "RESOURCE_NOT_FOUND",
@@ -1127,7 +1148,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       // keeps the plain schema contract. Resources take no parameters, so the
       // locale uses levels 2-4 only (D-70).
       const payload = isCustomMdfEntity(entityName)
-        ? ((await metadataService.getCustomMdfDetails(
+        ? ((await metadataServiceFor(tenantId).getCustomMdfDetails(
             target,
             resolved.alias,
             entityName,
@@ -1169,14 +1190,14 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       },
     }),
     async (uri, { environment }) => {
-      const { environments, inline } = await loadFreshConfig(environment as string);
+      const { environments, inline, tenantId } = await loadFreshConfig(environment as string);
       const resolved = resolveEnvironment(environments, environment as string, inline);
       // The allowlist/denylist are per environment (FR-28/D-30); the denylist wins.
       const entityAllowlist = resolved.env.entityAllowlist;
       const entityDenylist = resolved.env.entityDenylist;
       const target = envTargetFor(resolved.env);
       // Zero-network (D-62): classified from the cached $metadata; allowlist-filtered (D-68).
-      const listed = await metadataService.listCustomMdf(target, resolved.alias, entityAllowlist);
+      const listed = await metadataServiceFor(tenantId).listCustomMdf(target, resolved.alias, entityAllowlist);
       // The metadata service applies the allowlist; the denylist is applied here.
       const entities = listed.filter((entity) => isEntityPermitted(undefined, entityDenylist, entity.name));
       const body = {

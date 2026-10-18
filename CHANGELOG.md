@@ -12,6 +12,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Multi-tenant configuration shape** (groundwork for the hosted mode,
+  `PRD-feature-multitenant-hosting.md`). The config file now also accepts a
+  `tenants` level: `tenants.<id>` carries its own environments plus tenant-level
+  `entityAllowlist`/`entityDenylist` defaults (an environment list **replaces**
+  its tenant base) and an `apiKeyHash` — a client-wide key reaching every
+  environment, while a per-environment `apiKeyHash` reaches only that one. The
+  legacy flat shape keeps working unchanged: it auto-migrates to a single
+  `default` tenant (one-time stderr warning). `stdio` resolves exactly one
+  tenant — two or more are rejected pointing at the future `ssff-mcp serve`.
+- **Tenant resolution for the hosted mode** (`src/tenancy.ts`): keys are stored
+  as sha-256 digests and compared in constant time; an environment key reaches
+  only its environment, a tenant key reaches all of them, and unknown or absent
+  keys resolve to nothing (fail-closed, never a default tenant). Not wired to
+  any transport yet.
+
+### Changed
+
+- **The `$metadata` disk cache is namespaced by tenant.** Cache files move from
+  `metadata-<alias>.json` to `metadata-<tenant>-<alias>.json` (the flat shape
+  and inline mode use the `default` namespace), so two tenants sharing an alias
+  can never share an entry — in memory or on disk. `ssff-mcp cache invalidate`
+  deletes the tenant-scoped file. Existing cache files under the old name are
+  ignored (delete them manually if you care); the first call after upgrading
+  refetches `$metadata` once per environment.
+
 ### Fixed
 
 - **The advertised version is no longer hardcoded.** The outgoing `User-Agent` and the MCP

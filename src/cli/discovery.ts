@@ -14,6 +14,8 @@ export interface DiscoverOptions {
   fetchImpl?: FetchImpl;
   cacheDir?: string;
   disableDiskCache?: boolean;
+  /** Tenant namespace for the prewarmed cache file (D-121); defaults to "default". */
+  tenantId?: string;
 }
 
 export async function discoverEntities(options: DiscoverOptions): Promise<string[]> {
@@ -21,6 +23,7 @@ export async function discoverEntities(options: DiscoverOptions): Promise<string
     fetchImpl: options.fetchImpl,
     cacheDir: options.cacheDir,
     disableDiskCache: options.disableDiskCache,
+    tenantId: options.tenantId,
   });
   const parsed = await service.getParsedMetadata(envTargetFor(options.environment, options.alias), options.alias);
   return [...parsed.entitySets].sort((a, b) => a.localeCompare(b));

@@ -38,7 +38,7 @@ test("discoverEntities prewarms the disk cache under the given alias", async () 
   const cacheDir = await tempCacheDir();
   const { fetch } = metadataResponder();
   await discoverEntities({ environment: ENVIRONMENT, alias: "prod", fetchImpl: fetch, cacheDir });
-  const cacheFile = path.join(cacheDir, "metadata-prod.json");
+  const cacheFile = path.join(cacheDir, "metadata-default-prod.json");
   const parsed = JSON.parse(await fs.readFile(cacheFile, "utf-8")) as { data: { entitySets: string[] } };
   assert.ok(parsed.data.entitySets.includes("User"), "cache should contain the parsed entity sets");
 });

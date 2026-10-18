@@ -120,6 +120,6 @@ test("S1/S3/S5/S6/S8: scope matrix, cold denials, first segment and cache", asyn
     assert.deepEqual(catalog(await read("sf://prod/entities")), [...names].sort());
     assert.deepEqual(catalog(await read("sf://dev/entities")), [...names].sort());
     assert.equal(requests.length, before);
-    for (const alias of ["prod", "dev"]) assert.deepEqual(JSON.parse(await fs.readFile(path.join(cacheDir, `metadata-${alias}.json`), "utf8")).data.entitySets.sort(), [...names].sort());
+    for (const alias of ["prod", "dev"]) assert.deepEqual(JSON.parse(await fs.readFile(path.join(cacheDir, `metadata-default-${alias}.json`), "utf8")).data.entitySets.sort(), [...names].sort());
   });
 });
