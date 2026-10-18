@@ -9,7 +9,9 @@ import { parseExpand } from "../src/expand.js";
 import {
   callTool,
   errorPayload,
+  FakeResponse,
   jsonResponse,
+  mdfMetadataXml,
   withTestServer,
   writeConfigFile,
   xmlResponse,
@@ -296,3 +298,72 @@ test("parseExpand selections carry the property lists the field policy needs", (
     assert.deepEqual(parsed.selections, [{ route: ["job"], properties: ["id", "amount"] }]);
   }
 });
+
+for (const tool of ["query_entity", "batch_get"] as const) {
+  for (const restricted of [true, false]) {
+    test(`${tool}: XML expansion checks intermediate fields (${restricted ? "restricted" : "unrestricted"})`, async () => {
+      const metadata = mdfMetadataXml([
+        { name: "User", keys: ["userId"], navs: [["employment", "Employment"]] },
+        { name: "Employment", keys: ["id"], navs: [["job", "EmpJob"]] },
+        { name: "EmpJob", keys: ["id"] },
+      ]);
+      const record = {
+        userId: "u1",
+        employment: { id: "e1", secret: "must-not-leave", job: { id: "j1", label: "visible" } },
+      };
+      const configPath = await configFor([
+        { entity: "User" },
+        { entity: "Employment", ...(restricted ? { fields: ["id"] } : {}) },
+        { entity: "EmpJob" },
+      ]);
+      let dataCalls = 0;
+      await withTestServer({
+        configPath,
+        disableDiskCache: true,
+        logSink: () => {},
+        fetchImpl: async (url, init) => {
+          if (url.endsWith("/$metadata")) return xmlResponse(metadata);
+          dataCalls += 1;
+          const body = restricted
+            ? JSON.stringify({ d: { results: [record] } })
+            : "<feed><entry>unchanged-atom</entry></feed>";
+          const contentType = restricted ? "application/json" : "application/atom+xml";
+          if (tool === "query_entity") {
+            assert.equal(init.headers.Accept, contentType);
+            return new FakeResponse(200, body, { "content-type": contentType });
+          }
+          assert.ok("body" in init);
+          assert.match(init.body, new RegExp(`Accept: ${contentType.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i"));
+          const part = ["--fields", "Content-Type: application/http", "",
+            "HTTP/1.1 200 OK", `Content-Type: ${contentType}`, "", body,
+            "--fields--", ""].join("\r\n");
+          return new FakeResponse(200, part, { "content-type": "multipart/mixed; boundary=fields" });
+        },
+      }, async (client) => {
+        const item = { entityPath: "User", expand: "employment/job" };
+        const result = await callTool(client, tool, {
+          environment: "prod",
+          output: "xml",
+          ...(tool === "query_entity" ? item : { requests: [item] }),
+        });
+        assert.equal(result.isError, undefined, JSON.stringify(result));
+        assert.equal(dataCalls, 1);
+        const payload = result.structuredContent as Record<string, unknown>;
+        const entry = tool === "query_entity"
+          ? payload
+          : (payload.results as Array<Record<string, unknown>>)[0]!;
+        if (restricted) {
+          assert.equal(entry.outputDowngraded, true);
+          const records = entry.records as Array<typeof record>;
+          assert.equal(records[0]!.employment.id, "e1");
+          assert.equal(records[0]!.employment.job.label, "visible");
+          assert.equal("secret" in records[0]!.employment, false);
+          assert.ok(!JSON.stringify(result).includes("must-not-leave"));
+        } else {
+          assert.equal(entry.outputDowngraded, undefined);
+          assert.ok(JSON.stringify(result).includes("unchanged-atom"));
+        }
+      });
+    });
+  }
+}

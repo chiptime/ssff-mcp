@@ -375,9 +375,18 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       return false; // rejected before dispatch anyway
     }
     for (const route of parsed.routes) {
-      const reached = await walkToEntity(lookup, root, route);
-      if (reached !== undefined && permittedFieldsFor(allowlist, reached) !== undefined) {
-        return true;
+      let current = root;
+      // A slash route expands every intermediate entity too, not only its leaf.
+      // Any restricted prefix must force JSON before raw Atom is requested.
+      for (const navigation of route) {
+        const reached = await lookup(current, navigation);
+        if (reached === undefined) {
+          return true; // fail closed; normal enforcement rejects this route
+        }
+        if (permittedFieldsFor(allowlist, reached) !== undefined) {
+          return true;
+        }
+        current = reached;
       }
     }
     return false;
