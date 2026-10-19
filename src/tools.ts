@@ -16,16 +16,26 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { executeBatchGet, sanitizeEmbeddedFailure } from "./batch.js";
-import { isEntityPermitted } from "./allowlist.js";
+import { isEntityPermitted, permittedFieldsFor } from "./allowlist.js";
 import {
   checkExpandRoutes,
   checkExpandSelections,
   checkExpressionReferences,
   checkNavigationPath,
+  entitySetOfSegment,
   expressionReferences,
+  type ExpressionReference,
   type NavigationLookup,
 } from "./allowlist-navigation.js";
 import { parseExpand } from "./expand.js";
+import {
+  allowedProperties,
+  assertPropertyPermitted,
+  FieldNotPermittedError,
+  filterSchemaProperties,
+  redactValue,
+  type SchemaLookup,
+} from "./fields.js";
 import { PACKAGE_VERSION } from "./version.js";
 import { loadConfig, type EnvironmentConfig } from "./config.js";
 import { CURSOR_VERSION, defaultCursorCodec } from "./cursor.js";
@@ -309,6 +319,181 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       return schema?.navigationProperties.find((p) => p.name === navigationName)?.targetEntitySet;
     };
 
+  /** Schema lookup bound to an environment, for the field policy. */
+  const schemaLookupFor =
+    (target: EnvTarget, alias: string, tenantId: string | undefined): SchemaLookup =>
+    (entitySet) => metadataServiceFor(tenantId).getEntitySchema(target, alias, entitySet);
+
+  /** Map a FieldNotPermittedError to the sanitized ENTITY_NOT_ALLOWED payload. */
+  function toEntityNotAllowed(cause: unknown): SanitizedError {
+    if (cause instanceof FieldNotPermittedError) {
+      return new SanitizedError("ENTITY_NOT_ALLOWED", cause.message);
+    }
+    throw cause;
+  }
+
+  /**
+   * Field-level granularity: every property named by an option must be permitted
+   * (`fields` on the allowlist entry) for the entity it belongs to. A path's
+   * final segment belongs to the entity the path reaches; a bare name belongs to
+   * the base. Navigation properties are skipped: the navigation policy owns them.
+   */
+  async function enforceFieldPermissions(
+    target: EnvTarget,
+    alias: string,
+    tenantId: string | undefined,
+    allowlist: NonNullable<EnvironmentConfig["entityAllowlist"]>,
+    baseEntitySet: string,
+    references: readonly ExpressionReference[],
+    optionName: string,
+  ): Promise<void> {
+    const lookup = navigationLookupFor(target, alias, tenantId);
+    const schemaLookup = schemaLookupFor(target, alias, tenantId);
+    for (const reference of references) {
+      if (reference.kind === "name") {
+        await assertPropertyPermitted(
+          allowlist,
+          baseEntitySet,
+          reference.name,
+          schemaLookup,
+          optionName,
+        );
+        continue;
+      }
+      const owner = await walkToEntity(lookup, baseEntitySet, reference.segments.slice(0, -1));
+      if (owner === undefined) {
+        continue; // the navigation policy reports unresolvable hops
+      }
+      await assertPropertyPermitted(
+        allowlist,
+        owner,
+        reference.segments[reference.segments.length - 1]!,
+        schemaLookup,
+        optionName,
+      );
+    }
+  }
+
+  /** Walk navigations from `base`; undefined when a hop cannot be resolved. */
+  async function walkToEntity(
+    lookup: NavigationLookup,
+    base: string,
+    navigations: readonly string[],
+  ): Promise<string | undefined> {
+    let current = base;
+    for (const navigation of navigations) {
+      const next = await lookup(current, navigation);
+      if (next === undefined) {
+        return undefined;
+      }
+      current = next;
+    }
+    return current;
+  }
+
+  /** The entity set a validated path ends at (its records belong to it). */
+  async function entityReachedByPath(
+    target: EnvTarget,
+    alias: string,
+    tenantId: string | undefined,
+    segments: readonly string[],
+  ): Promise<string | undefined> {
+    return await walkToEntity(
+      navigationLookupFor(target, alias, tenantId),
+      entitySetOfSegment(segments[0] ?? ""),
+      segments.slice(1).map(entitySetOfSegment),
+    );
+  }
+
+  /** True when the reached entity or any $expand destination carries `fields`. */
+  async function fieldRestrictionApplies(
+    target: EnvTarget,
+    alias: string,
+    tenantId: string | undefined,
+    allowlist: NonNullable<EnvironmentConfig["entityAllowlist"]>,
+    segments: readonly string[],
+    expand: string | undefined,
+  ): Promise<boolean> {
+    const lookup = navigationLookupFor(target, alias, tenantId);
+    const root = await entityReachedByPath(target, alias, tenantId, segments);
+    if (root === undefined) {
+      return false;
+    }
+    if (permittedFieldsFor(allowlist, root) !== undefined) {
+      return true;
+    }
+    if (expand === undefined) {
+      return false;
+    }
+    const parsed = parseExpand(expand);
+    if (!parsed.ok) {
+      return false; // rejected before dispatch anyway
+    }
+    for (const route of parsed.routes) {
+      let current = root;
+      // A slash route expands every intermediate entity too, not only its leaf.
+      // Any restricted prefix must force JSON before raw Atom is requested.
+      for (const navigation of route) {
+        const reached = await lookup(current, navigation);
+        if (reached === undefined) {
+          return true; // fail closed; normal enforcement rejects this route
+        }
+        if (permittedFieldsFor(allowlist, reached) !== undefined) {
+          return true;
+        }
+        current = reached;
+      }
+    }
+    return false;
+  }
+
+  /** Redact a records payload against the entity the path reached. */
+  async function redactRecords(
+    target: EnvTarget,
+    alias: string,
+    tenantId: string | undefined,
+    allowlist: NonNullable<EnvironmentConfig["entityAllowlist"]> | undefined,
+    segments: readonly string[],
+    records: unknown,
+  ): Promise<unknown> {
+    if (allowlist === undefined) {
+      return records;
+    }
+    const root = await entityReachedByPath(target, alias, tenantId, segments);
+    if (root === undefined) {
+      return records;
+    }
+    try {
+      return await redactValue(
+        records,
+        root,
+        allowlist,
+        schemaLookupFor(target, alias, tenantId),
+        navigationLookupFor(target, alias, tenantId),
+      );
+    } catch (cause) {
+      // A configured field list that cannot be enforced refuses the read rather
+      // than returning the payload unredacted.
+      throw toEntityNotAllowed(cause);
+    }
+  }
+
+  /** Hide non-permitted properties from a schema payload (keys stay visible). */
+  async function redactedSchema<P extends { properties: Array<{ name: string }> }>(
+    target: EnvTarget,
+    alias: string,
+    tenantId: string | undefined,
+    allowlist: NonNullable<EnvironmentConfig["entityAllowlist"]> | undefined,
+    entitySet: string,
+    schema: P,
+  ): Promise<P> {
+    if (allowlist === undefined) {
+      return schema;
+    }
+    const allowed = await allowedProperties(allowlist, entitySet, schemaLookupFor(target, alias, tenantId));
+    return filterSchemaProperties(schema, allowed);
+  }
+
   /**
    * Enforce the navigation and `$expand` vectors (FR-141..FR-146): every hop is
    * resolved to its **target entity set** and checked against the lists, and
@@ -396,6 +581,22 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           "a $select inside $expand could not be resolved from the cached metadata; if the catalog changed, run `ssff-mcp cache invalidate <alias>` and retry",
         );
       }
+      // Field-level granularity inside $expand: each selected property must be
+      // permitted for the entity its route reaches.
+      const expandSchemaLookup = schemaLookupFor(target, alias, tenantId);
+      for (const selection of parsed.selections) {
+        const owner = await walkToEntity(lookup, pathVerdict.reached, selection.route);
+        if (owner === undefined) {
+          continue;
+        }
+        for (const property of selection.properties) {
+          try {
+            await assertPropertyPermitted(allowlist, owner, property, expandSchemaLookup, "a $select inside $expand");
+          } catch (cause) {
+            throw toEntityNotAllowed(cause);
+          }
+        }
+      }
     }
 
     // A denied entity must be unreachable through ANY option, so filter, orderby
@@ -428,6 +629,21 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           "NAVIGATION_NOT_ALLOWED",
           `a navigation referenced by ${name} could not be resolved from the cached metadata; if the catalog changed, run \`ssff-mcp cache invalidate <alias>\` and retry`,
         );
+      }
+      // Field-level granularity: the same references, checked against the
+      // `fields` of the entity each property belongs to.
+      try {
+        await enforceFieldPermissions(
+          target,
+          alias,
+          tenantId,
+          allowlist ?? [],
+          pathVerdict.reached,
+          expressionReferences(expression),
+          name,
+        );
+      } catch (cause) {
+        throw toEntityNotAllowed(cause);
       }
     }
   }
@@ -535,7 +751,17 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
               locale,
             );
             if (details !== undefined) {
-              const structured = details as unknown as Record<string, unknown>;
+              // Field granularity: a property you cannot read must not be
+              // discoverable in the schema either.
+              const visible = await redactedSchema(
+                target,
+                alias,
+                tenantId,
+                entityAllowlist,
+                args.entitySet,
+                details,
+              );
+              const structured = visible as unknown as Record<string, unknown>;
               return { structured, text: JSON.stringify(structured) };
             }
           }
@@ -546,7 +772,8 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
               "the requested entity set was not found in the metadata of this environment",
             );
           }
-          const structured = schema as unknown as Record<string, unknown>;
+          const visible = await redactedSchema(target, alias, tenantId, entityAllowlist, args.entitySet, schema);
+          const structured = visible as unknown as Record<string, unknown>;
           return { structured, text: JSON.stringify(structured) };
         }
 
@@ -685,17 +912,31 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           args.select,
         );
 
+        // Field-level granularity: when any involved entity carries `fields`, the
+        // XML output is DOWNGRADED to JSON (with a flag) instead of redacting
+        // Atom — decided trade-off, documented in docs/configuration.md.
+        const downgradeXml =
+          output === "xml" &&
+          (await fieldRestrictionApplies(
+            target,
+            alias,
+            tenantId,
+            env.entityAllowlist ?? [],
+            validatedPath.segments,
+            args.expand,
+          ));
+
         // Exactly one fetch per call; next links are never followed.
         const result = await dispatchGet(target, pathAndQuery, {
           // Entity data in XML is Atom: SF answers 406 to `application/xml` there
           // (that media type is only valid for $metadata).
-          accept: output === "xml" ? "application/atom+xml" : "application/json",
+          accept: output === "xml" && !downgradeXml ? "application/atom+xml" : "application/json",
           timeoutMs: QUERY_TOOL_TIMEOUT_MS,
           fetchImpl,
           now: deps.now,
         });
 
-        if (output === "xml") {
+        if (output === "xml" && !downgradeXml) {
           // Raw service body, native fields, no normalization (D-32). XML
           // cannot be truncated safely, so the ceiling is a hard rejection.
           const paging = extractXmlPaging(result.body);
@@ -735,13 +976,27 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         }
         const unwrapped = unwrapODataV2(parsed);
 
+        // Field-level granularity: strip what `fields` does not permit. Without
+        // this, omitting $select would return every property.
+        const redactedRecords = await redactRecords(
+          target,
+          alias,
+          tenantId,
+          env.entityAllowlist,
+          validatedPath.segments,
+          unwrapped.records,
+        );
+
         const structured: Record<string, unknown> = {
           environment: alias,
           path: args.entityPath,
           recordCount: unwrapped.records.length,
-          records: unwrapped.records,
+          records: redactedRecords,
           hasMore: unwrapped.hasMore,
         };
+        if (downgradeXml) {
+          structured.outputDowngraded = true;
+        }
         if (topClamped) {
           structured.topClamped = true;
         }
@@ -896,10 +1151,32 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           );
         }
 
+        // Field-level granularity: XML parts are DOWNGRADED to JSON (flagged)
+        // when ANY item touches an entity that carries `fields`.
+        const downgradeXml =
+          output === "xml" &&
+          (await (async () => {
+            for (const item of planned) {
+              if (
+                await fieldRestrictionApplies(
+                  target,
+                  alias,
+                  tenantId,
+                  env.entityAllowlist ?? [],
+                  item.segments,
+                  item.expand,
+                )
+              ) {
+                return true;
+              }
+            }
+            return false;
+          })());
+
         // One fixed $batch POST, GET-only envelope (D-28/DS-P2-04).
         const responses = await executeBatchGet({
           env: target,
-          output,
+          output: downgradeXml ? "json" : output,
           timeoutMs: BATCH_TOOL_TIMEOUT_MS,
           requests: planned.map((item) => ({ url: item.pathAndQuery })),
           fetchImpl,
@@ -950,7 +1227,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           entry.success = true;
           entry.httpStatus = httpStatus;
 
-          if (output === "xml") {
+          if (output === "xml" && !downgradeXml) {
             if (typeof response.data !== "string") {
               entry.success = false;
               entry.error = {
@@ -1010,7 +1287,17 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           }
           recordsReturned += records.length;
           entry.recordCount = records.length;
-          entry.records = records;
+          entry.records = await redactRecords(
+            target,
+            alias,
+            tenantId,
+            env.entityAllowlist,
+            item.segments,
+            records,
+          );
+          if (downgradeXml) {
+            entry.outputDowngraded = true;
+          }
           entry.hasMore = unwrapped.hasMore;
           if (item.topClamped) {
             entry.topClamped = true;
@@ -1183,7 +1470,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       // Custom MDF entities get additive MDF fields (FR-72); every other entity
       // keeps the plain schema contract. Resources take no parameters, so the
       // locale uses levels 2-4 only (D-70).
-      const payload = isCustomMdfEntity(entityName)
+      const rawPayload = isCustomMdfEntity(entityName)
         ? ((await metadataServiceFor(tenantId).getCustomMdfDetails(
             target,
             resolved.alias,
@@ -1192,6 +1479,15 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
             resolveLocale({ config: defaultLocale, env: envVars.SF_DEFAULT_LOCALE }),
           )) ?? schema)
         : schema;
+      // Field granularity: a property you cannot read must not be discoverable.
+      const payload = await redactedSchema(
+        target,
+        resolved.alias,
+        tenantId,
+        entityAllowlist,
+        entityName,
+        rawPayload,
+      );
 
       return {
         contents: [

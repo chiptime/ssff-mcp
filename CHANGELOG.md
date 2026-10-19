@@ -53,15 +53,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Multi-tenant configuration shape** (groundwork for the hosted mode,
-  `PRD-feature-multitenant-hosting.md`). The config file now also accepts a
-  `tenants` level: `tenants.<id>` carries its own environments plus tenant-level
-  `entityAllowlist`/`entityDenylist` defaults (an environment list **replaces**
-  its tenant base) and an `apiKeyHash` — a client-wide key reaching every
-  environment, while a per-environment `apiKeyHash` reaches only that one. The
-  legacy flat shape keeps working unchanged: it auto-migrates to a single
-  `default` tenant (one-time stderr warning). `stdio` resolves exactly one
-  tenant — two or more are rejected pointing at the future `ssff-mcp serve`.
 - **Tenant resolution for the hosted mode** (`src/tenancy.ts`): keys are stored
   as sha-256 digests and compared in constant time; an environment key reaches
   only its environment, a tenant key reaches all of them, and unknown or absent
@@ -77,6 +68,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deletes the tenant-scoped file. Existing cache files under the old name are
   ignored (delete them manually if you care); the first call after upgrading
   refetches `$metadata` once per environment.
+
+## [0.5.0] — 2026-10-18
+
+### Added
+
+- **Multi-tenant config shape: `tenants.<id>`.** The config accepts a tenants level where
+  each tenant carries its own environments, tenant-level allowlist/denylist defaults and
+  hashed API keys; a per-environment list **replaces** (never merges) the tenant-level one.
+  The flat legacy shape keeps working and resolves as a single `default` tenant, with a
+  one-time migration warning. stdio resolves exactly one tenant; two or more are rejected,
+  pointing at the future serve mode.
+- **Field-level granularity: `fields` on each `entityAllowlist` entry.**
+  `{ "entity": "User", "fields": ["userId", "firstName"] }` restricts the properties that
+  entity exposes. Absent or `[]` means every property, exactly like the entity list itself.
+  The entity's **keys are always readable** (added implicitly), so `__metadata.uri` never
+  leaks a denied property and every record stays referenceable. Enforcement is complete:
+  references to a non-permitted property in `$select`, `$filter`, `$orderby` — including
+  `navProp/property` paths, which are checked against the entity the path reaches — and in
+  `$select` inside `$expand` fail with `ENTITY_NOT_ALLOWED`; the **response payload is
+  redacted** (without this, omitting `$select` would return every property); expanded records
+  are redacted with their own entity's `fields`; and `inspect_entity` plus the
+  `sf://{env}/entities/{entitySet}` resource hide non-permitted properties from the schema —
+  if you cannot read it, you cannot discover it. `fields` is rejected on `entityDenylist`:
+  a property denylist would add a second, ambiguous precedence rule.
+- **`output: "xml"` is downgraded when `fields` apply.** Redacting Atom means rewriting
+  namespaces, `m:properties`, `m:null` and nested entries; instead the response comes back as
+  JSON with `outputDowngraded: true`. SuccessFactors Atom is also 2–3× the tokens of the same
+  JSON, so the downgrade is the cheaper answer for the model. XML is untouched when no
+  `fields` are configured.
 
 ### Fixed
 
@@ -307,7 +327,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional fail-closed `entityAllowlist` enforcement.
 - GET-only `batch_get` built on the `odata-batch` retrieve pattern.
 
-[Unreleased]: https://github.com/chiptime/ssff-mcp/compare/0.4.0...HEAD
+[Unreleased]: https://github.com/chiptime/ssff-mcp/compare/0.5.0...HEAD
+[0.5.0]: https://github.com/chiptime/ssff-mcp/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/chiptime/ssff-mcp/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/chiptime/ssff-mcp/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/chiptime/ssff-mcp/releases/tag/0.2.0
