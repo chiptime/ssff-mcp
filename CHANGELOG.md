@@ -65,6 +65,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only its environment, a tenant key reaches all of them, and unknown or absent
   keys resolve to nothing (fail-closed, never a default tenant). Not wired to
   any transport yet.
+- **Percent-encoded references in `$filter`, `$orderby` and `$select` are
+  rejected** with `OPTION_INVALID` when the `%` appears outside a quoted
+  literal. SuccessFactors decodes the expression before evaluating it, so
+  `%65xternalCodeNav` reaches the same navigation while the identifier scan only
+  sees `xternalCodeNav` — a denied entity was nameable through the encoded form.
+  Inside a literal the sequence is data and is dispatched unchanged (`'a%24b'`
+  still works). This is the rule `$expand` and the entity path already applied.
 
 ### Changed
 

@@ -232,3 +232,68 @@ test("a bare navigation in $filter is rejected instead of reaching SAP", async (
     },
   );
 });
+
+test("a percent-encoded navigation in $filter is rejected before any data request", async () => {
+  const { fetch, requests } = responder();
+  await withTestServer(
+    { configPath: await configPath([{ entity: "cust_Equipo" }]), fetchImpl: fetch },
+    async (client) => {
+      // SuccessFactors decodes `%65` to `e`, so this reaches externalCodeNav ->
+      // User (denied) while the raw identifier scan sees only `xternalCodeNav`.
+      const result = await callTool(client, "query_entity", {
+        environment: "prod",
+        entityPath: "cust_Equipo",
+        filter: "%65xternalCodeNav/userId eq '1'",
+      });
+      assert.equal(errorPayload(result).code, "OPTION_INVALID");
+      assert.equal(dataRequests(requests), 0);
+    },
+  );
+});
+
+test("a percent-encoded slash in $filter cannot smuggle a navigation path", async () => {
+  const { fetch, requests } = responder();
+  await withTestServer(
+    { configPath: await configPath([{ entity: "cust_Equipo" }]), fetchImpl: fetch },
+    async (client) => {
+      const result = await callTool(client, "query_entity", {
+        environment: "prod",
+        entityPath: "cust_Equipo",
+        filter: "externalCodeNav%2FuserId eq '1'",
+      });
+      assert.equal(errorPayload(result).code, "OPTION_INVALID");
+      assert.equal(dataRequests(requests), 0);
+    },
+  );
+});
+
+test("a percent sign inside a quoted literal is still dispatched as data", async () => {
+  const { fetch, requests } = responder();
+  await withTestServer(
+    { configPath: await configPath([{ entity: "cust_Equipo" }]), fetchImpl: fetch },
+    async (client) => {
+      const result = await callTool(client, "query_entity", {
+        environment: "prod",
+        entityPath: "cust_Equipo",
+        filter: "externalCode eq 'a%24b'",
+      });
+      assert.equal(result.isError, undefined, JSON.stringify(result));
+      assert.ok(requests.some((request) => request.url.includes("a%24b")));
+    },
+  );
+});
+
+test("batch_get rejects the same percent-encoded structure and dispatches nothing", async () => {
+  const { fetch, requests } = responder();
+  await withTestServer(
+    { configPath: await configPath([{ entity: "cust_Equipo" }]), fetchImpl: fetch },
+    async (client) => {
+      const result = await callTool(client, "batch_get", {
+        environment: "prod",
+        requests: [{ entityPath: "cust_Equipo", filter: "%65xternalCodeNav/userId eq '1'" }],
+      });
+      assert.equal(errorPayload(result).code, "OPTION_INVALID");
+      assert.equal(dataRequests(requests), 0);
+    },
+  );
+});
