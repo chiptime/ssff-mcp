@@ -15,7 +15,7 @@ export type CliCommand =
   | { kind: "serve-http"; port?: number; host?: string; configPath?: string }
   | { kind: "key-hash" }
   | { kind: "init" }
-  | { kind: "cache-invalidate"; alias?: string; all: boolean }
+  | { kind: "cache-invalidate"; alias?: string; all: boolean; tenant?: string }
   | { kind: "help" }
   | { kind: "unknown"; arg: string };
 
@@ -77,11 +77,29 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
     const action = argv[1];
     if (action === "invalidate") {
       const rest = argv.slice(2);
-      if (rest.includes("--all")) {
-        return { kind: "cache-invalidate", all: true };
+      let tenant: string | undefined;
+      const tokens: string[] = [];
+      for (let i = 0; i < rest.length; i += 1) {
+        const token = rest[i]!;
+        if (token === "--tenant") {
+          const value = rest[++i];
+          if (!value || value.startsWith("-")) return { kind: "unknown", arg: "cache invalidate --tenant" };
+          tenant = value;
+          continue;
+        }
+        if (token.startsWith("--tenant=")) {
+          const value = token.slice("--tenant=".length);
+          if (!value) return { kind: "unknown", arg: "cache invalidate --tenant" };
+          tenant = value;
+          continue;
+        }
+        tokens.push(token);
       }
-      const alias = rest.find((value) => !value.startsWith("-"));
-      return { kind: "cache-invalidate", all: false, alias };
+      if (tokens.includes("--all")) {
+        return { kind: "cache-invalidate", all: true, tenant };
+      }
+      const alias = tokens.find((value) => !value.startsWith("-"));
+      return { kind: "cache-invalidate", all: false, alias, tenant };
     }
     return { kind: "unknown", arg: `cache ${action ?? ""}`.trim() };
   }
