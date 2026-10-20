@@ -180,6 +180,50 @@ export type ExpressionReference =
   | { kind: "name"; name: string };
 
 /**
+ * Index just past the single-quoted literal that starts at `start`, honouring
+ * OData's doubled-quote (`''`) escape. An unterminated literal consumes the rest.
+ */
+function skipQuotedLiteral(raw: string, start: number): number {
+  let index = start + 1;
+  while (index < raw.length) {
+    if (raw[index] === "'") {
+      if (raw[index + 1] === "'") {
+        index += 2;
+        continue;
+      }
+      return index + 1;
+    }
+    index += 1;
+  }
+  return index;
+}
+
+/**
+ * True when a percent-encoding appears OUTSIDE a quoted literal.
+ *
+ * SuccessFactors decodes percent-encoding before evaluating the expression, so
+ * `%65xternalCodeNav` reaches the same navigation while the identifier scanner
+ * sees only `xternalCodeNav`. Inside a literal the sequence is a value, not
+ * structure, so it is left alone (`'a%24b'` keeps working). This is the same
+ * fail-closed rule `$expand` and the entity path already apply.
+ */
+export function hasEncodedStructure(raw: string): boolean {
+  let index = 0;
+  while (index < raw.length) {
+    const char = raw[index]!;
+    if (char === "'") {
+      index = skipQuotedLiteral(raw, index);
+      continue;
+    }
+    if (char === "%") {
+      return true;
+    }
+    index += 1;
+  }
+  return false;
+}
+
+/**
  * Every property/association reference in a query option value.
  *
  * The requirement is that a denied entity is unreachable by ANY route, so this is
@@ -204,19 +248,7 @@ export function expressionReferences(raw: string): ExpressionReference[] {
   while (index < raw.length) {
     const char = raw[index]!;
     if (char === "'") {
-      // Skip the literal, honouring OData's doubled-quote escape.
-      index += 1;
-      while (index < raw.length) {
-        if (raw[index] === "'") {
-          if (raw[index + 1] === "'") {
-            index += 2;
-            continue;
-          }
-          index += 1;
-          break;
-        }
-        index += 1;
-      }
+      index = skipQuotedLiteral(raw, index);
       continue;
     }
     if (!isNameStart(char)) {

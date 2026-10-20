@@ -24,6 +24,7 @@ import {
   checkNavigationPath,
   entitySetOfSegment,
   expressionReferences,
+  hasEncodedStructure,
   type ExpressionReference,
   type NavigationLookup,
 } from "./allowlist-navigation.js";
@@ -610,6 +611,15 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     ] as const) {
       if (expression === undefined) {
         continue;
+      }
+      // The service decodes percent-encoding, so `%65xternalCodeNav` reaches a
+      // navigation the identifier scan would never see. Same rule as `$expand`
+      // and the entity path: reject rather than dispatch unverified.
+      if (hasEncodedStructure(expression)) {
+        throw new SanitizedError(
+          "OPTION_INVALID",
+          `${name} uses percent-encoded characters outside a quoted literal: the service decodes them, so they can hide a reference this server cannot verify`,
+        );
       }
       const expressionVerdict = await checkExpressionReferences(
         pathVerdict.reached,

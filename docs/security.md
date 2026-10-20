@@ -73,11 +73,14 @@ data are ever cached.** Force a reload with [`ssff-mcp cache invalidate`](config
   redacting Atom reliably is not worth the tokens it saves. A configured field list whose
   schema cannot be resolved **refuses the read** (`ENTITY_NOT_ALLOWED`) instead of returning
   unredacted data.
-  **Known gap, declared:** expression extraction in `$filter`/`$orderby` is deliberately
-  conservative — quoted literals are skipped and recognized identifier paths are checked, but
-  an unrecognized expression form is **not** checked and is left to the service. The allowlist
-  is a hard boundary for direct access, navigation paths and `$expand`; it is not a full OData
-  expression parser.
+  **Percent-encoding is rejected outside quoted literals:** `$filter`, `$orderby` and `$select`
+  fail with `OPTION_INVALID` when a `%` appears outside a literal, because the service decodes
+  it before evaluating the expression — `%65xternalCodeNav` would otherwise reach a navigation
+  the identifier scan never sees. A `%` inside a literal is data and is dispatched unchanged.
+  **Known gap, declared:** the extraction is identifier-based, not a full OData expression
+  parser — quoted literals are skipped and every identifier is checked, but a form the scanner
+  does not recognize is left to the service. The allowlist is a hard boundary for direct
+  access, navigation paths, `$expand` and percent-encoded structure.
 - **OData v2 only.** OData v4 is deferred until a tenant with a verified v4
   endpoint exists.
 - **No function imports / custom service operations** (`FUNCTION_IMPORT_UNSUPPORTED`).

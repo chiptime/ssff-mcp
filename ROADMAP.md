@@ -4,7 +4,8 @@
 > (STDIO, un usuario, una máquina) a **servicio hospedado multi-tenant con
 > usuarios, roles y acceso por rol**.
 >
-> Estado: **Fase 1 completada** · **Fase 2 en marcha** · **Fase 3 diseñada** (pendiente de verificar).
+> Estado: **Fase 1 completada** · **Fase 1.5 completada** · **Fase 2 implementada en
+> `main`** (sin publicar) · **Fase 3 diseñada** (pendiente de verificar).
 
 ## Objetivo
 
@@ -27,8 +28,9 @@ Regla transversal: **la denegación siempre gana** (ver *Decisiones abiertas*).
 
 | Fase | Alcance | Estado |
 |---|---|---|
-| **1 · Acceso por entorno** | `entityAllowlist` + `entityDenylist` dentro de cada entorno | ✅ Hecha |
-| **2 · Servicio hospedado multi-tenant** | Transporte remoto + tenants | 🔄 En marcha |
+| **1 · Acceso por entorno** | `entityAllowlist` + `entityDenylist` dentro de cada entorno | ✅ Hecha (0.4.0) |
+| **1.5 · Endurecimiento** | Navegación, `$expand`, `$filter`/`$orderby`, granularidad por campo | ✅ Hecha (0.5.0) |
+| **2 · Servicio hospedado multi-tenant** | Transporte remoto + tenants | ✅ En `main`, sin publicar |
 | **3 · Identidad: usuarios y roles** | IdP + roles → allowlist/denylist por rol | 🧭 Diseñada |
 
 ---
@@ -57,13 +59,60 @@ denylist  >  allowlist  >  permisos de la cuenta API
   una respuesta de "restringir".
 - En inline: `SF_ENTITY_ALLOWLIST` y `SF_ENTITY_DENYLIST` pueblan el entorno único.
 - `sf://{env}/overview` reporta `denylistConfigured`.
-- Rama `feat/entity-allowlist-per-environment` (ya en `origin`; **sin mergear** a `main`).
+- Integrada en `main` desde `0.4.0`.
 
 ---
 
-## Fase 2 · Servicio hospedado multi-tenant 🔄
+## Fase 1.5 · Endurecimiento de la frontera ✅
+
+Cerró las vías laterales que la allowlist por entidad dejaba abiertas:
+
+- **Navegación en la ruta** (`User('1')/empInfo`): cada salto se resuelve por metadata a su
+  `targetEntitySet` y se comprueba; un salto no resoluble se rechaza, nunca se despacha.
+- **`$expand`**: parser propio (subconjunto probado), resolución recursiva desde la entidad
+  a la que llega la ruta, `$select` anidado comprobado y `$filter`/`$orderby` anidados
+  rechazados. Percent-encoding rechazado.
+- **`$filter` / `$orderby` / `$select`**: extracción por identificador (fuera de literales),
+  rutas de navegación recorridas salto a salto, asociaciones desnudas resueltas y denegadas.
+  El percent-encoding fuera de literal se rechaza con `OPTION_INVALID`, porque el servicio lo
+  decodifica antes de evaluar.
+- **Granularidad por campo** (`fields` en la entrada de allowlist): referencias no permitidas
+  rechazadas, payload redactado (claves siempre legibles), `inspect_entity` y los recursos de
+  esquema ocultan lo no permitido, y `output: "xml"` degrada a JSON con `outputDowngraded`.
+- **Límite declarado:** el escaneo de expresiones es por identificador, no un parser completo
+  de OData v2; una forma no reconocida queda declarada en `docs/security.md`.
+
+---
+
+## Fase 2 · Servicio hospedado multi-tenant ✅ (implementada, sin publicar)
 
 Llevar el MCP a servidor para compartirlo entre varios clientes.
+
+### Estado de implementación
+
+Todo el alcance está en `main` (punta `efb5a8f`), **sin push y sin release**:
+
+- `src/config.ts` — nivel `tenants` + auto-migración de la forma plana (desde `0.5.0`).
+- `src/tenancy.ts` — `resolveTenant`: claves sha-256, comparación en tiempo constante,
+  fail-closed y alcance por entorno.
+- `src/metadata.ts` — caché `metadata-<tenant>-<alias>.json`.
+- `src/server-http.ts` + `src/cli/serve.ts` — Streamable HTTP, `/mcp`, `/healthz`, sesiones
+  acotadas y drenaje en `SIGTERM`/`SIGINT`.
+- `src/cli/key.ts` — `ssff-mcp key hash` por stdin (nunca por argv).
+- `Dockerfile` no-root, `.dockerignore`, `config.hosted.template.json` y `docs/hosting.md`.
+- `ssff-mcp cache invalidate <alias|--all> --tenant <id>` para configs multi-tenant.
+
+Validado con la suite completa y sondas HTTP contra un mock TLS local; **no** contra SAP real
+en modo hospedado ni con clientes de producto salvo OpenCode headless.
+
+### Pendiente para cerrar la Fase 2
+
+1. **Publicación:** el config `tenants` es *breaking* → release **major**; decidir antes si
+   se hace push a `origin`.
+2. **Despliegue real:** Dokploy + TLS, IP del VPS registrada en las *API login exceptions* de
+   cada cliente SAP, y prueba con Claude Desktop, VS Code/Copilot, Codex y Pi.
+3. **RDD:** la revisión nativa de la rama quedó incompleta por un defecto de gentle-ai
+   (revisores con `finish=length`); no se relanza sin petición.
 
 ### Decisiones tomadas
 
@@ -172,7 +221,7 @@ Leer el `.well-known/openid-configuration` del IAS del cliente y comprobar:
 | # | Decisión | Fase |
 |---|---|---|
 | 1 | **`allowlist`/`denylist` en capas y con roles**: cómo se combinan tenant → entorno → rol. Regla propuesta: **la denegación siempre gana** (un rol no amplía lo que el `denylist` prohíbe) y un rol sin lista declarada **no acota** (coherente con el modelo de Fase 1). | 2/3 |
-| 2 | **Alcance de la clave**: ¿una clave por cliente sin más, o acotada a entornos concretos (*scope*)? | 2 |
+| 2 | ~~**Alcance de la clave**~~ — **resuelta:** `apiKeyHash` existe en el tenant y en cada entorno; una clave de entorno solo alcanza su entorno, la del tenant todos los suyos. | 2 |
 | 3 | **Verificación de IAS** (PKCE / registro de cliente / claim de grupos) — diferida hasta que arranque la Fase 3. | 3 |
 
 > *Resuelta:* la pregunta previa sobre la semántica de la **allowlist vacía/ausente**
@@ -180,7 +229,9 @@ Leer el `.well-known/openid-configuration` del IAS del cliente y comprobar:
 
 ## Referencias
 
-- `PRD-feature-http-sse-transport.md` — PRD de Fase 2 (a reescribir sobre
-  Streamable HTTP + tenancy).
+- `PRD-feature-multitenant-hosting.md` — PRD vigente de Fase 2 (sustituye al antiguo
+  `PRD-feature-http-sse-transport.md`).
+- `PRD-feature-allowlist-vectors.md` — cierre de los vectores de `$expand` y navegación.
 - `odd/tasks/entity-allowlist-per-environment.md` — trabajo de Fase 1.
+- `odd/tasks/field-granularity.md` y `odd/tasks/multitenant-hosting.md` — Fase 1.5 y Fase 2.
 - `archive/README.md` — PRDs ya ejecutados.

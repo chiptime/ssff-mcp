@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { expressionReferences } from "../src/allowlist-navigation.js";
+import { expressionReferences, hasEncodedStructure } from "../src/allowlist-navigation.js";
 
 /**
  * A denied entity must be unreachable through ANY query option, so references are
@@ -73,4 +73,37 @@ test("whitespace around the slash is still treated as a path", () => {
   assert.deepEqual(pathsOf("externalCodeNav / userId eq '1'"), [["externalCodeNav", "userId"]]);
   assert.deepEqual(pathsOf("externalCodeNav/ userId eq '1'"), [["externalCodeNav", "userId"]]);
   assert.deepEqual(pathsOf("externalCodeNav /userId eq '1'"), [["externalCodeNav", "userId"]]);
+});
+
+/**
+ * SuccessFactors decodes percent-encoding, so `%65xternalCodeNav` reaches the
+ * same navigation the extractor would otherwise never see. The scan must reject
+ * that structure, while a literal value that happens to contain `%` is data and
+ * must survive untouched.
+ */
+
+test("a percent-encoded identifier outside a literal is reported as hidden structure", () => {
+  assert.equal(hasEncodedStructure("%65xternalCodeNav/userId eq '1'"), true);
+  assert.equal(hasEncodedStructure("externalCodeNav%2FuserId eq '1'"), true);
+  assert.equal(hasEncodedStructure("externalCode%20eq%20'1'"), true);
+});
+
+test("percent-encoded characters inside a quoted literal are data, not structure", () => {
+  assert.equal(hasEncodedStructure("userId eq 'a%24b'"), false);
+  assert.equal(hasEncodedStructure("externalCode eq 'it''s%20x'"), false);
+  assert.equal(hasEncodedStructure("externalCode eq '50%'"), false);
+});
+
+test("an expression with no percent-encoding is never flagged", () => {
+  assert.equal(hasEncodedStructure("externalCodeNav/userId eq '1'"), false);
+  assert.equal(hasEncodedStructure(""), false);
+});
+
+test("the identifier scan sees a different name in the encoded form, which is why the guard exists", () => {
+  // A bare encoded association never appears under its real name...
+  assert.ok(!namesOf("%65xternalCodeNav ne null").includes("externalCodeNav"));
+  // ...and an encoded slash breaks the path into two unrelated bare names.
+  const smuggled = "%65xternalCodeNav%2FuserId eq '1'";
+  assert.deepEqual(pathsOf(smuggled), []);
+  assert.ok(!namesOf(smuggled).includes("externalCodeNav"));
 });
