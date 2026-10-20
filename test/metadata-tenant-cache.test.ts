@@ -110,3 +110,92 @@ test("cache invalidate deletes the tenant-scoped file and only that one", async 
   await fs.access(path.join(cacheDir, "metadata-other-dev.json"));
   assert.ok(out.some((line) => line.includes("invalidated dev")));
 });
+
+const MULTI_TENANT_CONFIG = {
+  tenants: {
+    acme: {
+      environments: {
+        dev: { baseUrl: "https://acme.example.com", auth: { type: "basic", username: "u", password: "p" } },
+      },
+    },
+    globex: {
+      environments: {
+        dev: { baseUrl: "https://globex.example.com", auth: { type: "basic", username: "u", password: "p" } },
+      },
+    },
+  },
+};
+
+test("--tenant invalidates one tenant's entry of a multi-tenant config", async () => {
+  const dir = await tempDir("ssff-tenant-invalidate-pinned-");
+  const configPath = path.join(dir, "config.json");
+  await fs.writeFile(configPath, JSON.stringify(MULTI_TENANT_CONFIG), "utf8");
+  const cacheDir = path.join(dir, "cache");
+  await fs.mkdir(cacheDir);
+  await fs.writeFile(path.join(cacheDir, "metadata-acme-dev.json"), "{}", "utf8");
+  await fs.writeFile(path.join(cacheDir, "metadata-globex-dev.json"), "{}", "utf8");
+
+  const out: string[] = [];
+  const code = await runCacheInvalidate("dev", false, { configPath, cacheDir, stdout: (m) => out.push(m) }, "globex");
+  assert.equal(code, 0);
+  await assert.rejects(() => fs.access(path.join(cacheDir, "metadata-globex-dev.json")));
+  await fs.access(path.join(cacheDir, "metadata-acme-dev.json"));
+  assert.ok(out.some((line) => line.includes("invalidated dev")));
+});
+
+test("multi-tenant config without --tenant reports the real cause and the hint", async () => {
+  const dir = await tempDir("ssff-tenant-invalidate-hint-");
+  const configPath = path.join(dir, "config.json");
+  await fs.writeFile(configPath, JSON.stringify(MULTI_TENANT_CONFIG), "utf8");
+  const cacheDir = path.join(dir, "cache");
+  await fs.mkdir(cacheDir);
+  await fs.writeFile(path.join(cacheDir, "metadata-acme-dev.json"), "{}", "utf8");
+
+  const errs: string[] = [];
+  const code = await runCacheInvalidate("dev", false, { configPath, cacheDir, stderr: (m) => errs.push(m) });
+  assert.equal(code, 1);
+  // Nothing was deleted...
+  await fs.access(path.join(cacheDir, "metadata-acme-dev.json"));
+  // ...the underlying cause is visible, and the remediation is named.
+  assert.ok(errs.some((line) => line.includes("declares 2 tenants")));
+  assert.ok(errs.some((line) => line.includes("--tenant")));
+});
+
+test("an unknown --tenant is named in the error", async () => {
+  const dir = await tempDir("ssff-tenant-invalidate-unknown-");
+  const configPath = path.join(dir, "config.json");
+  await fs.writeFile(configPath, JSON.stringify(MULTI_TENANT_CONFIG), "utf8");
+  const cacheDir = path.join(dir, "cache");
+  await fs.mkdir(cacheDir);
+
+  const errs: string[] = [];
+  const code = await runCacheInvalidate("dev", false, { configPath, cacheDir, stderr: (m) => errs.push(m) }, "nope");
+  assert.equal(code, 1);
+  assert.ok(errs.some((line) => line.includes('does not declare tenant "nope"')));
+});
+
+test("cache invalidate never needs secret resolution", async () => {
+  const dir = await tempDir("ssff-tenant-invalidate-nosecrets-");
+  const configPath = path.join(dir, "config.json");
+  await fs.writeFile(
+    configPath,
+    JSON.stringify({
+      environments: {
+        dev: {
+          baseUrl: "https://acme.example.com",
+          auth: { type: "basic", username: "u", password: { fromEnv: "SSFF_UAT_MISSING_SECRET_VAR" } },
+        },
+      },
+    }),
+    "utf8",
+  );
+  const cacheDir = path.join(dir, "cache");
+  await fs.mkdir(cacheDir);
+  await fs.writeFile(path.join(cacheDir, "metadata-default-dev.json"), "{}", "utf8");
+
+  const out: string[] = [];
+  const code = await runCacheInvalidate("dev", false, { configPath, cacheDir, stdout: (m) => out.push(m) });
+  assert.equal(code, 0);
+  await assert.rejects(() => fs.access(path.join(cacheDir, "metadata-default-dev.json")));
+  assert.ok(out.some((line) => line.includes("invalidated dev")));
+});

@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`cache invalidate --tenant <id>`** for multi-tenant configs. The command now
+  accepts `--tenant <id>` to invalidate one declared tenant's cached `$metadata`
+  (`<alias|--all>` unchanged); a multi-tenant config without `--tenant` fails
+  with the real cause plus the remediation hint, an unknown tenant is named in
+  the error, and the command never resolves secrets (invalidation is
+  local-only, FR-97). Single-tenant configs keep the previous behavior.
+
 - **Hosted mode: `ssff-mcp serve` over Streamable HTTP** (FR-154..FR-164). One
   `/mcp` endpoint (POST/GET/DELETE) plus a public `GET /healthz`, no framework
   beyond `node:http`. Every request re-authenticates (`Authorization: Bearer` or

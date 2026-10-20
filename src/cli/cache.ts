@@ -13,6 +13,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config.js";
+import { isSanitizedError } from "../errors.js";
 import { defaultCacheDir, metadataCacheFileName } from "../metadata.js";
 
 export interface CacheInvalidateDeps {
@@ -27,6 +28,7 @@ export async function runCacheInvalidate(
   alias: string | undefined,
   all: boolean,
   deps: CacheInvalidateDeps = {},
+  tenant?: string,
 ): Promise<number> {
   const out = deps.stdout ?? ((message: string) => process.stdout.write(message));
   const err = deps.stderr ?? ((message: string) => process.stderr.write(message));
@@ -34,11 +36,25 @@ export async function runCacheInvalidate(
   let configured: string[];
   let tenantId: string;
   try {
-    const config = await loadConfig({ configPath: deps.configPath });
+    const config = await loadConfig({
+      configPath: deps.configPath,
+      // Pin the slice when the operator names a tenant (multi-tenant configs
+      // are refused without one, with the remediation in the message).
+      tenantId: tenant,
+      // Invalidation is local-only (FR-97): secrets are never needed here.
+      resolveSecretsFor: null,
+    });
     configured = Object.keys(config.environments).sort();
     tenantId = config.tenantId ?? "default";
-  } catch {
-    err("ssff-mcp: the configuration could not be read; nothing was invalidated\n");
+  } catch (error) {
+    if (isSanitizedError(error)) {
+      err(`ssff-mcp: ${error.message}\n`);
+      if (tenant === undefined && /tenants\b/.test(error.message)) {
+        err("ssff-mcp: pass --tenant <id> to target one tenant of a multi-tenant configuration\n");
+      }
+    } else {
+      err("ssff-mcp: the configuration could not be read; nothing was invalidated\n");
+    }
     return 1;
   }
 

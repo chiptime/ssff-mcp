@@ -49,8 +49,9 @@ Not yet. Values come back as SuccessFactors returns them (native fields, no
 normalization). See the picklist PRD in the repository for the planned work.
 
 **The tenant schema changed — how do I force a reload?**
-Run `ssff-mcp cache invalidate <alias>` (or `--all`). The metadata cache has a
-24h TTL otherwise. See [CLI](configuration.md#cli).
+Run `ssff-mcp cache invalidate <alias>` (or `--all`; on a multi-tenant config
+add `--tenant <id>`). The metadata cache has a 24h TTL otherwise. See
+[CLI](configuration.md#cli).
 
 **Can I get more than one page?**
 Yes: when `hasMore` is true the response carries an opaque `cursor`; re-issue the

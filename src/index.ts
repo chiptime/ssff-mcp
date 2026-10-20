@@ -27,7 +27,8 @@ const HELP = [
   "  ssff-mcp serve [--port <1..65535>] [--host <address>] [--config <path>]",
   "                    Start authenticated Streamable HTTP (/mcp and /healthz)",
   "  ssff-mcp key hash Hash a key read from stdin (never pass keys in argv)",
-  "  ssff-mcp cache invalidate <alias|--all>   Drop cached $metadata for an environment",
+  "  ssff-mcp cache invalidate <alias|--all> [--tenant <id>]",
+  "                    Drop cached $metadata for an environment (per tenant)",
   "  ssff-mcp --help   Show this help",
   "",
   "With no command, a non-empty PORT selects HTTP; otherwise STDIO is unchanged.",
@@ -58,7 +59,7 @@ async function main(): Promise<void> {
     return;
   }
   if (command.kind === "cache-invalidate") {
-    process.exitCode = await runCacheInvalidate(command.alias, command.all);
+    process.exitCode = await runCacheInvalidate(command.alias, command.all, {}, command.tenant);
     return;
   }
   if (command.kind === "help") {

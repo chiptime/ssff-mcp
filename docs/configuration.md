@@ -323,6 +323,8 @@ Override it with `maxResponseBytes` in `config.json` (wins), then
 ssff-mcp                                    Start the MCP server over STDIO (default)
 ssff-mcp init                               Run the interactive configuration wizard
 ssff-mcp cache invalidate <alias|--all>     Drop cached $metadata for an environment
+ssff-mcp cache invalidate <alias|--all> --tenant <id>
+                                            Same, for one tenant of a multi-tenant config
 ssff-mcp --help                             Show help
 ```
 
@@ -330,3 +332,6 @@ ssff-mcp --help                             Show help
   them with `--all`. It never touches SuccessFactors (no network); the running
   server notices on its next metadata read. Exit codes: `0` success, `1` config
   unreadable, `2` usage error (unknown alias deletes nothing — fail-closed).
+  A multi-tenant config requires `--tenant <id>` (the target tenant must be
+  declared, otherwise the command fails naming it); secrets are never resolved
+  by this command, so it works even when secret providers are unavailable.
