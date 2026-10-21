@@ -22,7 +22,8 @@ const HELP = [
   "ssff-mcp — read-only MCP server for SAP SuccessFactors OData v2",
   "",
   "Usage:",
-  "  ssff-mcp          Start the MCP server over STDIO (default)",
+  "  ssff-mcp [--datacenter <code\> | --dc <code\>] [--inline-url <url>]",
+  "                    Start the MCP server over STDIO (default)",
   "  ssff-mcp init     Run the interactive configuration wizard",
   "  ssff-mcp serve [--port <1..65535>] [--host <address>] [--config <path>]",
   "                    Start authenticated Streamable HTTP (/mcp and /healthz)",
@@ -53,11 +54,6 @@ async function main(): Promise<void> {
     await runServeHttp({ port: command.port, host: command.host, configPath: command.configPath });
     return;
   }
-  if (command.kind === "serve" && process.env.PORT !== undefined && process.env.PORT.length > 0) {
-    // PaaS auto-mode (FR-155): `PORT` present and no subcommand => serve.
-    await runServeHttp({});
-    return;
-  }
   if (command.kind === "cache-invalidate") {
     process.exitCode = await runCacheInvalidate(command.alias, command.all, {}, command.tenant);
     return;
@@ -72,9 +68,28 @@ async function main(): Promise<void> {
     return;
   }
 
-  const server = createMcpServer();
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  if (command.kind === "serve") {
+    if (command.datacenter !== undefined && command.inlineUrl !== undefined) {
+      process.stderr.write(
+        "ssff-mcp warning: both --inline-url and --datacenter were provided; --inline-url takes precedence\n",
+      );
+    }
+    if (command.datacenter !== undefined) {
+      process.env.SF_DATACENTER = command.datacenter;
+    }
+    if (command.inlineUrl !== undefined) {
+      process.env.SF_BASE_URL = command.inlineUrl;
+    }
+    if (process.env.PORT !== undefined && process.env.PORT.length > 0) {
+      // PaaS auto-mode (FR-155): `PORT` present and no subcommand => serve.
+      await runServeHttp({});
+      return;
+    }
+    const server = createMcpServer();
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    return;
+  }
 }
 
 main().catch((error: unknown) => {

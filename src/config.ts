@@ -19,6 +19,7 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import type { AllowlistEntry } from "./allowlist.js";
 import { SanitizedError } from "./errors.js";
+import { resolveDataCenter, SAP_DATA_CENTERS } from "./datacenters.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -56,6 +57,8 @@ export type AuthConfig = BasicAuthConfig | OAuthAuthConfig;
 export interface EnvironmentConfig {
   /** Normalized base URL: https origin + optional path prefix, no trailing slash. */
   baseUrl: string;
+  /** Canonical data center identifier (FR-109/FR-115, e.g. "DC2", "DC4", "DC55"). */
+  dataCenter?: string;
   auth: AuthConfig;
   /**
    * Entity allowlist for THIS environment (FR-28/D-30). It only NARROWS: absent
@@ -121,7 +124,7 @@ const oauthAuthSchema = z
         message: "oauth userId is the technical user id WITHOUT the @companyId suffix",
       }),
     privateKey: secretProviderSchema,
-    tokenUrl: z.string().min(1),
+    tokenUrl: z.string().min(1).optional(),
     idpUrl: z.string().min(1).optional(),
   })
   .strict();
@@ -196,7 +199,8 @@ const entityDenylistSchema = z
 
 const environmentSchema = z
   .object({
-    baseUrl: z.string().min(1),
+    dataCenter: z.string().trim().optional(),
+    baseUrl: z.string().min(1).optional(),
     auth: authSchema,
     // Per-environment narrowing (FR-28/D-30). Absent OR empty means no
     // narrowing: the environment reaches whatever the tenant account can read.
@@ -213,7 +217,28 @@ const environmentSchema = z
       })
       .optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((data, ctx) => {
+    if (!data.baseUrl && !data.dataCenter) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["baseUrl"],
+        message: 'environment must define at least "baseUrl" or "dataCenter"',
+      });
+      return;
+    }
+    if (data.dataCenter !== undefined) {
+      const resolved = resolveDataCenter(data.dataCenter);
+      if (!resolved && !data.baseUrl) {
+        const supported = Object.keys(SAP_DATA_CENTERS).join(", ");
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["dataCenter"],
+          message: `unknown dataCenter "${data.dataCenter}"; supported data centers: ${supported}`,
+        });
+      }
+    }
+  });
 
 const aliasSchema = z.string().refine((value) => value.trim().length > 0, {
   message: "environment alias must be a non-empty string",
@@ -321,12 +346,14 @@ export function normalizeBaseUrl(raw: string): string {
   return validateHttpsUrl(raw, "baseUrl").toString().replace(/\/+$/, "");
 }
 
-/** Validate oauth endpoint fields and derive idpUrl from the tokenUrl origin when absent. */
+/** Validate oauth endpoint fields and derive tokenUrl / idpUrl from baseUrl origin when absent. */
 function materializeOAuthAuth(
   auth: z.infer<typeof oauthAuthSchema>,
   resolvedPrivateKey: string,
+  effectiveBaseUrl: string,
 ): OAuthAuthConfig {
-  const tokenUrl = validateHttpsUrl(auth.tokenUrl, "tokenUrl").toString().replace(/\/+$/, "");
+  const rawTokenUrl = auth.tokenUrl ?? `${effectiveBaseUrl}/oauth/token`;
+  const tokenUrl = validateHttpsUrl(rawTokenUrl, "tokenUrl").toString().replace(/\/+$/, "");
   const idpUrl =
     auth.idpUrl !== undefined
       ? validateHttpsUrl(auth.idpUrl, "idpUrl").toString().replace(/\/+$/, "")
@@ -528,29 +555,53 @@ function parseInlineAllowlist(raw: string | undefined, field: string): Allowlist
   return entries;
 }
 
-/** True when inline mode is being requested (SF_BASE_URL present). */
+/** True when inline mode is being requested (SF_BASE_URL or SF_DATACENTER present). */
 function inlineRequested(env: NodeJS.ProcessEnv): boolean {
-  return nonEmpty(env.SF_BASE_URL) !== undefined;
+  return nonEmpty(env.SF_BASE_URL) !== undefined || nonEmpty(env.SF_DATACENTER) !== undefined;
 }
 
 /**
- * Synthesize a single environment from SF_* process env vars (FR-48/D-45).
+ * Synthesize a single environment from SF_* process env vars (FR-48/D-45, FR-114/D-88).
  * Used only when no config.json exists; a present file always wins.
  */
 function synthesizeInlineConfig(env: NodeJS.ProcessEnv): SsffConfig {
-  const baseUrl = nonEmpty(env.SF_BASE_URL);
+  const rawBaseUrl = nonEmpty(env.SF_BASE_URL);
+  const rawDataCenter = nonEmpty(env.SF_DATACENTER);
   const password = present(env.SF_PASSWORD);
   const privateKey = present(env.SF_PRIVATE_KEY);
 
-  if (baseUrl === undefined || (password === undefined && privateKey === undefined)) {
+  let effectiveBaseUrl: string | undefined;
+  let canonicalDc: string | undefined;
+
+  if (rawBaseUrl !== undefined) {
+    effectiveBaseUrl = normalizeBaseUrl(rawBaseUrl);
+    if (rawDataCenter !== undefined) {
+      const resolvedDc = resolveDataCenter(rawDataCenter);
+      if (resolvedDc !== undefined) {
+        canonicalDc = resolvedDc.code;
+      }
+    }
+  } else if (rawDataCenter !== undefined) {
+    const resolvedDc = resolveDataCenter(rawDataCenter);
+    if (resolvedDc === undefined) {
+      const supported = Object.keys(SAP_DATA_CENTERS).join(", ");
+      throw new SanitizedError(
+        "CONFIG_INVALID",
+        `unknown SF_DATACENTER "${rawDataCenter}"; supported data centers: ${supported}`,
+      );
+    }
+    effectiveBaseUrl = resolvedDc.apiBaseUrl;
+    canonicalDc = resolvedDc.code;
+  }
+
+  if (effectiveBaseUrl === undefined || (password === undefined && privateKey === undefined)) {
     throw new SanitizedError(
       "CONFIG_MISSING",
-      `configuration file not found at ${CONFIG_TILDE_PATH}; inline mode requires SF_BASE_URL plus SF_PASSWORD or SF_PRIVATE_KEY, or copy ${CONFIG_TEMPLATE_NAME} from the ssff-mcp repository to that exact path and fill in the placeholders`,
+      `configuration file not found at ${CONFIG_TILDE_PATH}; inline mode requires SF_BASE_URL or SF_DATACENTER plus SF_PASSWORD or SF_PRIVATE_KEY, or copy ${CONFIG_TEMPLATE_NAME} from the ssff-mcp repository to that exact path and fill in the placeholders`,
     );
   }
 
   const alias = nonEmpty(env.SF_ENVIRONMENT) ?? "default";
-  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
 
   let auth: AuthConfig;
   if (privateKey !== undefined) {
@@ -558,10 +609,10 @@ function synthesizeInlineConfig(env: NodeJS.ProcessEnv): SsffConfig {
     const companyId = nonEmpty(env.SF_COMPANY_ID);
     const userId = nonEmpty(env.SF_USER_ID);
     const tokenUrl = nonEmpty(env.SF_TOKEN_URL);
-    if (clientId === undefined || companyId === undefined || userId === undefined || tokenUrl === undefined) {
+    if (clientId === undefined || companyId === undefined || userId === undefined) {
       throw new SanitizedError(
         "CONFIG_INVALID",
-        "inline OAuth requires SF_CLIENT_ID, SF_COMPANY_ID, SF_USER_ID and SF_TOKEN_URL alongside SF_PRIVATE_KEY",
+        "inline OAuth requires SF_CLIENT_ID, SF_COMPANY_ID, SF_USER_ID alongside SF_PRIVATE_KEY",
       );
     }
     if (userId.includes("@")) {
@@ -582,13 +633,14 @@ function synthesizeInlineConfig(env: NodeJS.ProcessEnv): SsffConfig {
         idpUrl: nonEmpty(env.SF_IDP_URL),
       },
       normalizedKey,
+      effectiveBaseUrl,
     );
   } else {
     const username = nonEmpty(env.SF_USERNAME);
     if (username === undefined) {
       throw new SanitizedError(
         "CONFIG_INVALID",
-        "inline basic auth requires SF_USERNAME alongside SF_BASE_URL and SF_PASSWORD",
+        "inline basic auth requires SF_USERNAME alongside SF_BASE_URL (or SF_DATACENTER) and SF_PASSWORD",
       );
     }
     auth = { type: "basic", username, password: password! };
@@ -598,7 +650,11 @@ function synthesizeInlineConfig(env: NodeJS.ProcessEnv): SsffConfig {
   // that environment's lists (FR-28/D-30).
   const entityAllowlist = parseInlineAllowlist(env.SF_ENTITY_ALLOWLIST, "SF_ENTITY_ALLOWLIST");
   const entityDenylist = parseInlineAllowlist(env.SF_ENTITY_DENYLIST, "SF_ENTITY_DENYLIST");
-  const inlineEnvironment: EnvironmentConfig = { baseUrl: normalizedBaseUrl, auth };
+  const inlineEnvironment: EnvironmentConfig = {
+    baseUrl: effectiveBaseUrl,
+    ...(canonicalDc !== undefined ? { dataCenter: canonicalDc } : {}),
+    auth,
+  };
   if (entityAllowlist !== undefined) {
     inlineEnvironment.entityAllowlist = entityAllowlist;
   }
@@ -757,12 +813,35 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<SsffC
 
   for (const [alias, env] of Object.entries(tenantEnvironments)) {
     const resolve = shouldResolve(alias);
+
+    const resolvedDc = env.dataCenter !== undefined ? resolveDataCenter(env.dataCenter) : undefined;
+    let effectiveBaseUrl: string;
+
+    if (env.baseUrl !== undefined) {
+      effectiveBaseUrl = normalizeBaseUrl(env.baseUrl);
+      if (resolvedDc !== undefined && effectiveBaseUrl !== resolvedDc.apiBaseUrl) {
+        onWarning(
+          `ssff-mcp warning: environment "${alias}" baseUrl "${effectiveBaseUrl}" differs from dataCenter "${env.dataCenter}" default "${resolvedDc.apiBaseUrl}"; baseUrl takes precedence`,
+        );
+      }
+    } else if (resolvedDc !== undefined) {
+      effectiveBaseUrl = resolvedDc.apiBaseUrl;
+    } else {
+      throw new SanitizedError(
+        "CONFIG_INVALID",
+        `environment "${alias}" must define at least "baseUrl" or "dataCenter"`,
+      );
+    }
+
+    const canonicalDc = resolvedDc !== undefined ? resolvedDc.code : (env.dataCenter !== undefined ? env.dataCenter.toUpperCase() : undefined);
+
     if (env.auth.type === "basic") {
       const password = resolve
         ? await resolveSecret(env.auth.password, options.secretOptions)
         : "";
       environments[alias] = {
-        baseUrl: normalizeBaseUrl(env.baseUrl),
+        baseUrl: effectiveBaseUrl,
+        ...(canonicalDc !== undefined ? { dataCenter: canonicalDc } : {}),
         auth: { type: "basic", username: env.auth.username, password },
       };
     } else {
@@ -770,8 +849,9 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<SsffC
         ? await resolveSecret(env.auth.privateKey, options.secretOptions)
         : "";
       environments[alias] = {
-        baseUrl: normalizeBaseUrl(env.baseUrl),
-        auth: materializeOAuthAuth(env.auth, privateKey),
+        baseUrl: effectiveBaseUrl,
+        ...(canonicalDc !== undefined ? { dataCenter: canonicalDc } : {}),
+        auth: materializeOAuthAuth(env.auth, privateKey, effectiveBaseUrl),
       };
     }
     // Lists resolve as: per-environment override, else tenant base (D-119).

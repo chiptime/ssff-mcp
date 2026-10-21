@@ -711,7 +711,14 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         const { environments } = await loadFreshConfig(null);
         const list = Object.keys(environments)
           .sort()
-          .map((alias) => ({ alias, authType: environments[alias]!.auth.type }));
+          .map((alias) => {
+            const env = environments[alias]!;
+            return {
+              alias,
+              authType: env.auth.type,
+              ...(env.dataCenter !== undefined ? { dataCenter: env.dataCenter } : {}),
+            };
+          });
         const structured = { environments: list };
         return { structured, text: JSON.stringify(structured, null, 2) };
       }),
@@ -1374,6 +1381,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       const overview = {
         environment: resolved.alias,
         baseUrl: resolved.env.baseUrl,
+        ...(resolved.env.dataCenter !== undefined ? { dataCenter: resolved.env.dataCenter } : {}),
         authType: resolved.env.auth.type,
         totalEntitySets: parsed.entitySets.length,
         functionImportsCount: parsed.functionImports.length,

@@ -9,9 +9,16 @@ import { autocompleteMultiselect, cancel, confirm, intro, isCancel, note, outro,
 import { defaultConfigPath, normalizeBaseUrl, type EnvironmentConfig } from "../config.js";
 import { CLIENTS, renderClientBlock, type ClientId } from "./clients.js";
 import { discoverEntities } from "./discovery.js";
+import {
+  findDataCenterByWebUrl,
+  isWebPortalUrl,
+  resolveDataCenter,
+  SAP_DATA_CENTERS,
+  suggestApiBaseUrl,
+} from "../datacenters.js";
 
 export type CliCommand =
-  | { kind: "serve" }
+  | { kind: "serve"; datacenter?: string; inlineUrl?: string }
   | { kind: "serve-http"; port?: number; host?: string; configPath?: string }
   | { kind: "key-hash" }
   | { kind: "init" }
@@ -23,6 +30,7 @@ export interface ConfigAnswers {
   authType: "basic" | "oauth";
   alias: string;
   baseUrl: string;
+  dataCenter?: string;
   username?: string;
   password?: string;
   clientId?: string;
@@ -106,6 +114,42 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
   if (first === "help" || first === "--help" || first === "-h") {
     return { kind: "help" };
   }
+  if (first.startsWith("-")) {
+    let datacenter: string | undefined;
+    let inlineUrl: string | undefined;
+    for (let i = 0; i < argv.length; i += 1) {
+      const token = argv[i]!;
+      if (token === "--help" || token === "-h") {
+        return { kind: "help" };
+      }
+      if (token === "--datacenter" || token === "--dc" || token === "-d") {
+        const value = argv[++i];
+        if (!value || value.startsWith("-")) return { kind: "unknown", arg: token };
+        datacenter = value;
+        continue;
+      }
+      if (token.startsWith("--datacenter=") || token.startsWith("--dc=")) {
+        const value = token.slice(token.indexOf("=") + 1);
+        if (!value) return { kind: "unknown", arg: token };
+        datacenter = value;
+        continue;
+      }
+      if (token === "--inline-url") {
+        const value = argv[++i];
+        if (!value || value.startsWith("-")) return { kind: "unknown", arg: token };
+        inlineUrl = value;
+        continue;
+      }
+      if (token.startsWith("--inline-url=")) {
+        const value = token.slice(token.indexOf("=") + 1);
+        if (!value) return { kind: "unknown", arg: token };
+        inlineUrl = value;
+        continue;
+      }
+      return { kind: "unknown", arg: token };
+    }
+    return { kind: "serve", datacenter, inlineUrl };
+  }
   return { kind: "unknown", arg: first };
 }
 
@@ -121,7 +165,11 @@ export function buildConfigFromAnswers(answers: ConfigAnswers): Record<string, u
           privateKey: answers.privateKey ?? "",
           tokenUrl: answers.tokenUrl ?? "",
         };
-  const environment: Record<string, unknown> = { baseUrl: answers.baseUrl, auth };
+  const environment: Record<string, unknown> = {
+    baseUrl: answers.baseUrl,
+    ...(answers.dataCenter !== undefined ? { dataCenter: answers.dataCenter } : {}),
+    auth,
+  };
   // The allowlist is per environment (FR-28/D-30): an empty selection is still
   // an explicit configuration and is written as a deny-all for this environment.
   if (answers.allowlist !== undefined) {
@@ -316,35 +364,96 @@ async function collectAnswers(): Promise<{ answers: ConfigAnswers; client: Clien
     return undefined;
   }
 
-  const baseUrl = await text({
-    message: "Tenant base URL (https, no trailing slash)",
-    placeholder: "https://api2.successfactors.eu",
-    validate: (value) => {
-      if (!value) {
-        return "base URL is required";
-      }
-      try {
-        const url = new URL(value);
-        if (url.protocol !== "https:") {
-          return "must use the https scheme";
-        }
-      } catch {
-        return "must be a valid absolute URL";
-      }
-      if (value.endsWith("/")) {
-        return "remove the trailing slash";
-      }
-      return undefined;
-    },
+  const urlMode = await select({
+    message: "Data Center or API endpoint",
+    options: [
+      {
+        value: "catalog",
+        label: "Select from SAP SuccessFactors Data Centers (DC2, DC4, DC12, DC55...)",
+      },
+      {
+        value: "manual",
+        label: "Enter custom API URL or gateway manually",
+      },
+    ],
   });
-  if (isCancel(baseUrl)) {
+  if (isCancel(urlMode)) {
     return undefined;
+  }
+
+  let baseUrl: string;
+  let dataCenter: string | undefined;
+
+  if (urlMode === "catalog") {
+    const dcPick = await select({
+      message: "Select your Data Center",
+      options: Object.values(SAP_DATA_CENTERS).map((dc) => ({
+        value: dc.code,
+        label: `${dc.code.padEnd(12)} — ${dc.name} (${dc.apiHost})`,
+      })),
+    });
+    if (isCancel(dcPick)) {
+      return undefined;
+    }
+    const chosenDc = SAP_DATA_CENTERS[dcPick as string]!;
+    dataCenter = chosenDc.code;
+    baseUrl = chosenDc.apiBaseUrl;
+  } else {
+    const enteredUrl = await text({
+      message: "Tenant base URL (https, no trailing slash)",
+      placeholder: "https://api2.successfactors.eu",
+      validate: (value) => {
+        if (!value) {
+          return "base URL is required";
+        }
+        try {
+          const url = new URL(value);
+          if (url.protocol !== "https:") {
+            return "must use the https scheme";
+          }
+        } catch {
+          return "must be a valid absolute URL";
+        }
+        if (value.endsWith("/")) {
+          return "remove the trailing slash";
+        }
+        return undefined;
+      },
+    });
+    if (isCancel(enteredUrl)) {
+      return undefined;
+    }
+    let trimmed = (enteredUrl as string).trim();
+    if (isWebPortalUrl(trimmed)) {
+      const suggestion = suggestApiBaseUrl(trimmed);
+      if (suggestion) {
+        const replace = await confirm({
+          message: `"${trimmed}" looks like a web portal login URL. Did you mean API endpoint "${suggestion.suggestedBaseUrl}" (${suggestion.dataCenter.code})?`,
+          initialValue: true,
+        });
+        if (isCancel(replace)) {
+          return undefined;
+        }
+        if (replace === true) {
+          trimmed = suggestion.suggestedBaseUrl;
+          dataCenter = suggestion.dataCenter.code;
+        }
+      }
+    }
+    baseUrl = trimmed;
+    if (!dataCenter) {
+      const matched = resolveDataCenter(baseUrl);
+      if (matched) {
+        dataCenter = matched.code;
+      }
+    }
   }
 
   const answers: ConfigAnswers = {
     authType: authType as "basic" | "oauth",
     alias: (alias as string).trim() || "prod",
-    baseUrl: (baseUrl as string).trim(),
+    baseUrl,
+    ...(dataCenter !== undefined ? { dataCenter } : {}),
   };
 
   if (answers.authType === "basic") {
@@ -371,9 +480,14 @@ async function collectAnswers(): Promise<{ answers: ConfigAnswers; client: Clien
     if (isCancel(userId)) {
       return undefined;
     }
+    const defaultTokenUrl =
+      dataCenter && SAP_DATA_CENTERS[dataCenter]
+        ? SAP_DATA_CENTERS[dataCenter]!.oauthTokenUrl
+        : `${baseUrl}/oauth/token`;
     const tokenUrl = await text({
       message: "Token URL",
-      placeholder: "https://api2.successfactors.eu/oauth/token",
+      defaultValue: defaultTokenUrl,
+      placeholder: defaultTokenUrl,
     });
     if (isCancel(tokenUrl)) {
       return undefined;

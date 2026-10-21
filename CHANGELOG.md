@@ -12,6 +12,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Preloaded SAP SuccessFactors Data Centers catalog** (FR-108..FR-115, D-82..D-88):
+  - 23 official SAP SuccessFactors data centers (`DC2`, `DC4`, `DC8`, `DC10`, `DC12`, `DC15`, `DC16`, `DC17`, `DC18`, `DC19`, `DC22`, `DC23`, `DC41`, `DC44`, `DC55`, `DC68`) with canonical API server base URLs and OAuth token endpoints (`src/datacenters.ts`).
+  - Case-insensitive resolution by code (`DC2`, `dc2`, `dc02`), API host or URL (`resolveDataCenter`).
+  - Heuristic web portal detection (`isWebPortalUrl`, `findDataCenterByWebUrl`, `suggestApiBaseUrl`) to prevent 404/401 errors from user login URLs (`performancemanager...`, `pmsalesdemo...`).
+  - Configuration support: environments can define `dataCenter` with automatic hydration of `baseUrl`. Absolute precedence of `baseUrl` with informative stderr warning when differing from the catalog default.
+  - Automatic derivation of OAuth 2.0 `tokenUrl` (`${baseUrl}/oauth/token`) and `idpUrl` (`${baseUrl}/oauth/idp`) when omitted.
+  - Interactive `init` wizard: data center catalog picker and confirmation prompt to auto-correct web portal URLs to API endpoints.
+  - CLI flags for inline mode: `--datacenter <code\>`, `--dc <code\>`, `-d <code\>`, and `--inline-url <url>`.
+  - Visibility: `list_environments` tool and `sf://{env}/overview` resource report `dataCenter` when configured.
+
 ## [0.6.0] — 2026-10-22
 
 ### Added
