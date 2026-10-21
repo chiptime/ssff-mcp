@@ -4,8 +4,7 @@
 > (STDIO, un usuario, una máquina) a **servicio hospedado multi-tenant con
 > usuarios, roles y acceso por rol**.
 >
-> Estado: **Fase 1 completada** · **Fase 1.5 completada** · **Fase 2 implementada en
-> `main`** (sin publicar) · **Fase 3 con decisiones consolidadas en PRD DRAFT**
+> Estado: **Fase 1 completada** · **Fase 1.5 completada** · **Fase 2 completada (0.6.0)** · **Fase 3 con decisiones consolidadas en PRD DRAFT**
 > (sin implementar; validación IAS pendiente de permiso).
 
 ## Objetivo
@@ -32,7 +31,7 @@ Las claves API conservan su modelo actual, sin roles nuevos.
 |---|---|---|
 | **1 · Acceso por entorno** | `entityAllowlist` + `entityDenylist` dentro de cada entorno | ✅ Hecha (0.4.0) |
 | **1.5 · Endurecimiento** | Navegación, `$expand`, `$filter`/`$orderby`, granularidad por campo | ✅ Hecha (0.5.0) |
-| **2 · Servicio hospedado multi-tenant** | Transporte remoto + tenants | ✅ En `main`, sin publicar |
+| **2 · Servicio hospedado multi-tenant** | Transporte remoto + tenants | ✅ Hecha (0.6.0) |
 | **3 · Identidad: usuarios y roles** | IAS por cliente + roles propios del MCP | 🧭 PRD DRAFT, sin implementar |
 
 ---
