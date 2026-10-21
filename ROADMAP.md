@@ -5,7 +5,8 @@
 > usuarios, roles y acceso por rol**.
 >
 > Estado: **Fase 1 completada** · **Fase 1.5 completada** · **Fase 2 implementada en
-> `main`** (sin publicar) · **Fase 3 diseñada** (pendiente de verificar).
+> `main`** (sin publicar) · **Fase 3 con decisiones consolidadas en PRD DRAFT**
+> (sin implementar; validación IAS pendiente de permiso).
 
 ## Objetivo
 
@@ -22,7 +23,8 @@ rol     = SUBCONJUNTO  → lo que puede ver ese usuario
 efectivo = INTERSECCIÓN
 ```
 
-Regla transversal: **la denegación siempre gana** (ver *Decisiones abiertas*).
+Para usuarios IAS, **la denegación del entorno o del rol siempre gana**.
+Las claves API conservan su modelo actual, sin roles nuevos.
 
 ## Resumen de fases
 
@@ -31,7 +33,7 @@ Regla transversal: **la denegación siempre gana** (ver *Decisiones abiertas*).
 | **1 · Acceso por entorno** | `entityAllowlist` + `entityDenylist` dentro de cada entorno | ✅ Hecha (0.4.0) |
 | **1.5 · Endurecimiento** | Navegación, `$expand`, `$filter`/`$orderby`, granularidad por campo | ✅ Hecha (0.5.0) |
 | **2 · Servicio hospedado multi-tenant** | Transporte remoto + tenants | ✅ En `main`, sin publicar |
-| **3 · Identidad: usuarios y roles** | IdP + roles → allowlist/denylist por rol | 🧭 Diseñada |
+| **3 · Identidad: usuarios y roles** | IAS por cliente + roles propios del MCP | 🧭 PRD DRAFT, sin implementar |
 
 ---
 
@@ -171,48 +173,47 @@ en modo hospedado ni con clientes de producto salvo OpenCode headless.
 
 ## Fase 3 · Identidad: usuarios y roles 🧭
 
-Varios usuarios por tenant, roles, y acceso definido por rol.
+**Especificación:** [PRD — Fase 3: identidad IAS y roles del MCP](docs/PRD-phase3-ias-roles.md).
+Estado **DRAFT**: consolida decisiones; no autoriza implementación ni acceso a IAS.
+No confundir con `archive/PRD-phase3.md`, que describe otra fase histórica.
 
 ### Decisiones tomadas
 
-- **IdP: SAP IAS** (SAP Cloud Identity Services — Identity Authentication). Es un
-  **proveedor OIDC completo** (discovery en `/.well-known/openid-configuration`,
-  endpoints `/oauth2/token` y `/oauth2/introspect`, *authorization code* y
-  *client credentials*).
-- **Dos planos, solo uno cambia:**
-  - **Usuario → MCP**: IAS autentica al usuario; el servidor actúa de *OAuth
-    Resource Server* y **mapea grupos → rol → allowlist/denylist**.
-  - **MCP → SuccessFactors**: **sin cambios** (cuenta de servicio por tenant).
-- **Resolución efectiva:** `entorno` = techo, `rol` = subconjunto → **intersección**.
-  El detalle —cómo se combinan las listas de entorno y rol, y si un rol sin lista
-  declarada actúa como techo o no acota— es **decisión abierta** (ver abajo).
-- **La denegación siempre gana:** un rol no debería poder ampliar lo que un
-  `denylist` prohíbe.
-- **No construir un almacén propio de usuarios/contraseñas.** El IdP del cliente
-  es quien autentica; el servidor no custodia credenciales de usuario.
+- **Identidad individual:** cada cliente usa su propio SAP IAS. Primer cliente MCP
+  de aceptación: **OpenCode**.
+- **Dos planos separados:** IAS autentica al usuario y el MCP aplica su rol;
+  SSFF mantiene la cuenta técnica existente. Sin principal propagation ni destinations.
+- **Roles propios por tenant:** restringen entornos y tienen su propia
+  `entityAllowlist`/`entityDenylist`, incluidos `fields`, con la semántica actual.
+  Listas o campos vacíos/ausentes no acotan esa capa; no se inventa otro modelo.
+- **Techo del entorno:** el permiso efectivo respeta entorno y rol; las restricciones
+  de campos se intersectan y las denegaciones prevalecen. Un rol nunca amplía el techo.
+- **Un único rol efectivo:** mapeo de grupos IAS en configuración; sin rol, denegación;
+  varios roles distintos, rechazo por ambigüedad.
+- **Asignaciones manuales por usuario en configuración:** prevalecen sobre grupos hasta
+  retirarlas. Si apuntan a un rol inexistente, se deniega sin fallback a grupos.
+- **Rol técnico provisional:** un rol normal, con lectura limitada y asignación manual
+  a usuarios concretos; no es un rol automático para todo usuario autenticado.
+- **Claves API:** siguen independientes, con su scope y políticas actuales, sin roles nuevos.
+- **Cambios en la siguiente petición:** roles, permisos y asignaciones se releen;
+  los cambios de grupos se reflejan con un token actualizado. Un token caducado no
+  autoriza peticiones aunque siga abierta la sesión.
+- **Auditoría:** tenant, identificador técnico IAS, rol y operación, sin nombres,
+  correos, tokens ni contenido de registros.
 
-### Bloqueante conocido: el registro del cliente MCP
+### Evidencia pendiente antes de implementar
 
-El problema **no es OIDC** (IAS lo hace bien), sino **cómo se registra el cliente
-MCP ante el IdP**:
+Existe un IAS disponible, pero **requiere permiso explícito antes de acceder**.
+No se ha realizado ninguna prueba real de Fase 3.
 
-- La especificación MCP (rev. 2026-07-28) **deprecó DCR** (RFC 7591) en favor de
-  **Client ID Metadata Documents (CIMD)**. Orden que intenta un cliente:
-  pre-registrado → CIMD → DCR → pedir credenciales al usuario.
-- **Los IdP corporativos no suelen soportar ni CIMD ni DCR** (caso documentado:
-  Microsoft Entra ID falla con *"does not support dynamic client registration"*).
-- **Camino práctico para IAS: cliente OAuth pre-registrado**, con `client_id`
-  fijo en la configuración del cliente MCP (los clientes que no lo permiten
-  pueden usar un proxy tipo `mcp-remote`).
+1. Autorizar destino, operaciones y cuenta/sesión de IAS.
+2. Verificar discovery, PKCE, registro del cliente y compatibilidad de OpenCode.
+3. Confirmar access token, issuer, audience/resource y claim de grupos.
+4. Cerrar con esa evidencia la vinculación tenant/issuer, el identificador estable
+   de usuario y el esquema de configuración.
 
-### Prerrequisito a verificar cuando arranque la Fase 3
-
-Leer el `.well-known/openid-configuration` del IAS del cliente y comprobar:
-
-1. **PKCE** (`code_challenge_methods_supported`).
-2. **Registro de cliente**: `registration_endpoint` (DCR) y/o
-   `client_id_metadata_document_supported` (CIMD).
-3. Que el token emite el **claim de grupos** (base del mapeo rol → allowlist).
+Las afirmaciones históricas sobre deprecación de DCR, CIMD y necesidad de un cliente
+pre-registrado o proxy quedan **pendientes de contraste**, no como solución verificada.
 
 ---
 
@@ -220,9 +221,9 @@ Leer el `.well-known/openid-configuration` del IAS del cliente y comprobar:
 
 | # | Decisión | Fase |
 |---|---|---|
-| 1 | **`allowlist`/`denylist` en capas y con roles**: cómo se combinan tenant → entorno → rol. Regla propuesta: **la denegación siempre gana** (un rol no amplía lo que el `denylist` prohíbe) y un rol sin lista declarada **no acota** (coherente con el modelo de Fase 1). | 2/3 |
+| 1 | **Resuelta — políticas de rol:** primero se resuelve el entorno con la semántica actual de tenant/entorno; después se aplican también las listas del rol. Ninguna capa amplía a la otra; la denegación gana. Vacío/ausente no acota esa capa. | 3 |
 | 2 | ~~**Alcance de la clave**~~ — **resuelta:** `apiKeyHash` existe en el tenant y en cada entorno; una clave de entorno solo alcanza su entorno, la del tenant todos los suyos. | 2 |
-| 3 | **Verificación de IAS** (PKCE / registro de cliente / claim de grupos) — diferida hasta que arranque la Fase 3. | 3 |
+| 3 | **Pendiente — validación IAS/OpenCode:** permiso de acceso, login, tokens, claim de grupos y vinculación de tenant. Véase P1–P5 del PRD de Fase 3. | 3 |
 
 > *Resuelta:* la pregunta previa sobre la semántica de la **allowlist vacía/ausente**
 > está cerrada — **no acota nada**; la denegación explícita va por `entityDenylist`.
@@ -232,6 +233,7 @@ Leer el `.well-known/openid-configuration` del IAS del cliente y comprobar:
 - `PRD-feature-multitenant-hosting.md` — PRD vigente de Fase 2 (sustituye al antiguo
   `PRD-feature-http-sse-transport.md`).
 - `PRD-feature-allowlist-vectors.md` — cierre de los vectores de `$expand` y navegación.
+- `docs/PRD-phase3-ias-roles.md` — decisiones de identidad/roles, requisitos y aceptación V1–V3.
 - `odd/tasks/entity-allowlist-per-environment.md` — trabajo de Fase 1.
 - `odd/tasks/field-granularity.md` y `odd/tasks/multitenant-hosting.md` — Fase 1.5 y Fase 2.
 - `archive/README.md` — PRDs ya ejecutados.
