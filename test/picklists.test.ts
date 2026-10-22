@@ -13,6 +13,7 @@ import {
   resolveLabel,
   resolvePicklistLocale,
   picklistCacheFileName,
+  picklistCacheDirName,
   type CachedPicklistOption,
   PICKLIST_DISK_TTL_MS,
   PICKLIST_MEMORY_TTL_MS,
@@ -903,6 +904,148 @@ test("query_entity output: 'xml' preserves raw Atom XML body without modifying i
     assert.equal((res.content as any)[0].text, rawAtomXml);
 
     await client.close();
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("granular disk cache loads lazily per picklist and invalidation cleans it up", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "ssff-picklists-granular-"));
+  try {
+    const configPath = path.join(tmpDir, "config.json");
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({
+        environments: {
+          "tenant-a": {
+            baseUrl: "https://tenant-a.example.com",
+            auth: { type: "basic", username: "u", password: "p" },
+          },
+        },
+      }),
+      "utf-8",
+    );
+
+    let fetchCalls = 0;
+    const { fetch } = recordingFetch((url) => {
+      if (url.includes("gender")) {
+        fetchCalls++;
+        return jsonResponse({
+          d: {
+            results: [
+              {
+                id: "10283",
+                externalCode: "M",
+                status: "ACTIVE",
+                picklistLabels: {
+                  results: [
+                    { locale: "en_US", label: "Male" },
+                  ],
+                },
+              },
+            ],
+          },
+        });
+      }
+      return jsonResponse({ d: { results: [] } });
+    });
+
+    const service1 = new PicklistService({
+      cacheDir: tmpDir,
+      fetchImpl: fetch,
+      disableDiskCache: false,
+    });
+
+    // Initial fetch from network
+    const opts1 = await service1.ensurePicklistLoaded(ENV, "tenant-a", "gender");
+    assert.equal(opts1.length, 1);
+    assert.equal(fetchCalls, 1);
+
+    // Verify granular disk cache file was written
+    const granularDir = path.join(tmpDir, picklistCacheDirName("default", "tenant-a"));
+    const granularFile = path.join(granularDir, "gender.json");
+    const stat = await fs.stat(granularFile);
+    assert.equal(stat.isFile(), true);
+
+    // Create a new instance without in-memory state, pointing to same disk cache
+    const service2 = new PicklistService({
+      cacheDir: tmpDir,
+      fetchImpl: fetch,
+      disableDiskCache: false,
+    });
+
+    // Should load lazily from granular disk file without fetching from network
+    const opts2 = await service2.ensurePicklistLoaded(ENV, "tenant-a", "gender");
+    assert.equal(opts2.length, 1);
+    assert.equal(fetchCalls, 1); // No new network call
+
+    // Run cache invalidate CLI
+    const exitCode = await runCacheInvalidate("tenant-a", false, {
+      configPath,
+      cacheDir: tmpDir,
+      stdout: () => {},
+      stderr: () => {},
+    });
+    assert.equal(exitCode, 0);
+
+    // Verify granular directory and file were deleted
+    const dirExists = await fs.stat(granularDir).then(() => true).catch(() => false);
+    assert.equal(dirExists, false);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("fetchPicklistFromSAP paginates via d.__next for large picklists", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "ssff-picklists-page-"));
+  try {
+    let callCount = 0;
+    const { fetch } = recordingFetch((url) => {
+      callCount++;
+      if (url.includes("$skiptoken=1000")) {
+        return jsonResponse({
+          d: {
+            results: [
+              {
+                id: "20001",
+                externalCode: "P2",
+                status: "ACTIVE",
+                picklistLabels: {
+                  results: [{ locale: "en_US", label: "Page 2 Item" }],
+                },
+              },
+            ],
+          },
+        });
+      }
+      return jsonResponse({
+        d: {
+          __next: "https://tenant-a.example.com/odata/v2/PicklistOption?$filter=picklist/id eq 'largeList'&$expand=picklistLabels&$skiptoken=1000",
+          results: [
+            {
+              id: "10001",
+              externalCode: "P1",
+              status: "ACTIVE",
+              picklistLabels: {
+                results: [{ locale: "en_US", label: "Page 1 Item" }],
+              },
+            },
+          ],
+        },
+      });
+    });
+
+    const service = new PicklistService({
+      cacheDir: tmpDir,
+      fetchImpl: fetch,
+      disableDiskCache: true,
+    });
+
+    const opts = await service.ensurePicklistLoaded(ENV, "tenant-a", "largeList");
+    assert.equal(callCount, 2);
+    assert.equal(opts.length, 2);
+    assert.equal(opts[0].externalCode, "P1");
+    assert.equal(opts[1].externalCode, "P2");
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }

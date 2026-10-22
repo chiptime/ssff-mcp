@@ -84,6 +84,13 @@ export function picklistCacheFileName(tenantId: string, alias: string): string {
     : `picklists-${component(tenantId)}-${component(alias)}.json`;
 }
 
+export function picklistCacheDirName(tenantId: string, alias: string): string {
+  const component = (value: string) => encodeURIComponent(value).replace(/-/g, "%2D");
+  return tenantId === "default"
+    ? `picklists-${component(alias)}`
+    : `picklists-${component(tenantId)}-${component(alias)}`;
+}
+
 function normalize(text: string): string {
   return text.trim().toLowerCase();
 }
@@ -290,6 +297,26 @@ export class PicklistService {
       if (existing !== undefined) {
         return existing;
       }
+
+      // Check granular L2 disk cache for this picklist specifically (lazy disk -> RAM)
+      if (!this.disableDiskCache) {
+        try {
+          const dir = path.join(this.cacheDir, picklistCacheDirName(this.tenantId, alias));
+          const granularFile = path.join(dir, `${encodeURIComponent(trimmedId)}.json`);
+          const content = await fs.readFile(granularFile, "utf-8");
+          const diskEntry = JSON.parse(content) as { fetchedAt: number; version?: number; options: CachedPicklistOption[] };
+          if (
+            typeof diskEntry.fetchedAt === "number" &&
+            this.now() - diskEntry.fetchedAt < this.diskTtlMs &&
+            Array.isArray(diskEntry.options)
+          ) {
+            await this.mergeAndPersist(alias, diskEntry.options, trimmedId, false);
+            return diskEntry.options;
+          }
+        } catch {
+          // Granular file not found or expired
+        }
+      }
     }
 
     const dedupeKey = `${alias}:${trimmedId}`;
@@ -317,6 +344,7 @@ export class PicklistService {
 
   /**
    * Direct fetch of a picklist from SAP using Legacy or MDF OData endpoints (D-55, D-58, DS-PL-02).
+   * Supports pagination (__next) for large picklists (e.g. 15k records).
    */
   private async fetchPicklistFromSAP(
     env: EnvTarget,
@@ -327,17 +355,35 @@ export class PicklistService {
 
     // Attempt 1: Legacy Picklist (PicklistOption)
     try {
-      const legacyPath = `PicklistOption?$filter=picklist/id eq '${escapedId}'&$expand=picklistLabels`;
-      const res = await dispatchGet(env, legacyPath, {
-        accept: "application/json",
-        timeoutMs: PICKLIST_FETCH_TIMEOUT_MS,
-        fetchImpl: this.fetchImpl,
-        now: this.now,
-      });
-      const parsed = JSON.parse(res.body) as Record<string, unknown>;
-      const results = this.extractResults(parsed);
-      if (results.length > 0) {
-        return this.parseLegacyOptions(results, picklistId);
+      let legacyPath: string | null = `PicklistOption?$filter=picklist/id eq '${escapedId}'&$expand=picklistLabels`;
+      const allLegacyResults: Array<Record<string, unknown>> = [];
+      while (legacyPath && allLegacyResults.length < this.maxEntries) {
+        const res = await dispatchGet(env, legacyPath, {
+          accept: "application/json",
+          timeoutMs: PICKLIST_FETCH_TIMEOUT_MS,
+          fetchImpl: this.fetchImpl,
+          now: this.now,
+        });
+        const parsed = JSON.parse(res.body) as Record<string, unknown>;
+        const results = this.extractResults(parsed);
+        if (results.length === 0) break;
+        allLegacyResults.push(...results);
+
+        const d = parsed?.d as Record<string, unknown> | undefined;
+        const nextUrl = d?.__next;
+        if (typeof nextUrl === "string" && nextUrl.length > 0) {
+          try {
+            const u = new URL(nextUrl, "https://dummy.example.com");
+            legacyPath = u.pathname.replace(/^\/odata\/v2\/?/, "") + u.search;
+          } catch {
+            legacyPath = null;
+          }
+        } else {
+          legacyPath = null;
+        }
+      }
+      if (allLegacyResults.length > 0) {
+        return this.parseLegacyOptions(allLegacyResults, picklistId);
       }
     } catch (err) {
       this.logWarning(`legacy picklist fetch failed for "${picklistId}": ${err instanceof Error ? err.message : String(err)}`);
@@ -345,17 +391,35 @@ export class PicklistService {
 
     // Attempt 2: MDF Picklist (PickListValueV2)
     try {
-      const mdfPath = `PickListValueV2?$filter=PickListV2_id eq '${escapedId}'`;
-      const res = await dispatchGet(env, mdfPath, {
-        accept: "application/json",
-        timeoutMs: PICKLIST_FETCH_TIMEOUT_MS,
-        fetchImpl: this.fetchImpl,
-        now: this.now,
-      });
-      const parsed = JSON.parse(res.body) as Record<string, unknown>;
-      const results = this.extractResults(parsed);
-      if (results.length > 0) {
-        return this.parseMdfOptions(results, picklistId);
+      let mdfPath: string | null = `PickListValueV2?$filter=PickListV2_id eq '${escapedId}'`;
+      const allMdfResults: Array<Record<string, unknown>> = [];
+      while (mdfPath && allMdfResults.length < this.maxEntries) {
+        const res = await dispatchGet(env, mdfPath, {
+          accept: "application/json",
+          timeoutMs: PICKLIST_FETCH_TIMEOUT_MS,
+          fetchImpl: this.fetchImpl,
+          now: this.now,
+        });
+        const parsed = JSON.parse(res.body) as Record<string, unknown>;
+        const results = this.extractResults(parsed);
+        if (results.length === 0) break;
+        allMdfResults.push(...results);
+
+        const d = parsed?.d as Record<string, unknown> | undefined;
+        const nextUrl = d?.__next;
+        if (typeof nextUrl === "string" && nextUrl.length > 0) {
+          try {
+            const u = new URL(nextUrl, "https://dummy.example.com");
+            mdfPath = u.pathname.replace(/^\/odata\/v2\/?/, "") + u.search;
+          } catch {
+            mdfPath = null;
+          }
+        } else {
+          mdfPath = null;
+        }
+      }
+      if (allMdfResults.length > 0) {
+        return this.parseMdfOptions(allMdfResults, picklistId);
       }
     } catch (err) {
       this.logWarning(`mdf picklist fetch failed for "${picklistId}": ${err instanceof Error ? err.message : String(err)}`);
@@ -456,6 +520,7 @@ export class PicklistService {
     alias: string,
     newOptions: CachedPicklistOption[],
     picklistId?: string,
+    persistGranular = true,
   ): Promise<void> {
     const cache = await this.getCacheFor(alias);
     // Replace options of this picklist if refreshing or appending
@@ -479,6 +544,26 @@ export class PicklistService {
 
     // Persist to L2 disk cache (DS-PL-03, NFR-03)
     if (!this.disableDiskCache) {
+      // 1. Granular per-picklist persistence (enables lazy retrieval per picklist)
+      if (persistGranular && picklistId && newOptions.length > 0) {
+        try {
+          const dir = path.join(this.cacheDir, picklistCacheDirName(this.tenantId, alias));
+          await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+          const granularFile = path.join(dir, `${encodeURIComponent(picklistId)}.json`);
+          await fs.writeFile(
+            granularFile,
+            JSON.stringify({ fetchedAt: this.now(), version: 1, picklistId, options: newOptions }),
+            { encoding: "utf-8", mode: 0o600 },
+          );
+          if (process.platform !== "win32") {
+            await fs.chmod(granularFile, 0o600).catch(() => {});
+          }
+        } catch (err) {
+          this.logWarning(`failed to persist granular disk cache for "${picklistId}": ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      // 2. Monolithic environment cache
       try {
         await fs.mkdir(this.cacheDir, { recursive: true, mode: 0o700 });
         const cacheFile = path.join(this.cacheDir, picklistCacheFileName(this.tenantId, alias));

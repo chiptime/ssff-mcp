@@ -15,7 +15,7 @@ import path from "node:path";
 import { loadConfig } from "../config.js";
 import { isSanitizedError } from "../errors.js";
 import { defaultCacheDir, metadataCacheFileName } from "../metadata.js";
-import { picklistCacheFileName } from "../picklists.js";
+import { picklistCacheFileName, picklistCacheDirName } from "../picklists.js";
 
 export interface CacheInvalidateDeps {
   configPath?: string;
@@ -75,10 +75,12 @@ export async function runCacheInvalidate(
       // Same naming as MetadataService (D-121): namespaced by tenant.
       await fs.rm(path.join(cacheDir, metadataCacheFileName(tenantId, target)));
       await fs.rm(path.join(cacheDir, picklistCacheFileName(tenantId, target))).catch(() => {});
+      await fs.rm(path.join(cacheDir, picklistCacheDirName(tenantId, target)), { recursive: true, force: true }).catch(() => {});
       out(`invalidated ${target} (${cacheDir})\n`);
     } catch {
       // Already absent: idempotent, still a success.
       await fs.rm(path.join(cacheDir, picklistCacheFileName(tenantId, target))).catch(() => {});
+      await fs.rm(path.join(cacheDir, picklistCacheDirName(tenantId, target)), { recursive: true, force: true }).catch(() => {});
       out(`nothing to invalidate for ${target} (${cacheDir})\n`);
     }
   }

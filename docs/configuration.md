@@ -322,16 +322,30 @@ Override it with `maxResponseBytes` in `config.json` (wins), then
 ```
 ssff-mcp                                    Start the MCP server over STDIO (default)
 ssff-mcp init                               Run the interactive configuration wizard
-ssff-mcp cache invalidate <alias|--all>     Drop cached $metadata for an environment
+ssff-mcp cache invalidate <alias|--all>     Drop cached $metadata and picklists for an environment
 ssff-mcp cache invalidate <alias|--all> --tenant <id>
                                             Same, for one tenant of a multi-tenant config
 ssff-mcp --help                             Show help
 ```
 
-- **`cache invalidate`** deletes the cached `$metadata` of one alias, or all of
+- **`cache invalidate`** deletes the cached `$metadata` and picklist caches (`picklists-*` files and granular directories) of one alias, or all of
   them with `--all`. It never touches SuccessFactors (no network); the running
-  server notices on its next metadata read. Exit codes: `0` success, `1` config
+  server notices on its next read. Exit codes: `0` success, `1` config
   unreadable, `2` usage error (unknown alias deletes nothing — fail-closed).
   A multi-tenant config requires `--tenant <id>` (the target tenant must be
   declared, otherwise the command fails naming it); secrets are never resolved
   by this command, so it works even when secret providers are unavailable.
+
+## Picklist Caching & Resolution
+
+Picklists are cached in a two-tier hierarchy:
+- **L1 In-Memory Cache**: 1 hour TTL (configurable, default 60 min).
+- **L2 Disk Cache**: 24 hours TTL, stored under `~/.cache/ssff-mcp/` (mode `0700` dir / `0600` files).
+
+### Lazy Loading & Granularity
+To handle small picklists (e.g. 2 options) and large picklists (e.g. 15,000 zip codes or cost centers) efficiently without RAM bloat:
+1. **SAP to Disk (Lazy Retrieval)**: Picklists are fetched on demand from SAP OData (`PicklistOption` or `PickListValueV2`) only when an entity field or query references them. Large picklists are paginated automatically (`__next`).
+2. **Disk to Memory (Granular Loading)**: Picklists are stored granularly per picklist ID (`picklists-<alias>/<picklistId>.json`). When resolving values, only the requested picklists are loaded into RAM rather than deserializing an entire monolithic tenant cache.
+3. **Invalidation**:
+   - **CLI**: `ssff-mcp cache invalidate <alias>` removes both metadata and granular/monolithic picklist caches.
+   - **Tool Parameter**: `resolve_picklist` accepts `forceRefresh: true` to bypass and refresh local cache for a specific picklist directly from SAP.
