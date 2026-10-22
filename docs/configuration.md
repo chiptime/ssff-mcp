@@ -351,3 +351,7 @@ To handle small picklists (e.g. 2 options) and large picklists (e.g. 15,000 zip 
 3. **Invalidation**:
    - **CLI**: `ssff-mcp cache invalidate <alias>` removes both metadata and granular/monolithic picklist caches.
    - **Tool Parameter**: `resolve_picklist` accepts `forceRefresh: true` to bypass and refresh local cache for a specific picklist directly from SAP.
+4. **On-Demand `<field>_NavLabels` (Option C)**:
+   - When `resolvePicklists: true` is passed in `query_entity` or `batch_get` alongside `$expand=<fieldNav>`, the MCP intercepts and resolves the picklist locally without SAP join overhead.
+   - Attaches `<field>_NavLabels` (e.g. `maritalStatus_NavLabels`) with minimal `{ optionId, label }` by default.
+   - Dynamically grows to include `externalCode`, `order` or `picklistId` when requested via `$select`.
