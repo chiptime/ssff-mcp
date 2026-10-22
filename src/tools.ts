@@ -45,7 +45,8 @@ import { dispatchGet, envTargetFor, type EnvTarget, type FetchImpl } from "./htt
 import { resolveLocale } from "./i18n.js";
 import { makeLogger, type LogSink, type Logger } from "./logger.js";
 import { isCustomMdfEntity, isEmployeeLinkedType } from "./mdf.js";
-import { MetadataService } from "./metadata.js";
+import { MetadataService, type EntitySchema } from "./metadata.js";
+import { PicklistService, resolvePicklistLocale, planPicklistExpansion, type PicklistExpansionPlan } from "./picklists.js";
 import { exceedsResponseCap, responseTooLargeError, resolveMaxResponseBytes } from "./size-guard.js";
 import {
   buildQuery,
@@ -62,6 +63,7 @@ import {
   inspectEntitySchema,
   listEnvironmentsSchema,
   queryEntitySchema,
+  resolvePicklistSchema,
 } from "./tool-catalog.js";
 
 const QUERY_TOOL_TIMEOUT_MS = 30_000;
@@ -94,6 +96,8 @@ export interface ServerDeps {
   cacheDir?: string;
   /** Explicitly disables or enables disk cache (tests/prod). */
   disableDiskCache?: boolean;
+  /** Optional injectable picklist service (tests/prod). */
+  picklistService?: PicklistService;
   /** Environment variables read for SF_DEFAULT_LOCALE (defaults to process.env; tests). */
   env?: NodeJS.ProcessEnv;
   /**
@@ -262,6 +266,26 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         tenantId: key,
       });
       metadataServices.set(key, service);
+    }
+    return service;
+  }
+
+  const picklistServices = new Map<string, PicklistService>();
+  function picklistServiceFor(tenantId: string | undefined): PicklistService {
+    if (deps.picklistService !== undefined) {
+      return deps.picklistService;
+    }
+    const key = tenantId ?? "default";
+    let service = picklistServices.get(key);
+    if (service === undefined) {
+      service = new PicklistService({
+        fetchImpl: deps.fetchImpl,
+        now: deps.now,
+        cacheDir: deps.cacheDir,
+        disableDiskCache: deps.disableDiskCache,
+        tenantId: key,
+      });
+      picklistServices.set(key, service);
     }
     return service;
   }
@@ -832,6 +856,128 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       }),
   );
 
+  const resolvePicklist = toolEntry("resolve_picklist");
+  server.registerTool(
+    resolvePicklist.name,
+    {
+      title: resolvePicklist.title,
+      description: resolvePicklist.description,
+      inputSchema: resolvePicklistSchema,
+    },
+    async (args) =>
+      await executeTool("resolve_picklist", args.environment, async () => {
+        const { environments, defaultLocale, inline, tenantId } = await loadFreshConfig(args.environment);
+        const { alias, env } = resolveEnvironment(environments, args.environment, inline);
+        const target: EnvTarget = envTargetFor(env, alias, tenantId);
+        const locale = resolvePicklistLocale({
+          tool: args.locale,
+          config: defaultLocale,
+          env: envVars.SF_DEFAULT_LOCALE,
+        });
+        const service = picklistServiceFor(tenantId);
+        const forceRefresh = args.forceRefresh === true;
+
+        if (args.query !== undefined && args.query.trim().length > 0) {
+          const matches = await service.searchByLabel(
+            target,
+            alias,
+            args.query,
+            args.picklistId,
+            locale,
+            forceRefresh,
+          );
+          const structured: Record<string, unknown> = {
+            ...(args.picklistId ? { picklistId: args.picklistId } : {}),
+            matches,
+          };
+          return { structured, text: JSON.stringify(structured, null, 2), recordCount: matches.length };
+        }
+
+        if (args.optionId !== undefined) {
+          const optStr = String(args.optionId);
+          const res = await service.resolveOption(
+            target,
+            alias,
+            args.picklistId,
+            optStr,
+            locale,
+            forceRefresh,
+          );
+          if (res.resolved) {
+            const structured = {
+              found: true,
+              option: {
+                optionId: optStr,
+                picklistId: res.picklistId,
+                externalCode: res.externalCode,
+                label: res.label,
+                locale,
+                status: "ACTIVE",
+              },
+            };
+            return { structured, text: JSON.stringify(structured, null, 2), recordCount: 1 };
+          }
+          const structured = {
+            found: false,
+            optionId: optStr,
+          };
+          return { structured, text: JSON.stringify(structured, null, 2), recordCount: 0 };
+        }
+
+        if (args.externalCode !== undefined) {
+          const extCode = args.externalCode.trim();
+          const res = await service.resolveOption(
+            target,
+            alias,
+            args.picklistId,
+            extCode,
+            locale,
+            forceRefresh,
+          );
+          if (res.resolved) {
+            const structured = {
+              found: true,
+              option: {
+                optionId: res.optionId ?? (res.rawValue ?? extCode),
+                picklistId: res.picklistId,
+                externalCode: res.externalCode,
+                label: res.label,
+                locale,
+                status: "ACTIVE",
+              },
+            };
+            return { structured, text: JSON.stringify(structured, null, 2), recordCount: 1 };
+          }
+          const structured = {
+            found: false,
+            ...(args.picklistId ? { picklistId: args.picklistId } : {}),
+            externalCode: extCode,
+          };
+          return { structured, text: JSON.stringify(structured, null, 2), recordCount: 0 };
+        }
+
+        if (args.picklistId !== undefined) {
+          const options = await service.listOptions(
+            target,
+            alias,
+            args.picklistId,
+            locale,
+            forceRefresh,
+          );
+          const structured = {
+            picklistId: args.picklistId,
+            options,
+          };
+          return { structured, text: JSON.stringify(structured, null, 2), recordCount: options.length };
+        }
+
+        throw new SanitizedError(
+          "OPTION_INVALID",
+          "at least one of picklistId, optionId, externalCode or query must be provided",
+        );
+      }),
+  );
+
   const queryEntity = toolEntry("query_entity");
   server.registerTool(
     queryEntity.name,
@@ -842,7 +988,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     },
     async (args) =>
       await executeTool("query_entity", args.environment, async () => {
-        const { environments, inline, tenantId, capBytes } = await loadFreshConfig(args.environment);
+        const { environments, defaultLocale, inline, tenantId, capBytes } = await loadFreshConfig(args.environment);
         const { alias, env } = resolveEnvironment(environments, args.environment, inline);
         // The allowlist/denylist are per environment (FR-28/D-30); the denylist wins.
         const entityAllowlist = env.entityAllowlist;
@@ -889,7 +1035,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           skiptoken = payload.skiptoken;
         }
 
-        const { pathAndQuery, topClamped } = buildQuery(args.entityPath, {
+        let { pathAndQuery, topClamped } = buildQuery(args.entityPath, {
           filter: args.filter,
           orderby: args.orderby,
           select: args.select,
@@ -915,6 +1061,31 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           throw new SanitizedError("PATH_INVALID", "unknown entity set");
         }
 
+        let entitySchema: EntitySchema | undefined;
+        let expansionPlan: PicklistExpansionPlan | undefined;
+        if (args.resolvePicklists === true) {
+          const reachedEntity = await entityReachedByPath(target, alias, tenantId, validatedPath.segments);
+          entitySchema = reachedEntity ? await metadataServiceFor(tenantId).getEntitySchema(target, alias, reachedEntity) : undefined;
+          expansionPlan = planPicklistExpansion(entitySchema, args.expand, args.select, args.resolvePicklists);
+          if (expansionPlan.sapExpand !== args.expand || expansionPlan.sapSelect !== args.select) {
+            const rebuilt = buildQuery(args.entityPath, {
+              filter: args.filter,
+              orderby: args.orderby,
+              select: expansionPlan.sapSelect,
+              expand: expansionPlan.sapExpand,
+              fromDate: args.fromDate,
+              toDate: args.toDate,
+              asOfDate: args.asOfDate,
+              top: args.top,
+              skip: args.skip,
+              inlinecount: args.inlinecount,
+              skiptoken,
+            });
+            pathAndQuery = rebuilt.pathAndQuery;
+            topClamped = rebuilt.topClamped;
+          }
+        }
+
         // Navigation and $expand are resolved against the cached metadata and
         // checked against the same lists (FR-141..FR-146), before any data request.
         await enforceNavigationVectors(
@@ -923,10 +1094,10 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           tenantId,
           env,
           validatedPath.segments,
-          args.expand,
+          expansionPlan !== undefined ? expansionPlan.sapExpand : args.expand,
           args.filter,
           args.orderby,
-          args.select,
+          expansionPlan !== undefined ? expansionPlan.sapSelect : args.select,
         );
 
         // Field-level granularity: when any involved entity carries `fields`, the
@@ -1004,11 +1175,32 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           unwrapped.records,
         );
 
+        let finalRecords = redactedRecords;
+        if (args.resolvePicklists === true && Array.isArray(finalRecords) && entitySchema) {
+          try {
+            const locale = resolvePicklistLocale({
+              tool: args.locale,
+              config: defaultLocale,
+              env: envVars.SF_DEFAULT_LOCALE,
+            });
+            finalRecords = (await picklistServiceFor(tenantId).enrichRecords(
+              finalRecords,
+              entitySchema,
+              target,
+              alias,
+              locale,
+              expansionPlan?.activePicklists,
+            )) as unknown[];
+          } catch {
+            // Fail-safe (D-59 / FR-65): never fail main query on picklist error
+          }
+        }
+
         const structured: Record<string, unknown> = {
           environment: alias,
           path: args.entityPath,
           recordCount: unwrapped.records.length,
-          records: redactedRecords,
+          records: finalRecords,
           hasMore: unwrapped.hasMore,
         };
         if (downgradeXml) {
@@ -1054,7 +1246,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     },
     async (args) =>
       await executeTool("batch_get", args.environment, async () => {
-        const { environments, inline, tenantId, capBytes } = await loadFreshConfig(args.environment);
+        const { environments, defaultLocale, inline, tenantId, capBytes } = await loadFreshConfig(args.environment);
         const { alias, env } = resolveEnvironment(environments, args.environment, inline);
         // The allowlist/denylist are per environment (FR-28/D-30); the denylist wins.
         const entityAllowlist = env.entityAllowlist;
@@ -1074,6 +1266,17 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           filter: string | undefined;
           orderby: string | undefined;
           select: string | undefined;
+          fromDate?: string;
+          toDate?: string;
+          asOfDate?: string;
+          top?: number;
+          skip?: number;
+          inlinecount?: "allpages";
+          skiptoken?: string;
+          resolvePicklists?: boolean;
+          activePicklists?: Map<string, Set<string>>;
+          schema?: EntitySchema;
+          locale?: string;
           pathAndQuery: string;
           bindingOptions: Record<string, unknown>;
           topClamped: boolean;
@@ -1104,6 +1307,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
             });
             skiptoken = payload.skiptoken;
           }
+
           const { pathAndQuery, topClamped } = buildQuery(item.entityPath, {
             filter: item.filter,
             orderby: item.orderby,
@@ -1125,6 +1329,15 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
             filter: item.filter,
             orderby: item.orderby,
             select: item.select,
+            fromDate: item.fromDate,
+            toDate: item.toDate,
+            asOfDate: item.asOfDate,
+            top: item.top,
+            skip: item.skip,
+            inlinecount: item.inlinecount,
+            skiptoken,
+            resolvePicklists: item.resolvePicklists,
+            locale: item.locale,
             pathAndQuery,
             bindingOptions,
             topClamped,
@@ -1155,6 +1368,32 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         // Pass 2b — navigation and $expand, per ITEM (never deduped by root):
         // the same root can carry different navigations or different expands.
         for (const item of planned) {
+          if (item.resolvePicklists === true) {
+            const reachedEntity = await entityReachedByPath(target, alias, tenantId, item.segments);
+            item.schema = reachedEntity ? await metadataServiceFor(tenantId).getEntitySchema(target, alias, reachedEntity) : undefined;
+            const expansionPlan = planPicklistExpansion(item.schema, item.expand, item.select, item.resolvePicklists);
+            item.activePicklists = expansionPlan.activePicklists;
+            if (expansionPlan.sapExpand !== item.expand || expansionPlan.sapSelect !== item.select) {
+              item.expand = expansionPlan.sapExpand;
+              item.select = expansionPlan.sapSelect;
+              const rebuilt = buildQuery(item.entityPath, {
+                filter: item.filter,
+                orderby: item.orderby,
+                select: expansionPlan.sapSelect,
+                expand: expansionPlan.sapExpand,
+                fromDate: item.fromDate,
+                toDate: item.toDate,
+                asOfDate: item.asOfDate,
+                top: item.top,
+                skip: item.skip,
+                inlinecount: item.inlinecount,
+                skiptoken: item.skiptoken,
+              });
+              item.pathAndQuery = rebuilt.pathAndQuery;
+              item.topClamped = rebuilt.topClamped;
+            }
+          }
+
           await enforceNavigationVectors(
             target,
             alias,
@@ -1304,7 +1543,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           }
           recordsReturned += records.length;
           entry.recordCount = records.length;
-          entry.records = await redactRecords(
+          let itemRecords = await redactRecords(
             target,
             alias,
             tenantId,
@@ -1312,6 +1551,26 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
             item.segments,
             records,
           );
+          if (item.resolvePicklists === true && Array.isArray(itemRecords) && item.schema) {
+            try {
+              const locale = resolvePicklistLocale({
+                tool: item.locale,
+                config: defaultLocale,
+                env: envVars.SF_DEFAULT_LOCALE,
+              });
+              itemRecords = (await picklistServiceFor(tenantId).enrichRecords(
+                itemRecords,
+                item.schema,
+                target,
+                alias,
+                locale,
+                item.activePicklists,
+              )) as unknown[];
+            } catch {
+              // Fail-safe (D-59 / FR-65)
+            }
+          }
+          entry.records = itemRecords;
           if (downgradeXml) {
             entry.outputDowngraded = true;
           }

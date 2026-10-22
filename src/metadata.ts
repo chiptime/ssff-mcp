@@ -49,6 +49,7 @@ export interface EntityProperty {
   type: string;
   nullable: boolean;
   maxLength?: number;
+  picklistId?: string;
 }
 
 export interface NavigationProperty {
@@ -252,6 +253,10 @@ export function parseMetadata(xml: string): ParsedMetadata {
               prop.maxLength = maxL;
             }
           }
+          const picklist = pObj["@_picklist"] ?? pObj["@_sap:picklist"];
+          if (typeof picklist === "string" && picklist.length > 0) {
+            prop.picklistId = picklist;
+          }
           properties.push(prop);
         }
       }
@@ -297,6 +302,19 @@ export function parseMetadata(xml: string): ParsedMetadata {
             relationship,
             multiplicity,
           });
+        }
+      }
+    }
+
+    for (const prop of properties) {
+      if (prop.picklistId === undefined) {
+        const matchingNav = navigationProperties.find(
+          (np) =>
+            (np.name === `${prop.name}Nav` || np.name === prop.name) &&
+            (np.targetEntitySet === "PicklistOption" || np.targetEntitySet === "PickListValueV2"),
+        );
+        if (matchingNav) {
+          prop.picklistId = prop.name;
         }
       }
     }

@@ -241,3 +241,55 @@ test("MetadataService caches parsed metadata to local disk and reloads it withou
     await fs.rm(tmpCacheDir, { recursive: true, force: true });
   }
 });
+
+test("parseMetadata extracts sap:picklist annotations and resolves picklist nav targets (FR-56)", () => {
+  const xml = `<?xml version="1.0" encoding="utf-8"?>
+<edmx:Edmx xmlns:edmx="http://schemas.microsoft.com/ado/2007/06/edmx"
+           xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata"
+           xmlns:sap="http://www.sap.com/Protocols/SAPData"
+           Version="1.0">
+  <edmx:DataServices m:DataServiceVersion="2.0">
+    <Schema xmlns="http://schemas.microsoft.com/ado/2008/09/edm" Namespace="SFOData">
+      <EntityType Name="PerPersonal">
+        <Key><PropertyRef Name="personIdExternal"/></Key>
+        <Property Name="personIdExternal" Type="Edm.String" Nullable="false"/>
+        <Property Name="gender" Type="Edm.String" Nullable="true" sap:picklist="gender"/>
+        <Property Name="maritalStatus" Type="Edm.String" Nullable="true"/>
+        <NavigationProperty Name="maritalStatusNav" Relationship="SFOData.PerPersonal_maritalStatusNav" FromRole="PerPersonal" ToRole="PicklistOption"/>
+      </EntityType>
+      <EntityType Name="PicklistOption">
+        <Key><PropertyRef Name="id"/></Key>
+        <Property Name="id" Type="Edm.Int64" Nullable="false"/>
+      </EntityType>
+      <Association Name="PerPersonal_maritalStatusNav">
+        <End Role="PerPersonal" Type="SFOData.PerPersonal" Multiplicity="*"/>
+        <End Role="PicklistOption" Type="SFOData.PicklistOption" Multiplicity="0..1"/>
+      </Association>
+      <EntityContainer Name="EntityContainer" m:IsDefaultEntityContainer="true">
+        <EntitySet Name="PerPersonal" EntityType="SFOData.PerPersonal"/>
+        <EntitySet Name="PicklistOption" EntityType="SFOData.PicklistOption"/>
+        <AssociationSet Name="PerPersonal_maritalStatusNav" Association="SFOData.PerPersonal_maritalStatusNav">
+          <End Role="PerPersonal" EntitySet="PerPersonal"/>
+          <End Role="PicklistOption" EntitySet="PicklistOption"/>
+        </AssociationSet>
+      </EntityContainer>
+    </Schema>
+  </edmx:DataServices>
+</edmx:Edmx>`;
+
+  const parsed = parseMetadata(xml);
+  const schema = parsed.entitySchemas["PerPersonal"];
+  assert.ok(schema);
+
+  const genderProp = schema.properties.find((p) => p.name === "gender");
+  assert.ok(genderProp);
+  assert.equal(genderProp.picklistId, "gender");
+
+  const maritalProp = schema.properties.find((p) => p.name === "maritalStatus");
+  assert.ok(maritalProp);
+  assert.equal(maritalProp.picklistId, "maritalStatus");
+
+  const idProp = schema.properties.find((p) => p.name === "personIdExternal");
+  assert.ok(idProp);
+  assert.equal(idProp.picklistId, undefined);
+});

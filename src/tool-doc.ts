@@ -34,6 +34,8 @@ const ARG_DESCRIPTIONS: Record<string, string> = {
     "Required; must be a configured alias. Optional in inline mode (a single configured environment).",
   "batch_get.requests":
     "Array of 1..180 items (SAP `$batch` hard limit). Each item uses exactly the `query_entity` GET grammar. There is no field for HTTP method, URL, host, headers, body or changesets.",
+  "resolve_picklist.environment":
+    "Required; must be a configured alias. Optional in inline mode (a single configured environment).",
 };
 
 interface ArgRow {
@@ -73,6 +75,8 @@ function typeOf(schema: unknown): string {
       return `array<${typeOf(def.type)}>`;
     case "ZodObject":
       return "object";
+    case "ZodUnion":
+      return ((def.options as unknown[] | undefined) ?? []).map(typeOf).join(" | ");
     default:
       return typeName.replace(/^Zod/, "").toLowerCase();
   }
@@ -93,7 +97,12 @@ function escapeCell(text: string): string {
 
 /** Argument rows for one tool (empty for a tool with no arguments). */
 export function toolArgRows(entry: ToolCatalogEntry): ArgRow[] {
-  const shape = (entry.schema as unknown as { shape?: Record<string, unknown> }).shape;
+  const rawSchema = entry.schema as { _def?: Record<string, unknown>; shape?: Record<string, unknown> };
+  const targetSchema =
+    rawSchema._def?.typeName === "ZodEffects"
+      ? (rawSchema._def.schema as { shape?: Record<string, unknown> })
+      : rawSchema;
+  const shape = targetSchema?.shape;
   if (shape === undefined) {
     return [];
   }
