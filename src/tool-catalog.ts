@@ -84,6 +84,17 @@ export const INSPECT_ENTITY_DESCRIPTION = [
   "locale selects the language of the guidance prose (the user's language, e.g. es_ES).",
 ].join(" ");
 
+export const RESOLVE_PICKLIST_DESCRIPTION = [
+  "Resolves picklist option IDs to readable labels, lists options of a picklist, or searches options",
+  "by label to assist in building $filter queries.",
+  "optionId: resolves a numeric legacy ID (e.g. '10283').",
+  "picklistId: lists active options for that catalog (e.g. 'maritalStatus', 'gender').",
+  "externalCode: looks up an option by its business code (e.g. 'M', 'FULL_TIME').",
+  "query: searches labels by text and returns matching optionId and suggestedFilter (e.g. 'Casado' -> 'maritalStatus eq 10119').",
+  "locale: preferred language for labels (e.g. 'es_ES', 'en_US').",
+  "forceRefresh: when true, refreshes the local cache from SuccessFactors.",
+].join(" ");
+
 // The date format is validated in buildQuery (not by zod) so a malformed value
 // surfaces as our sanitized OPTION_INVALID rather than a protocol validation error.
 const EFFECTIVE_FROM_DESCRIPTION =
@@ -124,6 +135,19 @@ export const queryEntitySchema = z
       .enum(["allpages"])
       .optional()
       .describe('Adds $inlinecount=allpages; the response includes totalCount when the service provides __count.'),
+    resolvePicklists: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe(
+        "Cuando es true, enriquece automáticamente los campos asociados a picklists añadiendo las etiquetas legibles en la propiedad _picklistLabels sin modificar los valores nativos.",
+      ),
+    locale: z
+      .string()
+      .optional()
+      .describe(
+        "Idioma preferido para las etiquetas (ej. 'es_ES', 'en_US'). Si se omite, utiliza el locale configurado globalmente (`defaultLocale`), si existe.",
+      ),
     output: z
       .enum(["json", "xml"])
       .optional()
@@ -178,8 +202,41 @@ const batchRequestItemSchema = z
     skip: z.number().int().optional(),
     cursor: z.string().optional(),
     inlinecount: z.enum(["allpages"]).optional(),
+    resolvePicklists: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe(
+        "Cuando es true, enriquece automáticamente los campos asociados a picklists añadiendo las etiquetas legibles en la propiedad _picklistLabels sin modificar los valores nativos.",
+      ),
+    locale: z
+      .string()
+      .optional()
+      .describe(
+        "Idioma preferido para las etiquetas (ej. 'es_ES', 'en_US'). Si se omite, utiliza el locale configurado globalmente (`defaultLocale`), si existe.",
+      ),
   })
   .strict();
+
+export const resolvePicklistSchema = z
+  .object({
+    environment: environmentArg,
+    picklistId: z.string().optional().describe("Identificador de la picklist (ej. 'gender', 'maritalStatus')."),
+    optionId: z.union([z.string(), z.number()]).optional().describe("Option ID numérico de SAP (ej. '10283' o 10283)."),
+    externalCode: z.string().optional().describe("Código externo de negocio (ej. 'M', 'FULL_TIME')."),
+    query: z.string().optional().describe("Texto libre o etiqueta a buscar para traducción inversa (ej. 'Casado', 'Masculino')."),
+    locale: z.string().optional().describe("Código de idioma (ej. 'es_ES', 'en_US'). Por defecto usa el configurado globalmente (`defaultLocale`), si existe."),
+    forceRefresh: z.boolean().optional().describe("Si es true, ignora la caché local y consulta directamente a SAP."),
+  })
+  .strict()
+  .refine(
+    (data) =>
+      data.picklistId !== undefined ||
+      data.optionId !== undefined ||
+      data.externalCode !== undefined ||
+      data.query !== undefined,
+    { message: "Al menos uno de picklistId, optionId, externalCode o query debe ser proporcionado." },
+  );
 
 export const batchGetSchema = z
   .object({
@@ -217,6 +274,12 @@ export const TOOL_CATALOG: readonly ToolCatalogEntry[] = [
     title: "Inspect the data model",
     description: INSPECT_ENTITY_DESCRIPTION,
     schema: inspectEntitySchema,
+  },
+  {
+    name: "resolve_picklist",
+    title: "Resolve or search picklist options and labels",
+    description: RESOLVE_PICKLIST_DESCRIPTION,
+    schema: resolvePicklistSchema,
   },
   {
     name: "query_entity",

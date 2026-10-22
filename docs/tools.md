@@ -1,6 +1,6 @@
 # Tools & Resources
 
-> Part of [ssff-mcp](../README.md). The four tools, the MCP resources, and the
+> Part of [ssff-mcp](../README.md). The five tools, the MCP resources, and the
 > query semantics that apply to all reads.
 
 Everything the server exposes is **read-only**: no tool can write, and there is
@@ -37,6 +37,22 @@ Reads the data model from the cached $metadata; no data request is made. Without
 | `query` | string | no | When listing, keep entities whose name contains this text (case-insensitive). |
 | `locale` | string | no | Locale for the guidance text, normally the user's own language (e.g. 'es_ES'). It takes precedence over config defaultLocale, SF_DEFAULT_LOCALE and the 'en_US' fallback. |
 
+### `resolve_picklist`
+
+_Resolve or search picklist options and labels._
+
+Resolves picklist option IDs to readable labels, lists options of a picklist, or searches options by label to assist in building $filter queries. optionId: resolves a numeric legacy ID (e.g. '10283'). picklistId: lists active options for that catalog (e.g. 'maritalStatus', 'gender'). externalCode: looks up an option by its business code (e.g. 'M', 'FULL_TIME'). query: searches labels by text and returns matching optionId and suggestedFilter (e.g. 'Casado' -> 'maritalStatus eq 10119'). locale: preferred language for labels (e.g. 'es_ES', 'en_US'). forceRefresh: when true, refreshes the local cache from SuccessFactors.
+
+| Argument | Type | Required | Description |
+|---|---|---|---|
+| `environment` | string | no | Required; must be a configured alias. Optional in inline mode (a single configured environment). |
+| `picklistId` | string | no | Identificador de la picklist (ej. 'gender', 'maritalStatus'). |
+| `optionId` | string \| number | no | Option ID numérico de SAP (ej. '10283' o 10283). |
+| `externalCode` | string | no | Código externo de negocio (ej. 'M', 'FULL_TIME'). |
+| `query` | string | no | Texto libre o etiqueta a buscar para traducción inversa (ej. 'Casado', 'Masculino'). |
+| `locale` | string | no | Código de idioma (ej. 'es_ES', 'en_US'). Por defecto usa el configurado globalmente (`defaultLocale`), si existe. |
+| `forceRefresh` | boolean | no | Si es true, ignora la caché local y consulta directamente a SAP. |
+
 ### `query_entity`
 
 _Query OData v2 entity data._
@@ -58,6 +74,8 @@ Reads entity data from SAP SuccessFactors OData v2 for the selected environment.
 | `skip` | number | no | `$skip`: integer 0..1,000,000. Cannot be combined with `cursor`. |
 | `cursor` | string | no | Continuation cursor from a previous response. Repeat the SAME environment, entityPath and options of the call that produced it and pass the cursor to fetch the exact next page. Rejected (CURSOR_INVALID) if altered, reused with different arguments, or after a server restart. Cannot be combined with skip. |
 | `inlinecount` | "allpages" | no | Adds $inlinecount=allpages; the response includes totalCount when the service provides __count. |
+| `resolvePicklists` | boolean | no | Cuando es true, enriquece automáticamente los campos asociados a picklists añadiendo las etiquetas legibles en la propiedad _picklistLabels sin modificar los valores nativos. |
+| `locale` | string | no | Idioma preferido para las etiquetas (ej. 'es_ES', 'en_US'). Si se omite, utiliza el locale configurado globalmente (`defaultLocale`), si existe. |
 | `output` | "json" \| "xml" | no | Response representation: "json" (default, unwrapped records) or "xml" (raw service XML body). |
 
 ### `batch_get`

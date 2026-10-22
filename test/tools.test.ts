@@ -72,7 +72,7 @@ test("get_metadata is no longer registered", async () => {
   await withTestServer({ configPath }, async (client) => {
     const { tools } = await client.listTools();
     const names = tools.map((tool) => tool.name).sort();
-    assert.deepEqual(names, ["batch_get", "inspect_entity", "list_environments", "query_entity"]);
+    assert.deepEqual(names, ["batch_get", "inspect_entity", "list_environments", "query_entity", "resolve_picklist"]);
     assert.equal(names.includes("get_metadata"), false);
   });
 });

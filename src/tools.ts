@@ -46,6 +46,7 @@ import { resolveLocale } from "./i18n.js";
 import { makeLogger, type LogSink, type Logger } from "./logger.js";
 import { isCustomMdfEntity, isEmployeeLinkedType } from "./mdf.js";
 import { MetadataService } from "./metadata.js";
+import { PicklistService, resolvePicklistLocale } from "./picklists.js";
 import { exceedsResponseCap, responseTooLargeError, resolveMaxResponseBytes } from "./size-guard.js";
 import {
   buildQuery,
@@ -62,6 +63,7 @@ import {
   inspectEntitySchema,
   listEnvironmentsSchema,
   queryEntitySchema,
+  resolvePicklistSchema,
 } from "./tool-catalog.js";
 
 const QUERY_TOOL_TIMEOUT_MS = 30_000;
@@ -94,6 +96,8 @@ export interface ServerDeps {
   cacheDir?: string;
   /** Explicitly disables or enables disk cache (tests/prod). */
   disableDiskCache?: boolean;
+  /** Optional injectable picklist service (tests/prod). */
+  picklistService?: PicklistService;
   /** Environment variables read for SF_DEFAULT_LOCALE (defaults to process.env; tests). */
   env?: NodeJS.ProcessEnv;
   /**
@@ -262,6 +266,26 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         tenantId: key,
       });
       metadataServices.set(key, service);
+    }
+    return service;
+  }
+
+  const picklistServices = new Map<string, PicklistService>();
+  function picklistServiceFor(tenantId: string | undefined): PicklistService {
+    if (deps.picklistService !== undefined) {
+      return deps.picklistService;
+    }
+    const key = tenantId ?? "default";
+    let service = picklistServices.get(key);
+    if (service === undefined) {
+      service = new PicklistService({
+        fetchImpl: deps.fetchImpl,
+        now: deps.now,
+        cacheDir: deps.cacheDir,
+        disableDiskCache: deps.disableDiskCache,
+        tenantId: key,
+      });
+      picklistServices.set(key, service);
     }
     return service;
   }
@@ -825,6 +849,128 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       }),
   );
 
+  const resolvePicklist = toolEntry("resolve_picklist");
+  server.registerTool(
+    resolvePicklist.name,
+    {
+      title: resolvePicklist.title,
+      description: resolvePicklist.description,
+      inputSchema: resolvePicklistSchema,
+    },
+    async (args) =>
+      await executeTool("resolve_picklist", args.environment, async () => {
+        const { environments, defaultLocale, inline, tenantId } = await loadFreshConfig(args.environment);
+        const { alias, env } = resolveEnvironment(environments, args.environment, inline);
+        const target: EnvTarget = envTargetFor(env, alias, tenantId);
+        const locale = resolvePicklistLocale({
+          tool: args.locale,
+          config: defaultLocale,
+          env: envVars.SF_DEFAULT_LOCALE,
+        });
+        const service = picklistServiceFor(tenantId);
+        const forceRefresh = args.forceRefresh === true;
+
+        if (args.query !== undefined && args.query.trim().length > 0) {
+          const matches = await service.searchByLabel(
+            target,
+            alias,
+            args.query,
+            args.picklistId,
+            locale,
+            forceRefresh,
+          );
+          const structured: Record<string, unknown> = {
+            ...(args.picklistId ? { picklistId: args.picklistId } : {}),
+            matches,
+          };
+          return { structured, text: JSON.stringify(structured, null, 2), recordCount: matches.length };
+        }
+
+        if (args.optionId !== undefined) {
+          const optStr = String(args.optionId);
+          const res = await service.resolveOption(
+            target,
+            alias,
+            args.picklistId,
+            optStr,
+            locale,
+            forceRefresh,
+          );
+          if (res.resolved) {
+            const structured = {
+              found: true,
+              option: {
+                optionId: optStr,
+                picklistId: res.picklistId,
+                externalCode: res.externalCode,
+                label: res.label,
+                locale,
+                status: "ACTIVE",
+              },
+            };
+            return { structured, text: JSON.stringify(structured, null, 2), recordCount: 1 };
+          }
+          const structured = {
+            found: false,
+            optionId: optStr,
+          };
+          return { structured, text: JSON.stringify(structured, null, 2), recordCount: 0 };
+        }
+
+        if (args.externalCode !== undefined) {
+          const extCode = args.externalCode.trim();
+          const res = await service.resolveOption(
+            target,
+            alias,
+            args.picklistId,
+            extCode,
+            locale,
+            forceRefresh,
+          );
+          if (res.resolved) {
+            const structured = {
+              found: true,
+              option: {
+                optionId: res.rawValue ?? extCode,
+                picklistId: res.picklistId,
+                externalCode: res.externalCode,
+                label: res.label,
+                locale,
+                status: "ACTIVE",
+              },
+            };
+            return { structured, text: JSON.stringify(structured, null, 2), recordCount: 1 };
+          }
+          const structured = {
+            found: false,
+            ...(args.picklistId ? { picklistId: args.picklistId } : {}),
+            externalCode: extCode,
+          };
+          return { structured, text: JSON.stringify(structured, null, 2), recordCount: 0 };
+        }
+
+        if (args.picklistId !== undefined) {
+          const options = await service.listOptions(
+            target,
+            alias,
+            args.picklistId,
+            locale,
+            forceRefresh,
+          );
+          const structured = {
+            picklistId: args.picklistId,
+            options,
+          };
+          return { structured, text: JSON.stringify(structured, null, 2), recordCount: options.length };
+        }
+
+        throw new SanitizedError(
+          "OPTION_INVALID",
+          "at least one of picklistId, optionId, externalCode or query must be provided",
+        );
+      }),
+  );
+
   const queryEntity = toolEntry("query_entity");
   server.registerTool(
     queryEntity.name,
@@ -835,7 +981,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     },
     async (args) =>
       await executeTool("query_entity", args.environment, async () => {
-        const { environments, inline, tenantId, capBytes } = await loadFreshConfig(args.environment);
+        const { environments, defaultLocale, inline, tenantId, capBytes } = await loadFreshConfig(args.environment);
         const { alias, env } = resolveEnvironment(environments, args.environment, inline);
         // The allowlist/denylist are per environment (FR-28/D-30); the denylist wins.
         const entityAllowlist = env.entityAllowlist;
@@ -997,11 +1143,37 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           unwrapped.records,
         );
 
+        let finalRecords = redactedRecords;
+        if (args.resolvePicklists === true && Array.isArray(finalRecords)) {
+          try {
+            const reachedEntity = await entityReachedByPath(target, alias, tenantId, validatedPath.segments);
+            if (reachedEntity) {
+              const schema = await metadataServiceFor(tenantId).getEntitySchema(target, alias, reachedEntity);
+              if (schema) {
+                const locale = resolvePicklistLocale({
+                  tool: args.locale,
+                  config: defaultLocale,
+                  env: envVars.SF_DEFAULT_LOCALE,
+                });
+                finalRecords = (await picklistServiceFor(tenantId).enrichRecords(
+                  finalRecords,
+                  schema,
+                  target,
+                  alias,
+                  locale,
+                )) as unknown[];
+              }
+            }
+          } catch {
+            // Fail-safe (D-59 / FR-65): never fail main query on picklist error
+          }
+        }
+
         const structured: Record<string, unknown> = {
           environment: alias,
           path: args.entityPath,
           recordCount: unwrapped.records.length,
-          records: redactedRecords,
+          records: finalRecords,
           hasMore: unwrapped.hasMore,
         };
         if (downgradeXml) {
@@ -1047,7 +1219,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
     },
     async (args) =>
       await executeTool("batch_get", args.environment, async () => {
-        const { environments, inline, tenantId, capBytes } = await loadFreshConfig(args.environment);
+        const { environments, defaultLocale, inline, tenantId, capBytes } = await loadFreshConfig(args.environment);
         const { alias, env } = resolveEnvironment(environments, args.environment, inline);
         // The allowlist/denylist are per environment (FR-28/D-30); the denylist wins.
         const entityAllowlist = env.entityAllowlist;
@@ -1067,6 +1239,8 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           filter: string | undefined;
           orderby: string | undefined;
           select: string | undefined;
+          resolvePicklists?: boolean;
+          locale?: string;
           pathAndQuery: string;
           bindingOptions: Record<string, unknown>;
           topClamped: boolean;
@@ -1118,6 +1292,8 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
             filter: item.filter,
             orderby: item.orderby,
             select: item.select,
+            resolvePicklists: item.resolvePicklists,
+            locale: item.locale,
             pathAndQuery,
             bindingOptions,
             topClamped,
@@ -1297,7 +1473,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           }
           recordsReturned += records.length;
           entry.recordCount = records.length;
-          entry.records = await redactRecords(
+          let itemRecords = await redactRecords(
             target,
             alias,
             tenantId,
@@ -1305,6 +1481,31 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
             item.segments,
             records,
           );
+          if (item.resolvePicklists === true && Array.isArray(itemRecords)) {
+            try {
+              const reachedEntity = await entityReachedByPath(target, alias, tenantId, item.segments);
+              if (reachedEntity) {
+                const schema = await metadataServiceFor(tenantId).getEntitySchema(target, alias, reachedEntity);
+                if (schema) {
+                  const locale = resolvePicklistLocale({
+                    tool: item.locale,
+                    config: defaultLocale,
+                    env: envVars.SF_DEFAULT_LOCALE,
+                  });
+                  itemRecords = (await picklistServiceFor(tenantId).enrichRecords(
+                    itemRecords,
+                    schema,
+                    target,
+                    alias,
+                    locale,
+                  )) as unknown[];
+                }
+              }
+            } catch {
+              // Fail-safe (D-59 / FR-65)
+            }
+          }
+          entry.records = itemRecords;
           if (downgradeXml) {
             entry.outputDowngraded = true;
           }

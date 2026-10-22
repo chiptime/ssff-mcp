@@ -199,6 +199,7 @@ least-privileged, read-only SuccessFactors account. Details in
 |---|---|
 | `list_environments` | Lists the configured environments (aliases and auth type). |
 | `inspect_entity` | Reads the data model: entity catalog, schema and Custom MDF classification. |
+| `resolve_picklist` | Resolves option IDs to labels, lists catalog options, or searches by label for `$filter`. |
 | `query_entity` | Reads one entity with `$filter`/`$orderby`/`$select`/`$expand`/`$top`/`$skip` and effective dating. |
 | `batch_get` | Runs up to 180 read-only GETs in one GET-only `$batch` request. |
 
@@ -210,7 +211,7 @@ schema. Full argument reference: **[Tools & Resources →](docs/tools.md)**.
 | Document | Contents |
 |---|---|
 | [Configuration](docs/configuration.md) | Config path, fields, Basic/OAuth auth, secret providers, entity allowlist, inline mode, locale, response-size cap. |
-| [Tools & Resources](docs/tools.md) | The four tools and their arguments, query encoding and effective dating, pagination/cursors, MCP resources, Custom MDF discovery, examples. |
+| [Tools & Resources](docs/tools.md) | The five tools and their arguments, query encoding and effective dating, pagination/cursors, MCP resources, Custom MDF discovery, picklist resolution, examples. |
 | [FAQ & comparison](docs/faq.md) | Common questions and how it compares to the SF UI, raw OData and ad-hoc scripts. |
 | [Security](docs/security.md) | Read-only guarantees, secrets, logging, metadata cache, limits and scope. |
 | [Troubleshooting](docs/troubleshooting.md) | Every error code and how to fix it. |
