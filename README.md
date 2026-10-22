@@ -211,6 +211,7 @@ schema. Full argument reference: **[Tools & Resources →](docs/tools.md)**.
 | Document | Contents |
 |---|---|
 | [Configuration](docs/configuration.md) | Config path, fields, Basic/OAuth auth, secret providers, entity allowlist, inline mode, locale, response-size cap. |
+| [Picklists Architecture](docs/picklists.md) | Picklist resolution, two-tier L1/L2 lazy cache, ID retention (`optionId` + `label`), pagination and invalidation. |
 | [Tools & Resources](docs/tools.md) | The five tools and their arguments, query encoding and effective dating, pagination/cursors, MCP resources, Custom MDF discovery, picklist resolution, examples. |
 | [FAQ & comparison](docs/faq.md) | Common questions and how it compares to the SF UI, raw OData and ad-hoc scripts. |
 | [Security](docs/security.md) | Read-only guarantees, secrets, logging, metadata cache, limits and scope. |

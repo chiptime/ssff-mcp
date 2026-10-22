@@ -52,6 +52,7 @@ export interface PicklistMatch {
 
 export interface ResolveOptionResult {
   label: string;
+  optionId?: string;
   externalCode: string;
   picklistId: string;
   resolved: boolean;
@@ -629,6 +630,7 @@ export class PicklistService {
       const res = resolveLabel(option, locale);
       return {
         label: res.label,
+        optionId: option.optionId,
         externalCode: option.externalCode,
         picklistId: option.picklistId,
         resolved: true,
@@ -838,6 +840,7 @@ export class PicklistService {
           const res = resolveLabel(option, locale);
           picklistLabels[prop.name] = {
             label: res.label,
+            optionId: option.optionId,
             externalCode: option.externalCode,
             picklistId: option.picklistId,
             resolved: true,

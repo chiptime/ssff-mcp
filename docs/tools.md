@@ -183,6 +183,9 @@ You drive the assistant in natural language; it picks the tool.
 | "Read the job history for employee `1000001` over 2024." | `query_entity` | `filter` + `fromDate`/`toDate` (bare effective-dating params). |
 | "Fetch these five entities at once: …" | `batch_get` | One GET-only `$batch` POST, up to 180 items, results in input order. |
 | "Get the next page." | `query_entity` | Re-issue the same call with the `cursor` from the previous response. |
+| "Read personal info resolving picklist labels in Spanish." | `query_entity` with `resolvePicklists: true, locale: "es_ES"` | Preserves `optionId` and attaches localized labels in `_picklistLabels`. |
+| "What options exist for maritalStatus?" | `resolve_picklist` with `picklistId: "maritalStatus"` | Returns all active options with `optionId`, `externalCode` and `label`. |
+| "Find how to filter by marital status 'Casado'." | `resolve_picklist` with `query: "Casado"` | Returns matching options with `suggestedFilter` (e.g. `maritalStatus eq '10119'`). |
 
 Example — a filtered query with selected fields and a page size:
 

@@ -419,12 +419,14 @@ test("enrichRecords enriches records non-destructively and handles missing optio
   assert.deepEqual(enriched[0]._picklistLabels, {
     gender: {
       label: "Masculino",
+      optionId: "10283",
       externalCode: "M",
       picklistId: "gender",
       resolved: true,
     },
     maritalStatus: {
       label: "Casado/a",
+      optionId: "10119",
       externalCode: "M",
       picklistId: "maritalStatus",
       resolved: true,
@@ -440,6 +442,7 @@ test("enrichRecords enriches records non-destructively and handles missing optio
     },
     maritalStatus: {
       label: "Casado/a",
+      optionId: "10119",
       externalCode: "M",
       picklistId: "maritalStatus",
       resolved: true,

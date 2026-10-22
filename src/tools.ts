@@ -931,7 +931,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
             const structured = {
               found: true,
               option: {
-                optionId: res.rawValue ?? extCode,
+                optionId: res.optionId ?? (res.rawValue ?? extCode),
                 picklistId: res.picklistId,
                 externalCode: res.externalCode,
                 label: res.label,

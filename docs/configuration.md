@@ -338,6 +338,8 @@ ssff-mcp --help                             Show help
 
 ## Picklist Caching & Resolution
 
+For a comprehensive technical architecture guide, see [Picklists Architecture](picklists.md).
+
 Picklists are cached in a two-tier hierarchy:
 - **L1 In-Memory Cache**: 1 hour TTL (configurable, default 60 min).
 - **L2 Disk Cache**: 24 hours TTL, stored under `~/.cache/ssff-mcp/` (mode `0700` dir / `0600` files).
