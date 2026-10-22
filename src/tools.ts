@@ -45,8 +45,8 @@ import { dispatchGet, envTargetFor, type EnvTarget, type FetchImpl } from "./htt
 import { resolveLocale } from "./i18n.js";
 import { makeLogger, type LogSink, type Logger } from "./logger.js";
 import { isCustomMdfEntity, isEmployeeLinkedType } from "./mdf.js";
-import { MetadataService } from "./metadata.js";
-import { PicklistService, resolvePicklistLocale } from "./picklists.js";
+import { MetadataService, type EntitySchema } from "./metadata.js";
+import { PicklistService, resolvePicklistLocale, planPicklistExpansion, type PicklistExpansionPlan } from "./picklists.js";
 import { exceedsResponseCap, responseTooLargeError, resolveMaxResponseBytes } from "./size-guard.js";
 import {
   buildQuery,
@@ -1028,7 +1028,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           skiptoken = payload.skiptoken;
         }
 
-        const { pathAndQuery, topClamped } = buildQuery(args.entityPath, {
+        let { pathAndQuery, topClamped } = buildQuery(args.entityPath, {
           filter: args.filter,
           orderby: args.orderby,
           select: args.select,
@@ -1054,6 +1054,31 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           throw new SanitizedError("PATH_INVALID", "unknown entity set");
         }
 
+        let entitySchema: EntitySchema | undefined;
+        let expansionPlan: PicklistExpansionPlan | undefined;
+        if (args.resolvePicklists === true) {
+          const reachedEntity = await entityReachedByPath(target, alias, tenantId, validatedPath.segments);
+          entitySchema = reachedEntity ? await metadataServiceFor(tenantId).getEntitySchema(target, alias, reachedEntity) : undefined;
+          expansionPlan = planPicklistExpansion(entitySchema, args.expand, args.select, args.resolvePicklists);
+          if (expansionPlan.sapExpand !== args.expand || expansionPlan.sapSelect !== args.select) {
+            const rebuilt = buildQuery(args.entityPath, {
+              filter: args.filter,
+              orderby: args.orderby,
+              select: expansionPlan.sapSelect,
+              expand: expansionPlan.sapExpand,
+              fromDate: args.fromDate,
+              toDate: args.toDate,
+              asOfDate: args.asOfDate,
+              top: args.top,
+              skip: args.skip,
+              inlinecount: args.inlinecount,
+              skiptoken,
+            });
+            pathAndQuery = rebuilt.pathAndQuery;
+            topClamped = rebuilt.topClamped;
+          }
+        }
+
         // Navigation and $expand are resolved against the cached metadata and
         // checked against the same lists (FR-141..FR-146), before any data request.
         await enforceNavigationVectors(
@@ -1062,10 +1087,10 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           tenantId,
           env,
           validatedPath.segments,
-          args.expand,
+          expansionPlan !== undefined ? expansionPlan.sapExpand : args.expand,
           args.filter,
           args.orderby,
-          args.select,
+          expansionPlan !== undefined ? expansionPlan.sapSelect : args.select,
         );
 
         // Field-level granularity: when any involved entity carries `fields`, the
@@ -1144,26 +1169,21 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         );
 
         let finalRecords = redactedRecords;
-        if (args.resolvePicklists === true && Array.isArray(finalRecords)) {
+        if (args.resolvePicklists === true && Array.isArray(finalRecords) && entitySchema) {
           try {
-            const reachedEntity = await entityReachedByPath(target, alias, tenantId, validatedPath.segments);
-            if (reachedEntity) {
-              const schema = await metadataServiceFor(tenantId).getEntitySchema(target, alias, reachedEntity);
-              if (schema) {
-                const locale = resolvePicklistLocale({
-                  tool: args.locale,
-                  config: defaultLocale,
-                  env: envVars.SF_DEFAULT_LOCALE,
-                });
-                finalRecords = (await picklistServiceFor(tenantId).enrichRecords(
-                  finalRecords,
-                  schema,
-                  target,
-                  alias,
-                  locale,
-                )) as unknown[];
-              }
-            }
+            const locale = resolvePicklistLocale({
+              tool: args.locale,
+              config: defaultLocale,
+              env: envVars.SF_DEFAULT_LOCALE,
+            });
+            finalRecords = (await picklistServiceFor(tenantId).enrichRecords(
+              finalRecords,
+              entitySchema,
+              target,
+              alias,
+              locale,
+              expansionPlan?.activePicklists,
+            )) as unknown[];
           } catch {
             // Fail-safe (D-59 / FR-65): never fail main query on picklist error
           }
@@ -1239,7 +1259,16 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           filter: string | undefined;
           orderby: string | undefined;
           select: string | undefined;
+          fromDate?: string;
+          toDate?: string;
+          asOfDate?: string;
+          top?: number;
+          skip?: number;
+          inlinecount?: "allpages";
+          skiptoken?: string;
           resolvePicklists?: boolean;
+          activePicklists?: Map<string, Set<string>>;
+          schema?: EntitySchema;
           locale?: string;
           pathAndQuery: string;
           bindingOptions: Record<string, unknown>;
@@ -1271,6 +1300,7 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
             });
             skiptoken = payload.skiptoken;
           }
+
           const { pathAndQuery, topClamped } = buildQuery(item.entityPath, {
             filter: item.filter,
             orderby: item.orderby,
@@ -1292,6 +1322,13 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
             filter: item.filter,
             orderby: item.orderby,
             select: item.select,
+            fromDate: item.fromDate,
+            toDate: item.toDate,
+            asOfDate: item.asOfDate,
+            top: item.top,
+            skip: item.skip,
+            inlinecount: item.inlinecount,
+            skiptoken,
             resolvePicklists: item.resolvePicklists,
             locale: item.locale,
             pathAndQuery,
@@ -1324,6 +1361,32 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         // Pass 2b — navigation and $expand, per ITEM (never deduped by root):
         // the same root can carry different navigations or different expands.
         for (const item of planned) {
+          if (item.resolvePicklists === true) {
+            const reachedEntity = await entityReachedByPath(target, alias, tenantId, item.segments);
+            item.schema = reachedEntity ? await metadataServiceFor(tenantId).getEntitySchema(target, alias, reachedEntity) : undefined;
+            const expansionPlan = planPicklistExpansion(item.schema, item.expand, item.select, item.resolvePicklists);
+            item.activePicklists = expansionPlan.activePicklists;
+            if (expansionPlan.sapExpand !== item.expand || expansionPlan.sapSelect !== item.select) {
+              item.expand = expansionPlan.sapExpand;
+              item.select = expansionPlan.sapSelect;
+              const rebuilt = buildQuery(item.entityPath, {
+                filter: item.filter,
+                orderby: item.orderby,
+                select: expansionPlan.sapSelect,
+                expand: expansionPlan.sapExpand,
+                fromDate: item.fromDate,
+                toDate: item.toDate,
+                asOfDate: item.asOfDate,
+                top: item.top,
+                skip: item.skip,
+                inlinecount: item.inlinecount,
+                skiptoken: item.skiptoken,
+              });
+              item.pathAndQuery = rebuilt.pathAndQuery;
+              item.topClamped = rebuilt.topClamped;
+            }
+          }
+
           await enforceNavigationVectors(
             target,
             alias,
@@ -1481,26 +1544,21 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
             item.segments,
             records,
           );
-          if (item.resolvePicklists === true && Array.isArray(itemRecords)) {
+          if (item.resolvePicklists === true && Array.isArray(itemRecords) && item.schema) {
             try {
-              const reachedEntity = await entityReachedByPath(target, alias, tenantId, item.segments);
-              if (reachedEntity) {
-                const schema = await metadataServiceFor(tenantId).getEntitySchema(target, alias, reachedEntity);
-                if (schema) {
-                  const locale = resolvePicklistLocale({
-                    tool: item.locale,
-                    config: defaultLocale,
-                    env: envVars.SF_DEFAULT_LOCALE,
-                  });
-                  itemRecords = (await picklistServiceFor(tenantId).enrichRecords(
-                    itemRecords,
-                    schema,
-                    target,
-                    alias,
-                    locale,
-                  )) as unknown[];
-                }
-              }
+              const locale = resolvePicklistLocale({
+                tool: item.locale,
+                config: defaultLocale,
+                env: envVars.SF_DEFAULT_LOCALE,
+              });
+              itemRecords = (await picklistServiceFor(tenantId).enrichRecords(
+                itemRecords,
+                item.schema,
+                target,
+                alias,
+                locale,
+                item.activePicklists,
+              )) as unknown[];
             } catch {
               // Fail-safe (D-59 / FR-65)
             }

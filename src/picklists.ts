@@ -14,6 +14,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { dispatchGet, type EnvTarget, type FetchImpl } from "./http.js";
 import { defaultCacheDir, type EntitySchema } from "./metadata.js";
+import { parseExpand } from "./expand.js";
 
 export const PICKLIST_DISK_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 export const PICKLIST_MEMORY_TTL_MS = 24 * 60 * 60 * 1000;    // 24 hours
@@ -789,7 +790,7 @@ export class PicklistService {
   }
 
   /**
-   * Non-destructive enrichment of records with _picklistLabels (D-57, FR-61, FR-62, FR-63, FR-65, NFR-01).
+   * Non-destructive enrichment of records with <field>_NavLabels and _picklistLabels (D-57, FR-61, FR-62, FR-63, FR-65, NFR-01).
    */
   async enrichRecords(
     records: unknown[],
@@ -797,16 +798,25 @@ export class PicklistService {
     env: EnvTarget,
     alias: string,
     locale?: string,
+    activePicklists?: Map<string, Set<string>>,
   ): Promise<unknown[]> {
     if (!Array.isArray(records) || records.length === 0) {
       return records;
     }
 
-    const picklistProperties = entitySchema.properties.filter(
+    let picklistProperties = entitySchema.properties.filter(
       (p) => typeof p.picklistId === "string" && p.picklistId.length > 0,
     );
     if (picklistProperties.length === 0) {
       return records;
+    }
+
+    // If activePicklists is specified, only process those picklists requested via $expand
+    if (activePicklists !== undefined) {
+      picklistProperties = picklistProperties.filter((p) => activePicklists.has(p.name));
+      if (picklistProperties.length === 0) {
+        return records;
+      }
     }
 
     // Pre-load all relevant picklists in parallel before iterating records
@@ -836,8 +846,31 @@ export class PicklistService {
           cache.byOptionId.get(rawStr) ??
           cache.byExternalCode.get(`${prop.picklistId!}:${rawStr}`);
 
+        const requestedFields = activePicklists?.get(prop.name) ?? new Set<string>();
+
         if (option) {
           const res = resolveLabel(option, locale);
+
+          // Option C: <field>_NavLabels
+          // Minimal info by default: optionId + label
+          // Expanded if requested via $select: externalCode, order, picklistId
+          const navLabels: Record<string, unknown> = {
+            optionId: option.optionId,
+            label: res.label,
+          };
+          if (requestedFields.has("externalcode") || requestedFields.has("external_code")) {
+            navLabels.externalCode = option.externalCode;
+          }
+          if (requestedFields.has("order") || requestedFields.has("sortorder")) {
+            navLabels.order = option.sortOrder;
+          }
+          if (requestedFields.has("picklistid") || requestedFields.has("picklist_id")) {
+            navLabels.picklistId = option.picklistId;
+          }
+
+          rec[`${prop.name}_NavLabels`] = navLabels;
+
+          // Legacy / backward-compatible _picklistLabels
           picklistLabels[prop.name] = {
             label: res.label,
             optionId: option.optionId,
@@ -846,6 +879,11 @@ export class PicklistService {
             resolved: true,
           };
         } else {
+          rec[`${prop.name}_NavLabels`] = {
+            resolved: false,
+            rawValue: rawStr,
+            reason: "OPTION_NOT_FOUND",
+          };
           picklistLabels[prop.name] = {
             resolved: false,
             rawValue: rawStr,
@@ -861,4 +899,127 @@ export class PicklistService {
 
     return records;
   }
+}
+
+export interface PicklistExpansionPlan {
+  /** Map of propertyName -> Set of requested fields (e.g. "externalcode", "order", "picklistid") */
+  activePicklists: Map<string, Set<string>>;
+  /** Routes to remain in expand for SAP */
+  sapExpand?: string;
+  /** Select string with picklist navigation fields stripped for SAP */
+  sapSelect?: string;
+}
+
+/**
+ * Plans which picklist navigations should be resolved locally versus sent to SAP (Option C).
+ * Only fields expanded via $expand=<fieldNav> or $expand=<field>_NavLabels are resolved.
+ */
+export function planPicklistExpansion(
+  entitySchema: EntitySchema | undefined,
+  expand: string | undefined,
+  select: string | undefined,
+  resolvePicklists: boolean | undefined,
+): PicklistExpansionPlan {
+  if (!resolvePicklists || !entitySchema) {
+    return {
+      activePicklists: new Map(),
+      sapExpand: expand,
+      sapSelect: select,
+    };
+  }
+
+  const picklistProperties = entitySchema.properties.filter(
+    (p) => typeof p.picklistId === "string" && p.picklistId.length > 0,
+  );
+  if (picklistProperties.length === 0) {
+    return {
+      activePicklists: new Map(),
+      sapExpand: expand,
+      sapSelect: select,
+    };
+  }
+
+  // Build lookup of candidate navigation names to property
+  const navToProp = new Map<string, typeof picklistProperties[0]>();
+  for (const p of picklistProperties) {
+    navToProp.set(p.name.toLowerCase() + "nav", p);
+    navToProp.set(p.name.toLowerCase() + "_navlabels", p);
+    navToProp.set(p.name.toLowerCase(), p);
+  }
+
+  const activePicklists = new Map<string, Set<string>>();
+  const sapRoutes: string[] = [];
+
+  if (expand && expand.trim().length > 0) {
+    const parsed = parseExpand(expand);
+    if (parsed.ok) {
+      for (const route of parsed.routes) {
+        const topNav = route[0] ?? "";
+        const matchedProp = navToProp.get(topNav.toLowerCase());
+        if (matchedProp) {
+          // Local picklist navigation!
+          if (!activePicklists.has(matchedProp.name)) {
+            activePicklists.set(matchedProp.name, new Set());
+          }
+          // Check if selections were attached to this route
+          for (const sel of parsed.selections) {
+            if (sel.route.length > 0 && sel.route[0]?.toLowerCase() === topNav.toLowerCase()) {
+              for (const propName of sel.properties) {
+                activePicklists.get(matchedProp.name)!.add(propName.toLowerCase());
+              }
+            }
+          }
+        } else {
+          // Remote SAP navigation route
+          sapRoutes.push(route.join("/"));
+        }
+      }
+    } else {
+      // Unparseable expand will be rejected downstream
+      return {
+        activePicklists: new Map(),
+        sapExpand: expand,
+        sapSelect: select,
+      };
+    }
+  }
+
+  // Now inspect top-level select if present
+  let sapSelect = select;
+  if (select && select.trim().length > 0) {
+    const parts = select.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+    const retainedParts: string[] = [];
+    for (const part of parts) {
+      const slashIndex = part.indexOf("/");
+      if (slashIndex > 0) {
+        const nav = part.slice(0, slashIndex).toLowerCase();
+        const sub = part.slice(slashIndex + 1).toLowerCase();
+        const matchedProp = navToProp.get(nav);
+        if (matchedProp) {
+          if (!activePicklists.has(matchedProp.name)) {
+            activePicklists.set(matchedProp.name, new Set());
+          }
+          activePicklists.get(matchedProp.name)!.add(sub);
+          // Omit from sapSelect so SAP doesn't try to select on non-expanded nav
+          continue;
+        }
+      } else {
+        const matchedProp = navToProp.get(part.toLowerCase());
+        if (matchedProp && activePicklists.has(matchedProp.name)) {
+          // e.g. select includes maritalStatusNav or maritalStatus_NavLabels
+          continue;
+        }
+      }
+      retainedParts.push(part);
+    }
+    sapSelect = retainedParts.length > 0 ? retainedParts.join(",") : undefined;
+  }
+
+  const sapExpand = sapRoutes.length > 0 ? sapRoutes.join(",") : undefined;
+
+  return {
+    activePicklists,
+    sapExpand,
+    sapSelect,
+  };
 }

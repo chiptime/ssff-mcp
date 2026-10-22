@@ -26,48 +26,59 @@ In SAP SuccessFactors, enumerated fields (such as Gender, Marital Status, Countr
 
 ---
 
-## 2. Retention of `optionId` and `label` (Non-Destructive Enrichment)
+## 2. On-Demand Resolution & Field Naming (Option C: `<field>_NavLabels`)
 
-A core requirement is that downstream integrations, mutations, and filter predicates frequently require the **exact numeric `optionId`** or `externalCode` (e.g., `gender eq '10283'`).
+A core requirement is that downstream integrations, mutations, and filter predicates frequently require the **exact numeric `optionId`** or `externalCode` (e.g., `gender eq '10283'`), while LLMs need concise, human-readable labels without token bloat.
 
-When `resolvePicklists: true` is passed to `query_entity` or `batch_get`:
-1. The **native record properties are NEVER overwritten**. `record.gender` remains `"10283"`.
-2. A separate companion property **`_picklistLabels`** is attached to each record containing the full resolution tuple:
+### On-Demand Trigger (`$expand` + `resolvePicklists: true`)
+To prevent resolving dozens of unneeded picklists in complex entities:
+- Picklist resolution runs **only for fields explicitly requested** via `$expand=<fieldNav>` or `$expand=<field>_NavLabels` (e.g. `$expand="maritalStatusNav,genderNav"`).
+- The caller must also pass `resolvePicklists: true`.
+- Local picklist navigations are **intercepted and stripped from the query dispatched to SAP SuccessFactors**, preventing SAP SQL join overhead, timeouts, and `entityAllowlist` restrictions on internal picklist tables.
+
+### Lean Payload by Default
+By default, the companion property `<field>_NavLabels` returns minimal information (`optionId` + `label`):
 
 ```json
 {
   "personIdExternal": "cgranados",
-  "gender": "10283",
   "maritalStatus": "10119",
-  "_picklistLabels": {
-    "gender": {
-      "label": "Masculino",
-      "optionId": "10283",
-      "externalCode": "M",
-      "picklistId": "gender",
-      "resolved": true
-    },
-    "maritalStatus": {
-      "label": "Casado/a",
-      "optionId": "10119",
-      "externalCode": "M",
-      "picklistId": "maritalStatus",
-      "resolved": true
-    }
+  "maritalStatus_NavLabels": {
+    "optionId": "10119",
+    "label": "Casado/a"
   }
 }
 ```
 
-If an orphan option or unmapped value is encountered, resolution fails safely without throwing:
+### Dynamic Growth via `$select`
+When the caller or LLM needs extra picklist attributes (e.g. `externalCode`, `order`, `picklistId`), they can request them in `$select` or nested in `$expand`:
+- Example with top-level `$select`: `select: "maritalStatus,maritalStatusNav/externalCode,maritalStatusNav/order"`
+- Example with nested `$expand`: `expand: "maritalStatusNav($select=externalCode,order)"`
+
+The engine dynamically grows the response to include the requested fields:
+
+```json
+{
+  "personIdExternal": "cgranados",
+  "maritalStatus": "10119",
+  "maritalStatus_NavLabels": {
+    "optionId": "10119",
+    "label": "Casado/a",
+    "externalCode": "M",
+    "order": 2
+  }
+}
+```
+
+### Fail-Safe Handling
+If an option is missing or orphan in SAP:
 ```json
 {
   "gender": "99999",
-  "_picklistLabels": {
-    "gender": {
-      "resolved": false,
-      "rawValue": "99999",
-      "reason": "OPTION_NOT_FOUND"
-    }
+  "gender_NavLabels": {
+    "resolved": false,
+    "rawValue": "99999",
+    "reason": "OPTION_NOT_FOUND"
   }
 }
 ```

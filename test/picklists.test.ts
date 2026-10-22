@@ -714,12 +714,13 @@ test("query_entity and batch_get end-to-end with resolvePicklists: true (FR-61, 
     assert.equal(resDenied.isError, true);
     assert.equal((resDenied.structuredContent as any).code, "ENTITY_NOT_ALLOWED");
 
-    // 2. Calling query_entity on PerPersonal with resolvePicklists: true works and enriches via internal dispatch (D-58 / FR-61)
+    // 2. Calling query_entity on PerPersonal with resolvePicklists: true and expand works (Option C)
     const resQuery = await client.callTool({
       name: "query_entity",
       arguments: {
         environment: "tenant-a",
         entityPath: "PerPersonal",
+        expand: "genderNav,maritalStatusNav",
         resolvePicklists: true,
         locale: "es_ES",
       },
@@ -728,8 +729,37 @@ test("query_entity and batch_get end-to-end with resolvePicklists: true (FR-61, 
     const structQuery = resQuery.structuredContent as any;
     assert.equal(structQuery.records.length, 1);
     assert.equal(structQuery.records[0].gender, "10283");
-    assert.equal(structQuery.records[0]._picklistLabels.gender.label, "Masculino");
-    assert.equal(structQuery.records[0]._picklistLabels.maritalStatus.label, "Casado/a");
+    // Minimal info by default: optionId + label
+    assert.deepEqual(structQuery.records[0].gender_NavLabels, {
+      optionId: "10283",
+      label: "Masculino",
+    });
+    assert.deepEqual(structQuery.records[0].maritalStatus_NavLabels, {
+      optionId: "10119",
+      label: "Casado/a",
+    });
+
+    // 2b. Calling query_entity expanding ONLY genderNav with $select=externalCode
+    const resQuerySelective = await client.callTool({
+      name: "query_entity",
+      arguments: {
+        environment: "tenant-a",
+        entityPath: "PerPersonal",
+        expand: "genderNav($select=externalCode)",
+        resolvePicklists: true,
+        locale: "es_ES",
+      },
+    });
+    assert.equal(resQuerySelective.isError, undefined);
+    const structSelective = resQuerySelective.structuredContent as any;
+    // Dynamic growth: includes externalCode
+    assert.deepEqual(structSelective.records[0].gender_NavLabels, {
+      optionId: "10283",
+      label: "Masculino",
+      externalCode: "M",
+    });
+    // Non-expanded picklist is omitted:
+    assert.equal(structSelective.records[0].maritalStatus_NavLabels, undefined);
 
     // 3. batch_get with resolvePicklists: true per item (FR-62)
     const resBatch = await client.callTool({
@@ -739,6 +769,7 @@ test("query_entity and batch_get end-to-end with resolvePicklists: true (FR-61, 
         requests: [
           {
             entityPath: "PerPersonal",
+            expand: "genderNav",
             resolvePicklists: true,
             locale: "es_ES",
           },
@@ -748,7 +779,7 @@ test("query_entity and batch_get end-to-end with resolvePicklists: true (FR-61, 
     assert.equal(resBatch.isError, undefined);
     const structBatch = resBatch.structuredContent as any;
     assert.equal(structBatch.results[0].success, true);
-    assert.equal(structBatch.results[0].records[0]._picklistLabels.gender.label, "Masculino");
+    assert.equal(structBatch.results[0].records[0].gender_NavLabels.label, "Masculino");
 
     await client.close();
   } finally {
@@ -1049,6 +1080,145 @@ test("fetchPicklistFromSAP paginates via d.__next for large picklists", async ()
     assert.equal(opts.length, 2);
     assert.equal(opts[0].externalCode, "P1");
     assert.equal(opts[1].externalCode, "P2");
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("Option C: <field>_NavLabels lean payload and dynamic growth with $select", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "ssff-option-c-"));
+  try {
+    const configPath = path.join(tmpDir, "config.json");
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({
+        environments: {
+          "tenant-a": {
+            baseUrl: "https://tenant-a.example.com",
+            auth: { type: "basic", username: "u", password: "p" },
+          },
+        },
+      }),
+      "utf-8",
+    );
+
+    const dispatchedUrls: string[] = [];
+    const { fetch } = recordingFetch((url) => {
+      dispatchedUrls.push(url);
+      if (url.includes("$metadata")) {
+        return xmlResponse(SAMPLE_PERPERSONAL_METADATA);
+      }
+      if (url.includes("gender")) {
+        return jsonResponse({
+          d: {
+            results: [
+              {
+                id: "10283",
+                externalCode: "M",
+                status: "ACTIVE",
+                sortOrder: 1,
+                picklist: { id: "gender" },
+                picklistLabels: {
+                  results: [{ locale: "es_ES", label: "Masculino" }],
+                },
+              },
+            ],
+          },
+        });
+      }
+      if (url.includes("maritalStatus")) {
+        return jsonResponse({
+          d: {
+            results: [
+              {
+                id: "10119",
+                externalCode: "M",
+                status: "ACTIVE",
+                sortOrder: 2,
+                picklist: { id: "maritalStatus" },
+                picklistLabels: {
+                  results: [{ locale: "es_ES", label: "Casado/a" }],
+                },
+              },
+            ],
+          },
+        });
+      }
+      return jsonResponse({
+        d: {
+          results: [
+            {
+              personIdExternal: "P1",
+              gender: "10283",
+              maritalStatus: "10119",
+            },
+          ],
+        },
+      });
+    });
+
+    const server = createMcpServer({
+      configPath,
+      fetchImpl: fetch,
+      disableDiskCache: true,
+      logSink: () => {},
+    });
+
+    const client = new Client({ name: "test-client", version: "1.0.0" }, { capabilities: {} });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+    // 1. Query with expand=genderNav ($select omitted) -> minimal payload { optionId, label }
+    const resMinimal = await client.callTool({
+      name: "query_entity",
+      arguments: {
+        environment: "tenant-a",
+        entityPath: "PerPersonal",
+        expand: "genderNav",
+        resolvePicklists: true,
+        locale: "es_ES",
+      },
+    });
+    assert.equal(resMinimal.isError, undefined);
+    const recMinimal = (resMinimal.structuredContent as any).records[0];
+    assert.deepEqual(recMinimal.gender_NavLabels, {
+      optionId: "10283",
+      label: "Masculino",
+    });
+    // Non-expanded picklist is NOT resolved:
+    assert.equal(recMinimal.maritalStatus_NavLabels, undefined);
+    // SAP was called without genderNav in $expand (stripped locally):
+    const perPersonalCall = dispatchedUrls.find((u) => u.includes("/PerPersonal"));
+    assert.ok(perPersonalCall);
+    assert.equal(perPersonalCall.includes("$expand="), false);
+
+    // 2. Query with top-level $select selecting externalCode and order
+    const resGrown = await client.callTool({
+      name: "query_entity",
+      arguments: {
+        environment: "tenant-a",
+        entityPath: "PerPersonal",
+        expand: "genderNav,maritalStatusNav",
+        select: "gender,genderNav/externalCode,maritalStatus,maritalStatusNav/order,maritalStatusNav/picklistId",
+        resolvePicklists: true,
+        locale: "es_ES",
+      },
+    });
+    assert.equal(resGrown.isError, undefined);
+    const recGrown = (resGrown.structuredContent as any).records[0];
+    assert.deepEqual(recGrown.gender_NavLabels, {
+      optionId: "10283",
+      label: "Masculino",
+      externalCode: "M",
+    });
+    assert.deepEqual(recGrown.maritalStatus_NavLabels, {
+      optionId: "10119",
+      label: "Casado/a",
+      order: 2,
+      picklistId: "maritalStatus",
+    });
+
+    await client.close();
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
