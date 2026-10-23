@@ -8,7 +8,7 @@
 | **Fecha** | 2026-10-15 |
 | **Componente** | `ssff-mcp` (Herramientas MCP, Comparación de Metadatos, QA & Compliance) |
 | **Autor / Arquitectura** | AI Engineering & SAP Solutions Architecture Team |
-| **Alineación previa** | `PRD.md` (D-01..D-25), `PRD-phase2.md` (D-26..D-32), `PRD-phase3.md` (D-33..D-44), `PRD-phase4.md` (D-45..D-52), `archive/PRD-feature-custom-mdf.md` (D-62..D-70), `archive/PRD-feature-inspect-entity.md` (D-80..D-81), `PRD-feature-datacenter-catalog.md` (D-82..D-88). Este documento arranca en **D-89 / FR-116**. |
+| **Alineación previa** | `PRD.md` (D-01..D-25), `PRD-phase2.md` (D-26..D-32), `PRD-phase3.md` (D-33..D-44), `PRD-phase4.md` (D-45..D-52), `archive/PRD-feature-custom-mdf.md` (D-62..D-70), `archive/PRD-feature-inspect-entity.md` (D-80..D-81), `archive/PRD-feature-datacenter-catalog.md` (D-82..D-88). Este documento arranca en **D-89 / FR-116**. |
 
 ---
 

@@ -18,6 +18,7 @@ Open / pending PRDs live in the repository root (`PRD-feature-*.md`).
 | `PRD-feature-metadata-cache-invalidation.md` | Executed | `ssff-mcp cache invalidate <alias\|--all>` CLI. |
 | `PRD-feature-inspect-entity.md` | Executed | Unified `inspect_entity` tool (replaced `inspect_custom_mdf`). |
 | `PRD-feature-remove-get-metadata.md` | Executed | Removal of the `get_metadata` tool (released in 0.3.0). |
+| `PRD-feature-datacenter-catalog.md` | Executed | Preloaded SAP SuccessFactors data centers catalog (`src/datacenters.ts`), API server resolution, init wizard prompts. |
 
 References between these documents resolve inside this folder (for example
 `PRD-phase3.md` from `PRD-phase3-handoff.md`). PRD files still in the repository
