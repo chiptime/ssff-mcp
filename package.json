@@ -1,8 +1,11 @@
 {
   "name": "ssff-mcp",
-  "version": "0.6.0",
+  "version": "0.7.0-rc.1",
   "description": "Read-only MCP server for SAP SuccessFactors OData v2 (STDIO and authenticated Streamable HTTP)",
   "license": "MIT",
+  "publishConfig": {
+    "tag": "next"
+  },
   "type": "module",
   "repository": {
     "type": "git",

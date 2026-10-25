@@ -12,7 +12,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0-rc.1] — 2026-10-25
+
+Release candidate for explicit `next`-channel testing. This entry does not claim
+npm publication, a completed VPS deployment, real SAP acceptance or IAS support.
+
 ### Added
+
+- **Fixed MCP users and personal tokens:** tenant-local users with one declared
+  role, 256-bit generated tokens stored only as SHA-256 hashes, required expiry,
+  per-token revocation, rotation and user disabling. SSFF keeps its configured
+  shared technical account; there are no client passwords or IAS identities.
+- **`ssff-mcp key generate`:** one JSON stdout line containing the token and its
+  hash. The server configuration stores only the hash. Existing `key hash`
+  remains stdin-only.
+- **Role policy enforcement across hosted surfaces:** environment scope,
+  entities, navigation, expand, batch, schemas/catalogs/resources and field
+  redaction. Explicit composite policies preserve restricted-empty field
+  intersections as keys-only access; XML downgrades to JSON when required.
+- **Picklist resolution and caching:** on-demand legacy/MDF catalogs and
+  expanded-label enrichment. Personal users must have full access to the
+  derived resolver's source entities and fields, including for cached data.
+- **Operations guides:** fixed-user configuration, token rotation/revocation
+  and same-host HTTPS proxy deployment requirements.
 
 - **Preloaded SAP SuccessFactors Data Centers catalog** (FR-108..FR-115, D-82..D-88):
   - 23 official SAP SuccessFactors data centers (`DC2`, `DC4`, `DC8`, `DC10`, `DC12`, `DC15`, `DC16`, `DC17`, `DC18`, `DC19`, `DC22`, `DC23`, `DC41`, `DC44`, `DC55`, `DC68`) with canonical API server base URLs and OAuth token endpoints (`src/datacenters.ts`).
@@ -23,6 +45,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Interactive `init` wizard: data center catalog picker and confirmation prompt to auto-correct web portal URLs to API endpoints.
   - CLI flags for inline mode: `--datacenter <code\>`, `--dc <code\>`, `-d <code\>`, and `--inline-url <url>`.
   - Visibility: `list_environments` tool and `sf://{env}/overview` resource report `dataCenter` when configured.
+
+### Security
+
+- Hosted authentication and authorization share one fresh configuration
+  snapshot per HTTP request. Revocation, expiry, disabling and role changes
+  apply to the next request; concurrent calls do not share mutable authority.
+- Sessions bind authentication method, tenant and user; personal cursors also
+  bind current role policy. Contradictory personal credential headers reject
+  rather than silently selecting an identity. Legacy-key behavior is preserved.
+- Personal-token requests require a loopback backend peer. Production requires
+  a correctly configured HTTPS-terminating proxy; forwarding headers do not
+  grant transport trust. Audit records exclude tokens and business content.
+- Legacy API keys and local STDIO retain their existing access model. IAS
+  integration and real VPS/TLS acceptance remain separate future work.
 
 ## [0.6.0] — 2026-10-22
 
