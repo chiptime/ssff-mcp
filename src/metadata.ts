@@ -14,7 +14,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { XMLParser } from "fast-xml-parser";
-import { isEntityAllowed, type AllowlistEntry } from "./allowlist.js";
+import { isEntityAllowed, type EntityAllowlist } from "./allowlist.js";
 import { SanitizedError } from "./errors.js";
 import { dispatchGet, type EnvTarget, type FetchImpl } from "./http.js";
 import type { SupportedLocale } from "./i18n.js";
@@ -527,7 +527,7 @@ export class MetadataService {
   async listCustomMdf(
     env: EnvTarget,
     alias: string,
-    allowlist?: AllowlistEntry[],
+    allowlist?: EntityAllowlist,
     employeeLinkedOnly = false,
   ): Promise<CustomMdfSummary[]> {
     const data = await this.getParsedMetadata(env, alias);
@@ -554,7 +554,7 @@ export class MetadataService {
     env: EnvTarget,
     alias: string,
     entitySet: string,
-    allowlist?: AllowlistEntry[],
+    allowlist?: EntityAllowlist,
     locale?: SupportedLocale,
   ): Promise<CustomMdfDetails | undefined> {
     if (!isEntityAllowed(allowlist, entitySet)) {

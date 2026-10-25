@@ -63,7 +63,7 @@ export function hostOf(url: URL): string {
   return port === "" ? url.hostname : `${url.hostname}:${port}`;
 }
 
-export function envTargetFor(env: EnvironmentConfig, alias = "", tenantId?: string): EnvTarget {
+export function envTargetFor(env: Pick<EnvironmentConfig, "baseUrl" | "auth">, alias = "", tenantId?: string): EnvTarget {
   const rootUrl = new URL(env.baseUrl);
   const serviceRoot = env.baseUrl.replace(/\/+$/, "") + "/odata/v2/";
   return {

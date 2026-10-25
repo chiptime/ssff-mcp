@@ -20,11 +20,12 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpServer } from "./tools.js";
-import { loadTenantKeyDirectory } from "./config.js";
-import { resolveTenant, sha256Hex, type TenantResolution } from "./tenancy.js";
+import { loadHostedAuthDirectory } from "./config.js";
+import { sha256Hex } from "./tenancy.js";
+import { resolveHostedAuth, type HostedAuthResolution } from "./local-auth.js";
+import { hostedRequestContext, type HostedRequestContext } from "./request-context.js";
 import { PACKAGE_VERSION } from "./version.js";
 import type { FetchImpl } from "./http.js";
-import { isSanitizedError } from "./errors.js";
 
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 const DEFAULT_PORT = 8080;
@@ -72,6 +73,8 @@ interface SessionEntry {
   tenantId: string;
   keyDigest: string;
   scope: string;
+  authType: HostedAuthResolution["authType"];
+  userId?: string;
   lastActivity: number;
   activeRequests: number;
 }
@@ -136,6 +139,16 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 
 class BodyTooLargeError extends Error {}
 
+/** Audit operation names are fixed server vocabulary, never raw RPC strings. */
+function auditOperation(body: unknown): string {
+  if (typeof body !== "object" || body === null || !("method" in body)) return "rpc";
+  const method = body.method;
+  return typeof method === "string" && [
+    "initialize", "tools/call", "tools/list", "resources/read", "resources/list",
+    "resources/templates/list", "notifications/initialized", "ping",
+  ].includes(method) ? method : "rpc";
+}
+
 export function startHttpServer(options: ServeHttpOptions = {}): Promise<RunningHttpServer> {
   const log =
     options.log ??
@@ -160,6 +173,8 @@ export function startHttpServer(options: ServeHttpOptions = {}): Promise<Running
   let inFlight = 0;
 
   const sessions = new Map<string, SessionEntry>();
+  const requestIdentities = new WeakMap<IncomingMessage, { tenantId: string; userId?: string; role?: string }>();
+  const requestOperations = new WeakMap<IncomingMessage, string>();
 
   function requestLog(
     req: IncomingMessage,
@@ -175,23 +190,55 @@ export function startHttpServer(options: ServeHttpOptions = {}): Promise<Running
         path: (req.url ?? "").split("?")[0],
         status,
         durationMs: Date.now() - startedAt,
+        ...requestIdentities.get(req),
+        ...(requestIdentities.get(req)?.userId === undefined ? {} :
+          { operation: requestOperations.get(req) ?? req.method }),
         ...extra,
       }),
     );
   }
 
-  async function authenticate(req: IncomingMessage): Promise<TenantResolution | null> {
+  async function authenticate(req: IncomingMessage): Promise<HostedRequestContext | null> {
     // The mounted config is re-read per request (D-124): a tenant added on
     // the volume is picked up without a redeploy. No secrets are resolved.
-    let directory: Awaited<ReturnType<typeof loadTenantKeyDirectory>>;
+    let directory: Awaited<ReturnType<typeof loadHostedAuthDirectory>>;
     try {
-      directory = await loadTenantKeyDirectory({ configPath: options.configPath });
-    } catch (error) {
-      const message = isSanitizedError(error) ? error.message : "configuration could not be read";
-      log(JSON.stringify({ ts: new Date().toISOString(), event: "config-error", message }));
+      directory = await loadHostedAuthDirectory({ configPath: options.configPath });
+    } catch {
+      // Validation paths can contain operator-supplied strings; keep them out
+      // of hosted audit logs rather than guessing whether a value is a secret.
+      log(JSON.stringify({ ts: new Date().toISOString(), event: "config-error", message: "configuration could not be read" }));
       return null;
     }
-    return resolveTenant(directory, presentedKey(req));
+    const credential = presentedKey(req);
+    const authorization = req.headers.authorization;
+    const bearer = typeof authorization === "string" && authorization.toLowerCase().startsWith("bearer ")
+      ? authorization.slice(7).trim() : undefined;
+    const apiKey = typeof req.headers["x-api-key"] === "string" ? req.headers["x-api-key"].trim() : undefined;
+    if (bearer && apiKey && bearer !== apiKey) {
+      const supplied = new Set([sha256Hex(bearer), sha256Hex(apiKey)]);
+      const involvesPersonalCredential = Object.values(directory.tenants).some((tenant) =>
+        Object.values(tenant.users).some((user) => user.tokens.some((token) => supplied.has(token.hash))));
+      // Preserve old-key precedence, but never silently select a personal
+      // identity from contradictory headers (including revoked personal tokens).
+      if (involvesPersonalCredential) return null;
+    }
+    const resolution = resolveHostedAuth(directory, credential);
+    if (resolution === null) {
+      // Attribute a rejected expired/revoked/disabled credential only when its
+      // configured owner is unique. No role was authorized for this request.
+      const digest = credential === undefined ? undefined : sha256Hex(credential);
+      const owners = Object.entries(directory.tenants).flatMap(([tenantId, tenant]) =>
+        Object.entries(tenant.users).filter(([, user]) => user.tokens.some((token) => token.hash === digest))
+          .map(([userId]) => ({ tenantId, userId })));
+      if (owners.length === 1) requestIdentities.set(req, owners[0]);
+      return null;
+    }
+    requestIdentities.set(req, {
+      tenantId: resolution.tenantId,
+      ...(resolution.authType === "named_user" ? { userId: resolution.userId, role: resolution.roleName } : {}),
+    });
+    return { resolution, rawConfig: directory.rawConfig };
   }
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -238,12 +285,21 @@ export function startHttpServer(options: ServeHttpOptions = {}): Promise<Running
       if (!trusted) { sendJson(res, 403, { error: "origin not allowed" }); return; }
     }
 
-    const resolution = await authenticate(req);
-    if (resolution === null) {
+    const context = await authenticate(req);
+    if (context === null) {
       // Fail-closed (FR-159): no key, unknown key or unreadable config.
       res.setHeader("WWW-Authenticate", 'Bearer realm="ssff-mcp"');
       sendJson(res, 401, { error: "unauthorized" });
       requestLog(req, 401, startedAt);
+      return;
+    }
+    const { resolution } = context;
+    if (resolution.authType === "named_user" &&
+        !["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress ?? "")) {
+      // Personal tokens enter through a loopback TLS-terminating proxy in
+      // production, not public plaintext HTTP or spoofable forwarding headers.
+      sendJson(res, 403, { error: "personal-token access requires the loopback HTTPS proxy" });
+      requestLog(req, 403, startedAt);
       return;
     }
 
@@ -269,6 +325,7 @@ export function startHttpServer(options: ServeHttpOptions = {}): Promise<Running
         requestLog(req, 400, startedAt);
         return;
       }
+      requestOperations.set(req, "initialize");
       if (sessions.size + pendingInitializations >= maxSessions) {
         sendJson(res, 503, { error: "too many concurrent sessions" });
         requestLog(req, 503, startedAt, { tenantId: resolution.tenantId });
@@ -298,13 +355,30 @@ export function startHttpServer(options: ServeHttpOptions = {}): Promise<Running
         cacheDir: options.cacheDir,
         disableDiskCache: options.disableDiskCache,
         tenantId: resolution.tenantId,
-        allowedEnvironments: resolution.allowedEnvironments,
+        hosted: true,
+        ...(resolution.authType === "legacy_key" ? { allowedEnvironments: resolution.allowedEnvironments } : {}),
         onConfigWarning: () => log(JSON.stringify({ event: "config-warning", tenantId: resolution.tenantId })),
-        logSink: (line) => log(JSON.stringify({ ...JSON.parse(line),
-          tenantId: resolution.tenantId, sessionId: transport.sessionId })),
+        logSink: (line) => {
+          const current = hostedRequestContext.getStore()?.resolution;
+          const event = JSON.parse(line);
+          if (current?.authType === "named_user") {
+            // Whitelist metadata: never copy user-controlled environment names
+            // or error text into personal-user audit records.
+            log(JSON.stringify({
+              ts: event.ts, operation: event.tool, outcome: event.outcome,
+              code: event.code, durationMs: event.durationMs,
+              tenantId: current.tenantId, userId: current.userId, role: current.roleName,
+              sessionId: transport.sessionId,
+            }));
+          } else {
+            log(JSON.stringify({ ...event, tenantId: resolution.tenantId, sessionId: transport.sessionId }));
+          }
+        },
       });
       const entry: SessionEntry = { transport, server, tenantId: resolution.tenantId,
-        keyDigest: sha256Hex(presentedKey(req)!), scope: JSON.stringify(resolution.allowedEnvironments),
+        keyDigest: resolution.credentialDigest, scope: JSON.stringify(resolution.allowedEnvironments),
+        authType: resolution.authType,
+        ...(resolution.authType === "named_user" ? { userId: resolution.userId } : {}),
         lastActivity: Date.now(), activeRequests: 0 };
       try { await server.connect(transport); }
       catch (error) { pendingInitializations -= 1; throw error; }
@@ -326,7 +400,7 @@ export function startHttpServer(options: ServeHttpOptions = {}): Promise<Running
           );
         }
       };
-      try { await transport.handleRequest(req, res, body); }
+      try { await hostedRequestContext.run(context, () => transport.handleRequest(req, res, body)); }
       finally {
         pendingInitializations -= 1;
         if (transport.sessionId === undefined) await server.close();
@@ -349,8 +423,9 @@ export function startHttpServer(options: ServeHttpOptions = {}): Promise<Running
     }
     // A session belongs to the tenant that opened it (invariant 1): a key of
     // another tenant must never ride an existing session.
-    if (resolution.tenantId !== entry.tenantId || entry.keyDigest !== sha256Hex(presentedKey(req)!) ||
-        entry.scope !== JSON.stringify(resolution.allowedEnvironments)) {
+    if (resolution.tenantId !== entry.tenantId || resolution.authType !== entry.authType ||
+        (resolution.authType === "named_user" ? resolution.userId !== entry.userId :
+          (entry.keyDigest !== resolution.credentialDigest || entry.scope !== JSON.stringify(resolution.allowedEnvironments)))) {
       sendJson(res, 401, { error: "unauthorized" });
       requestLog(req, 401, startedAt, { tenantId: resolution.tenantId, sessionId });
       return;
@@ -372,11 +447,12 @@ export function startHttpServer(options: ServeHttpOptions = {}): Promise<Running
         return;
       }
       entry.activeRequests += 1;
-      try { await entry.transport.handleRequest(req, res, body); }
+      requestOperations.set(req, auditOperation(body));
+      try { await hostedRequestContext.run(context, () => entry.transport.handleRequest(req, res, body)); }
       finally { entry.activeRequests -= 1; entry.lastActivity = Date.now(); }
     } else {
       // GET (standalone SSE) and DELETE (terminate the session).
-      await entry.transport.handleRequest(req, res);
+      await hostedRequestContext.run(context, () => entry.transport.handleRequest(req, res));
     }
     requestLog(req, res.statusCode, startedAt, { tenantId: resolution.tenantId, sessionId });
   }

@@ -73,6 +73,12 @@ a non-TTY run exits with code `2`.
 
 ## Multi-tenant shape
 
+Fixed named MCP users may also be declared under each tenant, independently of
+the shared SSFF technical credentials. See [Local user configuration](local-auth-config.md),
+[Token operations](token-operations.md), and [HTTPS hosting](local-users-hosting.md).
+Legacy API keys and STDIO keep their existing behavior; roles apply to personal-token
+HTTP access, not to the SSFF technical account or local STDIO.
+
 The file accepts **two shapes**:
 
 - **Flat (legacy):** `environments` at the root, as in the example above. It

@@ -13,7 +13,7 @@
  *    field and a restriction that only guards the request guards nothing.
  */
 
-import { permittedFieldsFor, type AllowlistEntry } from "./allowlist.js";
+import { isEntityPermitted, permittedFieldsFor, type EntityAllowlist } from "./allowlist.js";
 import type { NavigationLookup } from "./allowlist-navigation.js";
 
 export interface EntitySchemaLike {
@@ -34,7 +34,7 @@ export type SchemaLookup = (entitySet: string) => Promise<EntitySchemaLike | und
  * wanted hidden. It fails closed instead.
  */
 export async function allowedProperties(
-  allowlist: AllowlistEntry[] | undefined,
+  allowlist: EntityAllowlist | undefined,
   entitySet: string,
   schemaLookup: SchemaLookup,
 ): Promise<Set<string> | undefined> {
@@ -59,7 +59,7 @@ export async function allowedProperties(
  * the metadata does not know are left to the service.
  */
 export async function assertPropertyPermitted(
-  allowlist: AllowlistEntry[] | undefined,
+  allowlist: EntityAllowlist | undefined,
   entitySet: string,
   property: string,
   schemaLookup: SchemaLookup,
@@ -116,7 +116,7 @@ const STRUCTURAL_KEYS = new Set(["__metadata", "results", "__deferred", "__count
 export async function redactValue(
   value: unknown,
   entitySet: string,
-  allowlist: AllowlistEntry[] | undefined,
+  allowlist: EntityAllowlist | undefined,
   schemaLookup: SchemaLookup,
   navigationLookup: NavigationLookup,
 ): Promise<unknown> {
@@ -167,6 +167,12 @@ export async function redactValue(
     }
     const nav = navByName.get(key);
     if (nav !== undefined) {
+      if (allowlist !== undefined && !Array.isArray(allowlist) &&
+          !isEntityPermitted(allowlist, undefined, nav.targetEntitySet)) {
+        // A service may return an unsolicited/deferred association. Personal
+        // policy still owns it even when no explicit $expand requested it.
+        continue;
+      }
       redacted[key] = await redactValue(
         inner,
         nav.targetEntitySet,

@@ -16,7 +16,7 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { executeBatchGet, sanitizeEmbeddedFailure } from "./batch.js";
-import { isEntityPermitted, permittedFieldsFor } from "./allowlist.js";
+import { isEntityPermitted, permittedFieldsFor, type EntityAllowlist } from "./allowlist.js";
 import {
   checkExpandRoutes,
   checkExpandSelections,
@@ -38,8 +38,10 @@ import {
   type SchemaLookup,
 } from "./fields.js";
 import { PACKAGE_VERSION } from "./version.js";
-import { loadConfig, type EnvironmentConfig } from "./config.js";
+import { loadConfig, type EnvironmentConfig as ConfigEnvironment } from "./config.js";
 import { CURSOR_VERSION, defaultCursorCodec } from "./cursor.js";
+import { intersectEntityPolicies } from "./policy-composition.js";
+import { hostedRequestContext } from "./request-context.js";
 import { SanitizedError, toSanitizedError } from "./errors.js";
 import { dispatchGet, envTargetFor, type EnvTarget, type FetchImpl } from "./http.js";
 import { resolveLocale } from "./i18n.js";
@@ -68,6 +70,9 @@ import {
 
 const QUERY_TOOL_TIMEOUT_MS = 30_000;
 const BATCH_TOOL_TIMEOUT_MS = 120_000;
+
+/** Only request-local runtime environments carry composite role policies. */
+type EnvironmentConfig = Omit<ConfigEnvironment, "entityAllowlist"> & { entityAllowlist?: EntityAllowlist };
 
 /** Look up a tool's name/title/description from the single-source catalog. */
 function toolEntry(name: string): { name: string; title: string; description: string } {
@@ -111,6 +116,8 @@ export interface ServerDeps {
    * scope, fail-closed, before any network request.
    */
   allowedEnvironments?: string[];
+  /** Hosted calls require a fresh request-local identity/config snapshot. */
+  hosted?: boolean;
 }
 
 interface ToolOutcome {
@@ -217,6 +224,15 @@ function cursorBindingOptions(args: CursorOptionsSource): Record<string, unknown
   }
   // `output` has a default: omitted and explicit "json" are the same binding.
   options.output = args.output ?? "json";
+  const resolution = hostedRequestContext.getStore()?.resolution;
+  if (resolution?.authType === "named_user") {
+    // Never bind a personal cursor to a credential that can rotate. Changes
+    // to the role policy invalidate old cursors; legacy cursor bytes stay intact.
+    options.localPrincipal = {
+      tenantId: resolution.tenantId, userId: resolution.userId,
+      roleName: resolution.roleName, role: resolution.role,
+    };
+  }
   return options;
 }
 
@@ -301,19 +317,24 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
   }
 
   async function loadFreshConfig(resolveSecretsFor?: string | null): Promise<FreshConfig> {
+    const context = deps.hosted ? hostedRequestContext.getStore() : undefined;
+    if (deps.hosted && (context === undefined || context.resolution.tenantId !== deps.tenantId)) {
+      throw new SanitizedError("CONFIG_INVALID", "a current hosted identity is required");
+    }
+    const scope = context?.resolution.allowedEnvironments ?? deps.allowedEnvironments;
     // FR-160 (fail-closed, before any network request): in the hosted mode the
     // presented key grants an explicit environment scope; an alias outside it
     // is rejected even though the tenant configures it. The parameter doubles
     // as the requested alias (tools and resources pass it through).
     if (
-      deps.allowedEnvironments !== undefined &&
+      scope !== undefined &&
       typeof resolveSecretsFor === "string" &&
       resolveSecretsFor.length > 0 &&
-      !deps.allowedEnvironments.includes(resolveSecretsFor)
+      !scope.includes(resolveSecretsFor)
     ) {
       throw new SanitizedError(
         "ENVIRONMENT_NOT_ALLOWED",
-        `environment "${resolveSecretsFor}" is not permitted for this key; permitted: ${deps.allowedEnvironments.join(", ") || "(none)"}`,
+        `environment "${resolveSecretsFor}" is not permitted for this key; permitted: ${scope.join(", ") || "(none)"}`,
       );
     }
     const config = await loadConfig({
@@ -321,12 +342,25 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       onWarning: deps.onConfigWarning,
       resolveSecretsFor,
       tenantId: deps.tenantId,
+      ...(context === undefined ? {} : { readFile: async () => context.rawConfig }),
     });
     // A mounted file may change while other sessions are in flight. Keep the
     // response cap request-local rather than mutating module-global state.
-    const environments = deps.allowedEnvironments === undefined ? config.environments :
+    const environments: Record<string, EnvironmentConfig> = scope === undefined ? config.environments :
       Object.fromEntries(Object.entries(config.environments)
-        .filter(([alias]) => deps.allowedEnvironments!.includes(alias)));
+        .filter(([alias]) => scope.includes(alias)));
+    if (context?.resolution.authType === "named_user") {
+      for (const environment of Object.values(environments)) {
+        const original = environment.entityAllowlist;
+        if (original !== undefined && !Array.isArray(original)) {
+          throw new SanitizedError("CONFIG_INVALID", "configuration must contain ordinary entity lists");
+        }
+        environment.entityAllowlist = intersectEntityPolicies(
+          { entityAllowlist: original, entityDenylist: environment.entityDenylist },
+          context.resolution.role,
+        );
+      }
+    }
     return {
       environments,
       defaultLocale: config.defaultLocale,
@@ -516,7 +550,16 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       return schema;
     }
     const allowed = await allowedProperties(allowlist, entitySet, schemaLookupFor(target, alias, tenantId));
-    return filterSchemaProperties(schema, allowed);
+    const visible = filterSchemaProperties(schema, allowed);
+    const navigations = (visible as P & { navigationProperties?: Array<{ targetEntitySet: string }> }).navigationProperties;
+    if (!Array.isArray(allowlist) && navigations !== undefined) {
+      return {
+        ...visible,
+        navigationProperties: navigations.filter((navigation) =>
+          isEntityPermitted(allowlist, undefined, navigation.targetEntitySet)),
+      };
+    }
+    return visible;
   }
 
   /**
@@ -874,6 +917,17 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
           config: defaultLocale,
           env: envVars.SF_DEFAULT_LOCALE,
         });
+        if (hostedRequestContext.getStore()?.resolution.authType === "named_user") {
+          // The resolver merges legacy/MDF sources and cached labels into a
+          // derived shape. Refuse unless every possible source is readable in
+          // full; a cache hit must not bypass entity or field authorization.
+          for (const entity of ["PicklistOption", "Picklist", "PicklistLabel", "PickListValueV2"]) {
+            if (!isEntityPermitted(env.entityAllowlist, env.entityDenylist, entity) ||
+                permittedFieldsFor(env.entityAllowlist, entity) !== undefined) {
+              throw new SanitizedError("ENTITY_NOT_ALLOWED", "picklist resolution requires unrestricted access to its source entities and fields");
+            }
+          }
+        }
         const service = picklistServiceFor(tenantId);
         const forceRefresh = args.forceRefresh === true;
 
@@ -1642,9 +1696,11 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
         baseUrl: resolved.env.baseUrl,
         ...(resolved.env.dataCenter !== undefined ? { dataCenter: resolved.env.dataCenter } : {}),
         authType: resolved.env.auth.type,
-        totalEntitySets: parsed.entitySets.length,
-        functionImportsCount: parsed.functionImports.length,
-        allowlistConfigured: entityAllowlist !== undefined && entityAllowlist.length > 0,
+        totalEntitySets: hostedRequestContext.getStore()?.resolution.authType === "named_user"
+          ? parsed.entitySets.filter((name) => isEntityPermitted(entityAllowlist, entityDenylist, name)).length
+          : parsed.entitySets.length,
+        functionImportsCount: hostedRequestContext.getStore()?.resolution.authType === "named_user" ? 0 : parsed.functionImports.length,
+        allowlistConfigured: entityAllowlist !== undefined && (!Array.isArray(entityAllowlist) || entityAllowlist.length > 0),
         denylistConfigured: entityDenylist !== undefined && entityDenylist.length > 0,
       };
 

@@ -155,12 +155,14 @@ Install globally instead of with `npx` (`npm install -g ssff-mcp`, then run
 
 ### Hosted service (Streamable HTTP)
 
-This source branch also provides `ssff-mcp serve`: one API-key-authenticated
-service with isolated tenants and environment-scoped keys. Local STDIO stays the
+This source branch also provides `ssff-mcp serve`: an authenticated service
+with isolated tenants, environment-scoped legacy keys, and fixed MCP users with
+personal tokens and tenant-local roles. Local STDIO stays the
 default (a non-empty `PORT` selects HTTP). For the Dokploy pilot — mounted config,
 TLS, secrets, and remote-client examples — see **[Hosting →](docs/hosting.md)**.
 No new npm release or finished deployment is claimed here, and
-users/roles/IAS remain a later phase.
+IAS remains a later phase. For local users, token rotation/revocation and a
+loopback backend behind HTTPS, see **[Personal-token hosting →](docs/local-users-hosting.md)**.
 
 The usual way is the `ssff-mcp init` wizard (see Getting started above): it
 writes `~/.config/ssff-mcp/config.json` and prints the block for your client. To

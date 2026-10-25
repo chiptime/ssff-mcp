@@ -8,7 +8,11 @@
  * checked. The denylist wins, exactly as it does for direct access.
  */
 
-import { isEntityPermitted, type AllowlistEntry } from "./allowlist.js";
+import {
+  isEntityPermitted,
+  type AllowlistEntry,
+  type EntityAllowlist,
+} from "./allowlist.js";
 import type { ExpandSelection } from "./expand.js";
 
 /** Resolve `navigationName` declared on `fromEntitySet` to its target entity set. */
@@ -40,7 +44,7 @@ export function entitySetOfSegment(segment: string): string {
  */
 export async function checkNavigationPath(
   segments: readonly string[],
-  allowlist: AllowlistEntry[] | undefined,
+  allowlist: EntityAllowlist | undefined,
   denylist: AllowlistEntry[] | undefined,
   lookup: NavigationLookup,
 ): Promise<NavigationVerdict> {
@@ -71,7 +75,7 @@ export async function checkNavigationPath(
 export async function checkExpressionReferences(
   rootEntitySet: string,
   references: readonly ExpressionReference[],
-  allowlist: AllowlistEntry[] | undefined,
+  allowlist: EntityAllowlist | undefined,
   denylist: AllowlistEntry[] | undefined,
   lookup: NavigationLookup,
 ): Promise<NavigationVerdict> {
@@ -110,7 +114,7 @@ export async function checkExpressionReferences(
 export async function checkExpandSelections(
   baseEntitySet: string,
   selections: readonly ExpandSelection[],
-  allowlist: AllowlistEntry[] | undefined,
+  allowlist: EntityAllowlist | undefined,
   denylist: AllowlistEntry[] | undefined,
   lookup: NavigationLookup,
 ): Promise<NavigationVerdict> {
@@ -148,7 +152,7 @@ export async function checkExpandSelections(
 export async function checkExpandRoutes(
   baseEntitySet: string,
   routes: readonly (readonly string[])[],
-  allowlist: AllowlistEntry[] | undefined,
+  allowlist: EntityAllowlist | undefined,
   denylist: AllowlistEntry[] | undefined,
   lookup: NavigationLookup,
 ): Promise<NavigationVerdict> {

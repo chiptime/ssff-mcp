@@ -21,6 +21,7 @@ export type CliCommand =
   | { kind: "serve"; datacenter?: string; inlineUrl?: string }
   | { kind: "serve-http"; port?: number; host?: string; configPath?: string }
   | { kind: "key-hash" }
+  | { kind: "key-generate" }
   | { kind: "init" }
   | { kind: "cache-invalidate"; alias?: string; all: boolean; tenant?: string }
   | { kind: "help" }
@@ -54,7 +55,9 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
     return { kind: "serve" };
   }
   if (first === "key") {
-    return argv.length === 2 && argv[1] === "hash" ? { kind: "key-hash" } : { kind: "unknown", arg: "key" };
+    if (argv.length === 2 && argv[1] === "hash") return { kind: "key-hash" };
+    if (argv.length === 2 && argv[1] === "generate") return { kind: "key-generate" };
+    return { kind: "unknown", arg: "key" };
   }
   if (first === "serve") {
     const values = new Map<string, string>();

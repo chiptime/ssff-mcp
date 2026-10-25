@@ -16,7 +16,7 @@ import { createMcpServer } from "./tools.js";
 import { parseCliArgs, runInit } from "./cli/init.js";
 import { runCacheInvalidate } from "./cli/cache.js";
 import { runServeHttp } from "./cli/serve.js";
-import { runKeyHash } from "./cli/key.js";
+import { runKeyGenerate, runKeyHash } from "./cli/key.js";
 
 const HELP = [
   "ssff-mcp — read-only MCP server for SAP SuccessFactors OData v2",
@@ -27,7 +27,8 @@ const HELP = [
   "  ssff-mcp init     Run the interactive configuration wizard",
   "  ssff-mcp serve [--port <1..65535>] [--host <address>] [--config <path>]",
   "                    Start authenticated Streamable HTTP (/mcp and /healthz)",
-  "  ssff-mcp key hash Hash a key read from stdin (never pass keys in argv)",
+  "  ssff-mcp key generate Generate a personal access token (printed once; store only its hash)",
+  "  ssff-mcp key hash     Hash a key read from stdin (never pass keys in argv)",
   "  ssff-mcp cache invalidate <alias|--all> [--tenant <id>]",
   "                    Drop cached $metadata for an environment (per tenant)",
   "  ssff-mcp --help   Show this help",
@@ -42,6 +43,11 @@ async function main(): Promise<void> {
 
   if (command.kind === "key-hash") {
     process.exitCode = await runKeyHash();
+    return;
+  }
+
+  if (command.kind === "key-generate") {
+    process.exitCode = runKeyGenerate();
     return;
   }
 

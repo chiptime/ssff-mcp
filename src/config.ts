@@ -18,6 +18,13 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
 import type { AllowlistEntry } from "./allowlist.js";
+import {
+  hasCredentialCollision,
+  type HostedAuthDirectory,
+  type LocalRole,
+  type LocalTenantAuth,
+  type LocalUser,
+} from "./local-auth.js";
 import { SanitizedError } from "./errors.js";
 import { resolveDataCenter, SAP_DATA_CENTERS } from "./datacenters.js";
 
@@ -279,11 +286,101 @@ const tenantIdSchema = z.string().refine((value) => value.trim().length > 0, {
   message: "tenant id must be a non-empty string",
 });
 
+// --- Fixed local MCP users with personal tokens (S1–S3, S6,
+// odd/tasks/local-user-tokens.md). Interim Phase 1: no IAS, no issuer/subject
+// fields, no SSFF credentials on user records; SHA-256 hashes are suitable
+// only because tokens are generated high-entropy random values, never
+// user-chosen passwords. ---
+
+const localRoleNameSchema = z.string().refine((value) => value.trim().length > 0, {
+  message: "role name must be a non-empty string",
+});
+
+const localUserIdSchema = z.string().refine((value) => value.trim().length > 0, {
+  message: "user id must be a non-empty string",
+});
+
+const localTokenIdSchema = z.string().refine((value) => value.trim().length > 0, {
+  message: "token id must be a non-empty string",
+});
+
+/**
+ * One personal token record (S2/S3): hash-only storage. `expiresAt` is
+ * REQUIRED and must be an ISO 8601 date-time WITH timezone (Z or offset). An
+ * expired date is VALID config that simply never authenticates, so expiry
+ * needs no rotation downtime.
+ */
+const localTokenSchema = z
+  .object({
+    id: localTokenIdSchema,
+    hash: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/, {
+        message: "hash must be the lowercase sha-256 hex digest of the token (64 hex characters)",
+      }),
+    expiresAt: z.string().datetime({
+      offset: true,
+      message:
+        "expiresAt must be an ISO 8601 date-time with timezone, for example 2030-06-01T00:00:00Z or 2030-06-01T04:00:00+02:00",
+    }),
+    revoked: z.boolean().optional(),
+  })
+  .strict();
+
+/** Role environments: mandatory, non-empty, duplicate-free aliases of the SAME tenant. */
+const localRoleEnvironmentsSchema = z
+  .array(aliasSchema)
+  .min(1, "role environments must declare at least one environment alias")
+  .refine((values) => new Set(values).size === values.length, {
+    message: "role environments must not contain duplicates",
+  });
+
+/** A tenant-local role (S1): explicit environment reach; entity lists only narrow. */
+const localRoleSchema = z
+  .object({
+    environments: localRoleEnvironmentsSchema,
+    entityAllowlist: entityAllowlistSchema.optional(),
+    entityDenylist: entityDenylistSchema.optional(),
+  })
+  .strict();
+
+/** Reject duplicate token ids within one user (rotation names records by id). */
+function rejectDuplicateTokenIds(tokens: Array<{ id: string }>, ctx: z.RefinementCtx): void {
+  const seen = new Set<string>();
+  for (const [index, token] of tokens.entries()) {
+    if (seen.has(token.id)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [index, "id"],
+        message: `duplicate token id "${token.id}"`,
+      });
+    }
+    seen.add(token.id);
+  }
+}
+
+/**
+ * A fixed local user (S1): exactly one explicitly declared role and personal
+ * token records. `enabled` defaults to true; `tokens` is required and may be
+ * empty (the revoke-all form, S3). Strict: user records carry NO SSFF
+ * credentials and no IAS identity fields.
+ */
+const localUserSchema = z
+  .object({
+    role: localRoleNameSchema,
+    enabled: z.boolean().optional(),
+    tokens: z.array(localTokenSchema).superRefine(rejectDuplicateTokenIds),
+  })
+  .strict();
+
 /**
  * One tenant (D-119): its environments plus tenant-level defaults. The lists
  * are the BASE for every environment; a per-environment list REPLACES it
  * (never merges). `apiKeyHash` is the client-wide key (reaches every
  * environment); per-environment keys narrow it to that environment (D-120).
+ * `roles`/`users` are the optional local-auth keys (S1–S3): both absent keeps
+ * the pre-local-auth behavior; roles may exist with no users (no principal
+ * means no access).
  */
 const tenantSchema = z
   .object({
@@ -296,8 +393,39 @@ const tenantSchema = z
     entityAllowlist: entityAllowlistSchema.optional(),
     entityDenylist: entityDenylistSchema.optional(),
     environments: z.record(aliasSchema, environmentSchema),
+    roles: z.record(localRoleNameSchema, localRoleSchema).optional(),
+    users: z.record(localUserIdSchema, localUserSchema).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((tenant, ctx) => {
+    if (tenant.roles === undefined && tenant.users === undefined) {
+      return;
+    }
+    // Cross-field rules local to one tenant: role envs must be declared here,
+    // and every user role must exist (there is no default role, S1).
+    const aliases = new Set(Object.keys(tenant.environments));
+    for (const [roleName, role] of Object.entries(tenant.roles ?? {})) {
+      for (const alias of role.environments) {
+        if (!aliases.has(alias)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["roles", roleName, "environments"],
+            message: `role "${roleName}" references environment "${alias}" which the tenant does not declare`,
+          });
+        }
+      }
+    }
+    const roleNames = new Set(Object.keys(tenant.roles ?? {}));
+    for (const [userId, user] of Object.entries(tenant.users ?? {})) {
+      if (!roleNames.has(user.role)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["users", userId, "role"],
+          message: `user "${userId}" references role "${user.role}" which is not defined`,
+        });
+      }
+    }
+  });
 
 /** Multi-tenant shape (PRD-feature-multitenant-hosting D-119). */
 const tenantsFormSchema = z
@@ -927,8 +1055,22 @@ export async function loadTenantKeyDirectory(
       `configuration file at ${CONFIG_TILDE_PATH} is invalid: ${sanitizeIssueText(formatIssues(result.error))}`,
     );
   }
+  return projectTenantKeys(result.data.tenants);
+}
+
+/** The parsed `tenants` map of the hosted shape. */
+type TenantsFormData = z.infer<typeof tenantsFormSchema>["tenants"];
+
+/**
+ * tenantId → key material, WITHOUT resolving any secret. Shared by
+ * `loadTenantKeyDirectory` and `loadHostedAuthDirectory` so both project the
+ * legacy slice identically.
+ */
+function projectTenantKeys(
+  tenants: TenantsFormData,
+): Record<string, { apiKeyHash?: string; environments: Record<string, string | undefined> }> {
   const directory: Record<string, { apiKeyHash?: string; environments: Record<string, string | undefined> }> = {};
-  for (const [id, tenant] of Object.entries(result.data.tenants)) {
+  for (const [id, tenant] of Object.entries(tenants)) {
     const environments: Record<string, string | undefined> = {};
     for (const [alias, env] of Object.entries(tenant.environments)) {
       environments[alias] = env.apiKeyHash;
@@ -938,6 +1080,106 @@ export async function loadTenantKeyDirectory(
       entry.apiKeyHash = tenant.apiKeyHash;
     }
     directory[id] = entry;
+  }
+  return directory;
+}
+
+/**
+ * Project one parsed tenant's local auth (S1–S3) into its runtime shape,
+ * applying the documented defaults: `enabled` → true, `revoked` → false.
+ * Roles and users stay absent-when-absent (empty records), and environment
+ * aliases are sorted for deterministic scope intersection.
+ */
+function toLocalTenantAuth(tenant: {
+  environments: Record<string, z.infer<typeof environmentSchema>>;
+  roles?: Record<string, z.infer<typeof localRoleSchema>>;
+  users?: Record<string, z.infer<typeof localUserSchema>>;
+}): LocalTenantAuth {
+  const roles: Record<string, LocalRole> = {};
+  for (const [name, role] of Object.entries(tenant.roles ?? {})) {
+    const projected: LocalRole = { environments: [...role.environments] };
+    if (role.entityAllowlist !== undefined) {
+      projected.entityAllowlist = role.entityAllowlist;
+    }
+    if (role.entityDenylist !== undefined) {
+      projected.entityDenylist = role.entityDenylist;
+    }
+    roles[name] = projected;
+  }
+  const users: Record<string, LocalUser> = {};
+  for (const [id, user] of Object.entries(tenant.users ?? {})) {
+    users[id] = {
+      role: user.role,
+      enabled: user.enabled ?? true,
+      tokens: user.tokens.map((token) => ({
+        id: token.id,
+        hash: token.hash,
+        expiresAt: token.expiresAt,
+        revoked: token.revoked ?? false,
+      })),
+    };
+  }
+  return { roles, users, environments: Object.keys(tenant.environments).sort() };
+}
+
+/**
+ * The whole hosted auth snapshot (S1–S3): reads ONE raw JSON config snapshot
+ * and validates both credential spaces WITHOUT resolving any SSFF secret and
+ * without network access. The legacy slice matches `loadTenantKeyDirectory`
+ * exactly; the local slice carries roles, users and tokens (hashes only).
+ *
+ * Fail-closed collision gate: ANY duplicated credential hash — a named token
+ * hash twice (within one user, across users or across tenants) or a named
+ * hash colliding with a legacy key digest — is a CONFIG_INVALID, even when
+ * the records are expired, revoked or disabled: a rejected named token must
+ * never gain access through another record sharing its hash. Legacy-vs-
+ * legacy duplicates keep the existing resolveTenant ambiguity semantics.
+ */
+export async function loadHostedAuthDirectory(
+  options: Pick<LoadConfigOptions, "configPath" | "readFile"> = {},
+): Promise<HostedAuthDirectory> {
+  const filePath = options.configPath ?? defaultConfigPath();
+  const readFile = options.readFile ?? ((p: string) => fs.readFile(p, "utf-8"));
+
+  let raw: string;
+  try {
+    raw = await readFile(filePath);
+  } catch {
+    throw new SanitizedError("CONFIG_INVALID", `configuration file at ${CONFIG_TILDE_PATH} could not be read`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new SanitizedError("CONFIG_INVALID", `configuration file at ${CONFIG_TILDE_PATH} is not valid JSON`);
+  }
+  // Same shape rule as loadTenantKeyDirectory (identical message): the flat
+  // shape declares no hosted credentials at all, so it fails closed here too.
+  if (!hasOwnKey(parsed, "tenants")) {
+    throw new SanitizedError(
+      "CONFIG_INVALID",
+      `configuration file at ${CONFIG_TILDE_PATH} has no "tenants" level; hosted mode requires tenants with apiKeyHash`,
+    );
+  }
+  const result = tenantsFormSchema.safeParse(parsed);
+  if (!result.success) {
+    throw new SanitizedError(
+      "CONFIG_INVALID",
+      `configuration file at ${CONFIG_TILDE_PATH} is invalid: ${sanitizeIssueText(formatIssues(result.error))}`,
+    );
+  }
+
+  const legacyKeys = projectTenantKeys(result.data.tenants);
+  const tenants: Record<string, LocalTenantAuth> = {};
+  for (const [id, tenant] of Object.entries(result.data.tenants)) {
+    tenants[id] = toLocalTenantAuth(tenant);
+  }
+  const directory: HostedAuthDirectory = { legacyKeys, tenants, rawConfig: raw };
+  if (hasCredentialCollision(directory)) {
+    throw new SanitizedError(
+      "CONFIG_INVALID",
+      `configuration file at ${CONFIG_TILDE_PATH} is invalid: local auth token hashes must be unique across users and tenants and must not collide with legacy API key hashes`,
+    );
   }
   return directory;
 }
