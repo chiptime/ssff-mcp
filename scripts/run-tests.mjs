@@ -17,7 +17,7 @@ const files = readdirSync(dir)
   .map((name) => path.join(dir, name));
 
 if (files.length === 0) {
-  console.error(`no compiled test files found in ${dir}; run the build first`);
+  console.error("no compiled test files found in dist/test; run the build first");
   process.exit(1);
 }
 
