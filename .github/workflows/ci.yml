@@ -3,12 +3,13 @@
 # The OS matrix is the point: phase 3 explicitly targeted Linux, macOS and
 # Windows, and the failure modes we have hit are platform-specific (POSIX
 # permission bits vs Windows ACLs, CRLF line endings on STDIO, per-OS cache
-# directories). Node is pinned to 20 because engines requires >= 20 and the
-# code uses no newer API, so a second major would double the minutes for little
-# extra signal.
+# directories). Node 20 is the engines floor and runs on every OS; a single
+# Linux job on Node 22 covers the tests that need a newer test-only API.
 #
 # pnpm has no "packageManager" field in package.json, so the version is pinned
-# here; lockfileVersion is 9.0, which pnpm 9, 10 and 11 all write.
+# here; lockfileVersion is 9.0, which pnpm 9, 10 and 11 all write. It must be
+# pnpm 10: pnpm 11 requires Node >= 22.13 and fails to start on this Node 20
+# matrix (ERR_UNKNOWN_BUILTIN_MODULE node:sqlite).
 
 name: CI
 
@@ -22,22 +23,28 @@ permissions:
 
 jobs:
   test:
-    name: ${{ matrix.os }} / node 20
+    name: ${{ matrix.os }} / node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [20]
+        # One extra Linux job on Node 22: tests that need module.registerHooks
+        # (Node >= 22.15) skip on Node 20 and must still run somewhere.
+        include:
+          - os: ubuntu-latest
+            node: 22
     steps:
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 11
+          version: 10
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node }}
           cache: pnpm
 
       - name: Install

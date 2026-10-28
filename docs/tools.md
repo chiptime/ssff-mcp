@@ -1,7 +1,13 @@
 # Tools & Resources
 
-> Part of [ssff-mcp](../README.md). The five tools, the MCP resources, and the
-> query semantics that apply to all reads.
+> Part of [ssff-mcp](../README.md). The five tools, the MCP resources and
+> prompts, and the query semantics that apply to all reads.
+
+| Primitive | Who uses it | What it does |
+|---|---|---|
+| **Tools** | The model calls them | Read data or the data model (one GET per call, policy-checked). |
+| **Resources** | The client or model reads them by URI | Expose the schema and catalogs without a data query. |
+| **Prompts** | The user picks them in the client | Text-only templates that guide the assistant; they never read data. |
 
 Everything the server exposes is **read-only**: no tool can write, and there is
 no input surface for HTTP methods or headers. Data reads dispatch exactly one
@@ -142,6 +148,29 @@ query. Resources take no parameters (so the guidance locale uses only
 | `sf://{environment}/entities` | Lightweight catalog of entity **names** (`{ name }`), allowlist-filtered. |
 | `sf://{environment}/entities/{entitySet}` | Exhaustive entity schema: keys, typed properties (`Edm.*`, nullable) and navigation properties with cardinality. For Custom MDF entities it also carries `isCustom`, `isEffectiveDated`, `employeeLink` and `guidance`. |
 | `sf://{environment}/mdf/custom` | Compact catalog of the allowlisted Custom MDF (`cust_*`) entities: `totalCount`, `employeeLinkedCount`, and per entity `name`, `isEffectiveDated`, `linkType`, `targetEntity?`, `matchField?`. |
+
+The four URI templates are always advertised by `resources/templates/list`, even
+with no configuration. `resources/list` enumerates the parameterless resources
+(`overview`, `entities`, `mdf/custom`) once per configured environment, and is
+empty when no configuration can be read; per-entity schemas are read by URI.
+
+## MCP prompts
+
+Prompts are reusable templates the user selects in their client (often as a slash
+command). They **only build text**: generating one never reads the configuration,
+never contacts SuccessFactors and never embeds URLs, credentials or data. Every
+read still goes through the tools and their allowlist/role checks.
+
+| Prompt | Arguments | What it asks the assistant to do |
+|---|---|---|
+| `explore_entity` | `entitySet` (required), `environment` (optional) | Inspect the entity with `inspect_entity` (or its schema resource), summarize keys, properties, effective dating and navigations, and propose example reads without running them. |
+| `prepare_read_query` | `entitySet` and `goal` (required), `environment` (optional) | Inspect the entity, then draft one bounded `query_entity` call (filter, `select`, small `top`, `asOfDate` or `fromDate`/`toDate` when effective-dated) and wait for confirmation before running it. |
+
+Without `environment`, the prompt tells the assistant to pick one with
+`list_environments`. Arguments are validated before any text is produced:
+`entitySet` must match `^[A-Za-z_][A-Za-z0-9_]*$`, `environment` must be a
+single line (at most 100 characters) and `goal` is limited to 1000 characters.
+Invalid arguments are rejected with an MCP invalid-params error.
 
 ## Custom MDF discovery
 

@@ -4,6 +4,7 @@
 [![license](https://img.shields.io/npm/l/ssff-mcp.svg)](LICENSE)
 [![node](https://img.shields.io/node/v/ssff-mcp.svg)](package.json)
 [![CI](https://github.com/chiptime/ssff-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/chiptime/ssff-mcp/actions/workflows/ci.yml)
+[![MCP Badge](https://lobehub.com/badge/mcp/chiptime-ssff-mcp)](https://lobehub.com/mcp/chiptime-ssff-mcp)
 
 ![ssff-mcp — read-only MCP server for SAP SuccessFactors OData v2](assets/banner.svg)
 
@@ -209,7 +210,10 @@ least-privileged, read-only SuccessFactors account. Details in
 | `batch_get` | Runs up to 180 read-only GETs in one GET-only `$batch` request. |
 
 Plus read-only [MCP resources](docs/tools.md#mcp-resources) for browsing the
-schema. Full argument reference: **[Tools & Resources →](docs/tools.md)**.
+schema, and two [MCP prompts](docs/tools.md#mcp-prompts) (`explore_entity`,
+`prepare_read_query`) that guide the assistant through schema inspection and a
+bounded, confirmed read. Full argument reference:
+**[Tools & Resources →](docs/tools.md)**.
 
 ## 📚 Documentation
 
@@ -217,7 +221,7 @@ schema. Full argument reference: **[Tools & Resources →](docs/tools.md)**.
 |---|---|
 | [Configuration](docs/configuration.md) | Config path, fields, Basic/OAuth auth, secret providers, entity allowlist, inline mode, locale, response-size cap. |
 | [Picklists Architecture](docs/picklists.md) | Picklist resolution, two-tier L1/L2 lazy cache, ID retention (`optionId` + `label`), pagination and invalidation. |
-| [Tools & Resources](docs/tools.md) | The five tools and their arguments, query encoding and effective dating, pagination/cursors, MCP resources, Custom MDF discovery, picklist resolution, examples. |
+| [Tools & Resources](docs/tools.md) | The five tools and their arguments, query encoding and effective dating, pagination/cursors, MCP resources and prompts, Custom MDF discovery, picklist resolution, examples. |
 | [FAQ & comparison](docs/faq.md) | Common questions and how it compares to the SF UI, raw OData and ad-hoc scripts. |
 | [Security](docs/security.md) | Read-only guarantees, secrets, logging, metadata cache, limits and scope. |
 | [Troubleshooting](docs/troubleshooting.md) | Every error code and how to fix it. |

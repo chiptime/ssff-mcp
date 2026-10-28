@@ -27,6 +27,7 @@
   "engines": {
     "node": ">=20"
   },
+  "types": "dist/src/types.d.ts",
   "bin": {
     "ssff-mcp": "dist/src/index.js"
   },
@@ -40,7 +41,7 @@
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "pnpm clean && tsc",
     "prepack": "npm run build",
-    "test": "pnpm build && node --test dist/test/",
+    "test": "pnpm build && node scripts/run-tests.mjs",
     "typecheck": "tsc --noEmit",
     "docs:gen": "pnpm build && node scripts/generate-tools-doc.mjs",
     "start": "node dist/src/index.js"

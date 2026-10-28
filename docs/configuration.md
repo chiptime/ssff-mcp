@@ -94,12 +94,27 @@ The file accepts **two shapes**:
 {
   "tenants": {
     "acme": {
-      "apiKeyHash": "64-hex sha-256 digest of the client-wide key",
+      "apiKeyHash": "6e67f409d0c03a8c8b5772723fa045b34013028a81cd6817379b70d109c2de99",
       "entityAllowlist": [ { "entity": "User" }, { "entity": "EmpJob" } ],
       "entityDenylist":  [ { "entity": "PerPersonal" } ],
       "environments": {
-        "dev":  { "baseUrl": "…", "auth": { "…": "…" }, "apiKeyHash": "…only reaches dev…" },
-        "prod": { "baseUrl": "…", "auth": { "…": "…" } }
+        "dev": {
+          "baseUrl": "https://apisalesdemo4.successfactors.com",
+          "auth": {
+            "type": "basic",
+            "username": "integration@acmedev",
+            "password": { "fromEnv": "SF_ACME_DEV_PASSWORD" }
+          },
+          "apiKeyHash": "5ee93c98440a012f04a0f3c545f3397f8a273c1e511fc86fa4445ad8a6b1c200"
+        },
+        "prod": {
+          "baseUrl": "https://api4.successfactors.com",
+          "auth": {
+            "type": "basic",
+            "username": "integration@acme",
+            "password": { "fromEnv": "SF_ACME_PROD_PASSWORD" }
+          }
+        }
       }
     }
   },
@@ -107,6 +122,10 @@ The file accepts **two shapes**:
   "maxResponseBytes": 262144
 }
 ```
+
+The two `apiKeyHash` values are example digests; generate your own with
+`ssff-mcp key generate` (or hash an existing key with `ssff-mcp key hash`). The
+tenant-level key reaches `dev` and `prod`; the `dev` key reaches only `dev`.
 
 Semantics:
 
@@ -121,6 +140,36 @@ Semantics:
 - **Combining both shapes** (`environments` and `tenants` at the root) is
   ambiguous and rejected.
 - `defaultLocale` and `maxResponseBytes` stay **global** in both shapes.
+
+## TypeScript types
+
+If you generate `config.json` (or MCP tool calls) from TypeScript, the package
+ships type-only declarations derived from the same schemas the server validates
+with:
+
+```ts
+import type { ConfigFile, FlatConfigFile, TenantsConfigFile, QueryEntityArguments } from "ssff-mcp";
+
+const config: FlatConfigFile = {
+  environments: {
+    prod: {
+      baseUrl: "https://api4.successfactors.com",
+      auth: { type: "basic", username: "apiuser@company", password: { fromEnv: "SF_PASSWORD" } },
+    },
+  },
+};
+```
+
+Exported names: `ConfigFile` (either shape), `FlatConfigFile`,
+`TenantsConfigFile`, `SecretProvider`, and the tool arguments
+`ListEnvironmentsArguments`, `InspectEntityArguments`,
+`ResolvePicklistArguments`, `QueryEntityArguments` and `BatchGetArguments`.
+
+- **Types only.** The package is a CLI; there is no runtime library API, so use
+  `import type`. Anything else under `dist/src` is internal and may change.
+- **Structural.** The types catch wrong field names and shapes; value rules
+  (URLs, duplicates, cross-references such as role environments) are still
+  checked when the server loads the file.
 
 ## Fields
 
