@@ -135,3 +135,22 @@ test("prompt arguments are validated: required, entity set name grammar and boun
     await assert.rejects(client.getPrompt({ name: "unknown_prompt", arguments: {} }));
   });
 });
+
+test("prompt argument limits are inclusive: a 1000-character goal and a 100-character environment are accepted", async () => {
+  const { fetch, requests } = recordingFetch(standardSfResponder({ d: { results: [] } }));
+  await withTestServer({ configPath: await missingConfigPath(), env: {}, fetchImpl: fetch }, async (client) => {
+    const goal = "g".repeat(1000);
+    const environment = "e".repeat(100);
+    const text = promptText(await client.getPrompt({
+      name: "prepare_read_query",
+      arguments: { environment, entitySet: "cust_Equipo", goal },
+    }));
+    assert.ok(text.includes(goal));
+    assert.ok(text.includes(`environment "${environment}"`));
+    await assert.rejects(client.getPrompt({
+      name: "explore_entity",
+      arguments: { environment: "e".repeat(101), entitySet: "User" },
+    }));
+  });
+  assert.equal(requests.length, 0);
+});
