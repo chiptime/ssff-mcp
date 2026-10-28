@@ -161,12 +161,11 @@ with isolated tenants, environment-scoped legacy keys, and fixed MCP users with
 personal tokens and tenant-local roles. Local STDIO stays the
 default (a non-empty `PORT` selects HTTP). For the Dokploy pilot — mounted config,
 TLS, secrets, and remote-client examples — see **[Hosting →](docs/hosting.md)**.
-The `0.7.0-rc.1` release candidate is for opt-in hosted-user testing. Once it
-has been published, select it explicitly with `npm install -g ssff-mcp@0.7.0-rc.1`
-or the `next` tag; `latest` remains the stable channel. No finished deployment
-or IAS integration is claimed. For local users, token rotation/revocation and a
-loopback backend behind HTTPS, see **[Personal-token hosting →](docs/local-users-hosting.md)**.
-Maintainers: [release-candidate publication checklist](docs/release-0.7.0-rc.1.md).
+Hosted mode and personal tokens ship in the stable `0.7.0` release; no finished
+production deployment or IAS integration is claimed. For local users, token
+rotation/revocation and a loopback backend behind HTTPS, see
+**[Personal-token hosting →](docs/local-users-hosting.md)**.
+Maintainers: [release publication checklist](docs/release-0.7.0.md).
 
 The usual way is the `ssff-mcp init` wizard (see Getting started above): it
 writes `~/.config/ssff-mcp/config.json` and prints the block for your client. To

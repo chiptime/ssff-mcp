@@ -12,6 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-10-28
+
+Stable release of the 0.7 line for the `latest` channel. It includes everything
+in [0.7.0-rc.1](#070-rc1--2026-10-25) plus the changes below. Local STDIO
+usage keeps working with existing flat configurations. The hosted
+personal-token deployment (VPS/Dokploy, real TLS proxy) and IAS remain
+unverified in production and are not claimed by this release; this is not a
+1.0 compatibility commitment.
+
 ### Added
 
 - **MCP prompts:** `explore_entity` and `prepare_read_query`, text-only
@@ -31,6 +40,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tests pinning resource discoverability: all four resource templates are
   advertised without configuration, and configured environments enumerate
   their parameterless resources.
+
+### Fixed
+
+- **CI runs again:** pnpm is pinned to 10 (pnpm 11 cannot start on the Node 20
+  matrix), an Ubuntu Node 22 job runs the tests that need
+  `module.registerHooks`, and `pnpm test` lists compiled test files explicitly
+  (`scripts/run-tests.mjs`) because Node 22 rejects a directory argument.
+- Test isolation on the CI matrix: the Windows ACL warning test, CRLF
+  checkouts in the docs sync check, and a timing test measured as best of five
+  runs.
+- The multi-tenant example in `docs/configuration.md` is now a valid
+  configuration.
 
 ## [0.7.0-rc.1] — 2026-10-25
 
