@@ -413,14 +413,22 @@ test("windows platform emits Windows ACL warning instead of chmod 600", async ()
     }),
   );
   const warnings: string[] = [];
-  await loadConfig({
+  // The ACL warning is emitted once per process. On a real Windows host an
+  // earlier loadConfig in this file already emitted it, so use a fresh module
+  // instance whose once-flag is still unset.
+  const fresh = (await import(new URL("../src/config.js?windows-acl-test", import.meta.url).href)) as {
+    loadConfig: typeof loadConfig;
+  };
+  await fresh.loadConfig({
     configPath: filePath,
     platform: "win32",
     statFile: async () => ({ mode: 0o666 }),
     onWarning: (msg) => warnings.push(msg),
   });
-  assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /running on Windows; ensure access to .* is restricted using Windows ACLs/);
+  // A fresh instance may also emit its own once-per-process legacy-shape notice.
+  const permissionWarnings = warnings.filter((msg) => /Windows ACLs|chmod 600/.test(msg));
+  assert.equal(permissionWarnings.length, 1);
+  assert.match(permissionWarnings[0]!, /running on Windows; ensure access to .* is restricted using Windows ACLs/);
 });
 
 test("posix platform emits chmod 600 warning for loose permissions", async () => {

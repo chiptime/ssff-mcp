@@ -19,7 +19,8 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const docPath = path.join(repoRoot, "docs", "tools.md");
 
 function readDoc(): string {
-  return readFileSync(docPath, "utf8");
+  // A Windows checkout may convert line endings to CRLF; the generator emits LF.
+  return readFileSync(docPath, "utf8").replace(/\r\n/g, "\n");
 }
 
 test("docs/tools.md is present and carries the generation markers", () => {
