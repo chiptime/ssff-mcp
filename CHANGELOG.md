@@ -12,6 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Personal tokens are no longer restricted to loopback peers: they authenticate
+  from any peer, like legacy keys, so the server works behind any standard
+  HTTPS reverse proxy (e.g. a Dokploy domain). The `403 personal-token access
+  requires the loopback HTTPS proxy` response is gone. TLS remains the ingress's
+  responsibility; never expose the backend port directly.
+
 ## [0.7.0] — 2026-10-28
 
 Stable release of the 0.7 line for the `latest` channel. It includes everything

@@ -293,15 +293,9 @@ export function startHttpServer(options: ServeHttpOptions = {}): Promise<Running
       requestLog(req, 401, startedAt);
       return;
     }
+    // Personal tokens and legacy keys authenticate the same way from any
+    // peer; TLS is enforced by the operator's ingress, not by this process.
     const { resolution } = context;
-    if (resolution.authType === "named_user" &&
-        !["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress ?? "")) {
-      // Personal tokens enter through a loopback TLS-terminating proxy in
-      // production, not public plaintext HTTP or spoofable forwarding headers.
-      sendJson(res, 403, { error: "personal-token access requires the loopback HTTPS proxy" });
-      requestLog(req, 403, startedAt);
-      return;
-    }
 
     const sessionIdHeader = req.headers["mcp-session-id"];
     const sessionId = typeof sessionIdHeader === "string" && sessionIdHeader.length > 0 ? sessionIdHeader : undefined;
