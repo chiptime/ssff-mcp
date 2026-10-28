@@ -8,7 +8,9 @@
 # extra signal.
 #
 # pnpm has no "packageManager" field in package.json, so the version is pinned
-# here; lockfileVersion is 9.0, which pnpm 9, 10 and 11 all write.
+# here; lockfileVersion is 9.0, which pnpm 9, 10 and 11 all write. It must be
+# pnpm 10: pnpm 11 requires Node >= 22.13 and fails to start on this Node 20
+# matrix (ERR_UNKNOWN_BUILTIN_MODULE node:sqlite).
 
 name: CI
 
@@ -33,7 +35,7 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 11
+          version: 10
 
       - uses: actions/setup-node@v4
         with:
