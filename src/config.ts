@@ -439,6 +439,15 @@ const tenantsFormSchema = z
   })
   .strict();
 
+/**
+ * Public on-disk shapes of `config.json`, derived from the validation schemas
+ * so they cannot drift. Structural only: refinements (URL rules, duplicate
+ * checks, cross-references) are still enforced at load time.
+ */
+export type FlatConfigFile = z.input<typeof configSchema>;
+export type TenantsConfigFile = z.input<typeof tenantsFormSchema>;
+export type ConfigFile = FlatConfigFile | TenantsConfigFile;
+
 export function defaultConfigPath(): string {
   return path.join(os.homedir(), ".config", "ssff-mcp", "config.json");
 }

@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   SuccessFactors; arguments are validated (entity set grammar, single-line
   environment, goal up to 1000 characters). Hosted audit logs record
   `prompts/list` and `prompts/get` as fixed operation names.
+- **TypeScript declarations (type-only):** `import type { ConfigFile,
+  QueryEntityArguments, … } from "ssff-mcp"` types `config.json` (flat and
+  multi-tenant shapes) and the five tools' arguments, derived from the
+  validation schemas. `package.json` gains a `types` entry; there is still no
+  `main`/`exports`, so the CLI remains the only runtime surface and existing
+  deep imports keep resolving. The published tarball now includes `.d.ts`
+  files (about 40 KB more).
 - README badge for the LobeHub MCP catalog listing.
 - Tests pinning resource discoverability: all four resource templates are
   advertised without configuration, and configured environments enumerate

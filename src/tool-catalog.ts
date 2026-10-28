@@ -251,6 +251,13 @@ export const batchGetSchema = z
   })
   .strict();
 
+/** Public argument shapes accepted by each tool (what a client sends). */
+export type ListEnvironmentsArguments = z.input<typeof listEnvironmentsSchema>;
+export type InspectEntityArguments = z.input<typeof inspectEntitySchema>;
+export type ResolvePicklistArguments = z.input<typeof resolvePicklistSchema>;
+export type QueryEntityArguments = z.input<typeof queryEntitySchema>;
+export type BatchGetArguments = z.input<typeof batchGetSchema>;
+
 export interface ToolCatalogEntry {
   /** Registered MCP tool name. */
   name: string;
