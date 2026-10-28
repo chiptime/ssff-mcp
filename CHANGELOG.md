@@ -12,6 +12,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **MCP prompts:** `explore_entity` and `prepare_read_query`, text-only
+  templates that guide schema inspection and one bounded, user-confirmed
+  `query_entity` read. They never read configuration or contact
+  SuccessFactors; arguments are validated (entity set grammar, single-line
+  environment, goal up to 1000 characters). Hosted audit logs record
+  `prompts/list` and `prompts/get` as fixed operation names.
+- README badge for the LobeHub MCP catalog listing.
+- Tests pinning resource discoverability: all four resource templates are
+  advertised without configuration, and configured environments enumerate
+  their parameterless resources.
+
 ## [0.7.0-rc.1] — 2026-10-25
 
 Release candidate for explicit `next`-channel testing. This entry does not claim

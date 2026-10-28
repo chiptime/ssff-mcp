@@ -145,7 +145,7 @@ function auditOperation(body: unknown): string {
   const method = body.method;
   return typeof method === "string" && [
     "initialize", "tools/call", "tools/list", "resources/read", "resources/list",
-    "resources/templates/list", "notifications/initialized", "ping",
+    "resources/templates/list", "prompts/list", "prompts/get", "notifications/initialized", "ping",
   ].includes(method) ? method : "rpc";
 }
 

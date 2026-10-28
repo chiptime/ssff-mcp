@@ -373,3 +373,19 @@ test("local users: conflicting personal credentials reject, identical headers an
   }
   assert.equal(f.recorded.requests.length, before);
 });
+
+test("local users: prompts are served over HTTP, audited by fixed operation name, and never reach SuccessFactors", async (t) => {
+  const f = await fixture(t);
+  const session = await f.initialize(f.alice);
+  const listed = await f.rpc(f.alice, session, "prompts/list");
+  assert.deepEqual(listed.data.result.prompts.map((prompt: { name: string }) => prompt.name).sort(),
+    ["explore_entity", "prepare_read_query"]);
+  const prompt = await f.rpc(f.alice, session, "prompts/get",
+    { name: "explore_entity", arguments: { environment: "prod", entitySet: "User" } });
+  assert.match(prompt.data.result.messages[0].content.text, /entitySet "User"/);
+  const operations = f.logs.map((line) => JSON.parse(line))
+    .filter((entry) => entry.userId === "alice").map((entry) => entry.operation);
+  assert.ok(operations.includes("prompts/list"), JSON.stringify(operations));
+  assert.ok(operations.includes("prompts/get"), JSON.stringify(operations));
+  assert.equal(f.recorded.requests.length, 0);
+});

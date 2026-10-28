@@ -49,6 +49,7 @@ import { makeLogger, type LogSink, type Logger } from "./logger.js";
 import { isCustomMdfEntity, isEmployeeLinkedType } from "./mdf.js";
 import { MetadataService, type EntitySchema } from "./metadata.js";
 import { PicklistService, resolvePicklistLocale, planPicklistExpansion, type PicklistExpansionPlan } from "./picklists.js";
+import { registerPrompts } from "./prompts.js";
 import { exceedsResponseCap, responseTooLargeError, resolveMaxResponseBytes } from "./size-guard.js";
 import {
   buildQuery,
@@ -1876,6 +1877,9 @@ export function createMcpServer(deps: ServerDeps = {}): McpServer {
       };
     },
   );
+
+  // --- MCP Prompts: text-only interaction templates (no config, no network) --
+  registerPrompts(server);
 
   return server;
 }
