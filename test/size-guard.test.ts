@@ -22,7 +22,7 @@ function bigRecords(count: number): unknown[] {
 }
 
 function boundaryOf(init: AnyFetchInit): string {
-  return /boundary=(batch_\d+)$/.exec(init.headers["Content-Type"] ?? "")![1]!;
+  return /boundary=(batch_[A-Za-z0-9_-]+)$/.exec(init.headers["Content-Type"] ?? "")![1]!;
 }
 
 function batchResponse(boundary: string, bodies: string[], contentType = "application/json"): FakeResponse {

@@ -12,6 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Dependencies:** `odata-batch` upgraded from 2.1.0 to 3.1.0 (still pinned
+  exactly). Generated `$batch` boundaries are now CSPRNG UUIDs instead of
+  timestamps; the outbound envelope guard already accepted that format. The
+  library's 3.x parser also changes `batch_get` responses: parts whose MIME
+  headers start with `Content-ID`, and JSON bodies containing blank lines, now
+  parse instead of failing; raw XML bodies have LF line breaks normalized to
+  CRLF.
+
 ## [0.7.0] — 2026-10-28
 
 Stable release of the 0.7 line for the `latest` channel. It includes everything
