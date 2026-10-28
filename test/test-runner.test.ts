@@ -16,7 +16,11 @@ test("the compiled-test runner forwards arguments and preserves failure statuses
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
   mkdirSync(path.join(cwd, "dist", "test"), { recursive: true });
   const runner = fileURLToPath(new URL("../../scripts/run-tests.mjs", import.meta.url));
-  const run = (...args: string[]) => spawnSync(process.execPath, [runner, ...args], { cwd, encoding: "utf8" });
+  // Without this, a nested `node --test` reports into the parent test run
+  // (NODE_TEST_CONTEXT is inherited) instead of exiting with its own status.
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const run = (...args: string[]) => spawnSync(process.execPath, [runner, ...args], { cwd, env, encoding: "utf8" });
 
   const empty = run();
   assert.equal(empty.status, 1);
@@ -33,7 +37,7 @@ test("the compiled-test runner forwards arguments and preserves failure statuses
   assert.equal(run().status, 0);
 
   const option = "--invalid-runner-probe";
-  const direct = spawnSync(process.execPath, ["--test", option]);
+  const direct = spawnSync(process.execPath, ["--test", option], { cwd, env });
   assert.notEqual(direct.status, 0);
   assert.equal(run(option).status, direct.status);
 });
