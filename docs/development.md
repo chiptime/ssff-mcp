@@ -13,7 +13,7 @@
 ```bash
 pnpm install
 pnpm build          # cleans dist, then runs tsc
-pnpm test           # builds, then runs node --test dist/test/
+pnpm test           # builds, then runs node --test on every dist/test/*.test.js
 pnpm typecheck      # tsc --noEmit
 pnpm docs:gen       # regenerates the tools section of docs/tools.md
 ```
