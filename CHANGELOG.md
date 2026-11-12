@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-11-12
+
+Promotes the personal-token proxy change that was prepared after 0.7.0 was
+packaged, plus two install-path corrections.
+
 ### Changed
 
 - Personal tokens are no longer restricted to loopback peers: they authenticate
@@ -19,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HTTPS reverse proxy (e.g. a Dokploy domain). The `403 personal-token access
   requires the loopback HTTPS proxy` response is gone. TLS remains the ingress's
   responsibility; never expose the backend port directly.
+- `engines.node` is now `>=20.12`, matching the `@clack/prompts` floor the
+  `init` wizard depends on. Node 20.0–20.11 is still refused by npm only as a
+  warning, so the declared floor is now honest.
+- The `CONFIG_MISSING` remediation now names `ssff-mcp init` first: a fresh
+  `npx` install has no repository to copy `config.template.json` from.
 
 ## [0.7.0] — 2026-10-28
 

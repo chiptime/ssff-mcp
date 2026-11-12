@@ -5,7 +5,7 @@
 
 ## Requirements
 
-- Node.js >= 20
+- Node.js >= 20.12
 - pnpm
 
 ## Build and test

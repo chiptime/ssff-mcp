@@ -32,6 +32,8 @@ test("missing config file yields CONFIG_MISSING naming the tilde path and templa
       const err = expectSanitized(error, "CONFIG_MISSING");
       assert.match(err.message, /~\/\.config\/ssff-mcp\/config\.json/);
       assert.match(err.message, /config\.template\.json/);
+      // The documented fix is the wizard; a fresh install has no repository.
+      assert.match(err.message, /ssff-mcp init/);
       // Must not leak the resolved absolute path ($HOME).
       assert.ok(!err.message.includes(os.homedir()));
       return true;

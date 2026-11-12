@@ -44,7 +44,7 @@ construction. See the full [comparison](docs/faq.md#how-it-compares).
 
 ## 📋 Requirements
 
-- **Node.js >= 20** (Linux, macOS, Windows).
+- **Node.js >= 20.12** (Linux, macOS, Windows).
 - Any MCP client: OpenCode, Claude Desktop, Cursor, Codex, Pi, or another.
 - **pnpm** — only if you build from source. The installed CLI needs nothing
   beyond Node.

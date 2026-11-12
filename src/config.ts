@@ -734,7 +734,7 @@ function synthesizeInlineConfig(env: NodeJS.ProcessEnv): SsffConfig {
   if (effectiveBaseUrl === undefined || (password === undefined && privateKey === undefined)) {
     throw new SanitizedError(
       "CONFIG_MISSING",
-      `configuration file not found at ${CONFIG_TILDE_PATH}; inline mode requires SF_BASE_URL or SF_DATACENTER plus SF_PASSWORD or SF_PRIVATE_KEY, or copy ${CONFIG_TEMPLATE_NAME} from the ssff-mcp repository to that exact path and fill in the placeholders`,
+      `configuration file not found at ${CONFIG_TILDE_PATH}; run "ssff-mcp init" to create it, or set SF_BASE_URL or SF_DATACENTER plus SF_PASSWORD or SF_PRIVATE_KEY for inline mode, or copy ${CONFIG_TEMPLATE_NAME} to that exact path and fill in the placeholders`,
     );
   }
 
