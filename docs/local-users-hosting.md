@@ -9,14 +9,15 @@ login, MFA, IAS, an administration UI or automatic deployment.
 1. Generate a personal token with `ssff-mcp key generate`. Put only its hash in
    the intended tenant's user record, with an explicit role and expiry. Follow
    [Local user configuration](local-auth-config.md) and [Token operations](token-operations.md).
-2. Start the backend on the VPS loopback interface, using the mounted config:
+2. Start the backend with the mounted config, reachable only by your proxy
+   (a loopback interface or a private container network):
 
    ```bash
-   ssff-mcp serve --host 127.0.0.1 --port 8080 --config /etc/ssff-mcp/config.json
+   ssff-mcp serve --host 0.0.0.0 --port 8080 --config /etc/ssff-mcp/config.json
    ```
 
-3. Configure an HTTPS-terminating reverse proxy **on the same host/network
-   namespace** to forward `/mcp` to `http://127.0.0.1:8080/mcp`. Give it a valid
+3. Put it behind an HTTPS-terminating reverse proxy (Traefik, Caddy, Nginx, a
+   Dokploy domain, ...) that forwards `/mcp` to the backend. Give it a valid
    certificate and configure `SSFF_ALLOWED_HOSTS` for the exact Host value it
    forwards (hostname only, no scheme/port). Preserve `Authorization`,
    `Mcp-Session-Id`, and the MCP protocol headers. Support streaming responses,
@@ -29,12 +30,10 @@ login, MFA, IAS, an administration UI or automatic deployment.
    `Authorization: Bearer <personal-token>` header through its private secret
    store. No SSFF credential belongs on the client.
 
-The backend accepts personal-token requests only from a loopback peer; it does
-not trust `X-Forwarded-Proto`, `X-Forwarded-For`, or a caller's claimed HTTPS
-scheme. Loopback HTTP is allowed for local testing. The operator must enforce
-TLS at the actual ingress: this code does not install or validate a proxy or
-certificate. A remote/container proxy with a non-loopback backend peer will be
-rejected; do not relax the check or expose the backend to work around it.
+Personal tokens authenticate like legacy keys, from any network peer. The
+backend speaks plain HTTP and does not install, detect or validate TLS: the
+operator's ingress must enforce HTTPS. A backend port exposed directly to the
+internet sends tokens in cleartext.
 
 ## Example security model
 
@@ -111,7 +110,7 @@ node --test dist/test/local-users-http.test.js
 
 The versioned local smoke test invokes the token-generation CLI under a clean
 temporary HOME, creates a hash-only config outside the checkout, authenticates
-over loopback HTTP and checks both an allowed and denied operation against
+over local HTTP and checks both an allowed and denied operation against
 simulated SSFF. The same suite exercises role changes, revocation, expiry,
 rotation, schemas, navigation, batch rejection, XML downgrade, cursors,
 concurrent requests and audit exclusions. It does not access real SAP or IAS.

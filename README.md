@@ -163,7 +163,7 @@ default (a non-empty `PORT` selects HTTP). For the Dokploy pilot — mounted con
 TLS, secrets, and remote-client examples — see **[Hosting →](docs/hosting.md)**.
 Hosted mode and personal tokens ship in the stable `0.7.0` release; no finished
 production deployment or IAS integration is claimed. For local users, token
-rotation/revocation and a loopback backend behind HTTPS, see
+rotation/revocation and running behind an HTTPS proxy, see
 **[Personal-token hosting →](docs/local-users-hosting.md)**.
 Maintainers: [release publication checklist](docs/release-0.7.0.md).
 
