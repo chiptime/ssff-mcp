@@ -18,8 +18,8 @@ importers:
         specifier: ^5.0.0
         version: 5.11.2
       odata-batch:
-        specifier: 2.1.0
-        version: 2.1.0
+        specifier: 3.1.0
+        version: 3.1.0
       zod:
         specifier: ^3.25.0
         version: 3.25.76
@@ -370,8 +370,8 @@ packages:
     resolution: {integrity: sha512-W67iLl4J2EXEGTbfeHCffrjDfitvLANg0UlX3wFUUSTx92KXRFegMHUVgSqE+wvhAbi4WqjGg9czysTV2Epbew==}
     engines: {node: '>= 0.4'}
 
-  odata-batch@2.1.0:
-    resolution: {integrity: sha512-8zQe8QixSiJEn7ddOdNFsh48c1kgQVJ5jD57cYCoipGXPGUpfNkV7vXYQSJu/jJA7tTcpySyxYRF9XbubJt6EQ==}
+  odata-batch@3.1.0:
+    resolution: {integrity: sha512-vvvemJmQs6spdLMHbkFBU2tWgyxwHtc6EJyrX7mPHWCNpW5sGZYKMWWh53YxfTI5iMp1HrHw7gLqQdmvC+9Jhw==}
 
   on-finished@2.4.1:
     resolution: {integrity: sha512-oVlzkg3ENAhCk2zdv7IJwd/QUD4z2RxRwpkcGY8psCVcCYZNq4wYnVWALHM+brtuJjePWiYF/ClmuDr8Ch5+kg==}
@@ -888,7 +888,7 @@ snapshots:
 
   object-inspect@1.13.4: {}
 
-  odata-batch@2.1.0:
+  odata-batch@3.1.0:
     dependencies:
       axios: 1.20.0
     transitivePeerDependencies:

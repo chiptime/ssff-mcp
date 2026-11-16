@@ -48,7 +48,7 @@ interface BatchPart {
 function batchBoundaryOf(init: AnyFetchInit): string {
   assert.equal(init.method, "POST");
   const contentType = init.headers["Content-Type"] ?? "";
-  const match = /boundary=(batch_\d+)$/.exec(contentType);
+  const match = /boundary=(batch_[A-Za-z0-9_-]+)$/.exec(contentType);
   assert.ok(match !== null, `unexpected batch content-type: ${contentType}`);
   return match[1]!;
 }
@@ -178,7 +178,7 @@ test("batch_get dispatches exactly ONE $batch POST with GET-only direct parts an
       "Basic " + Buffer.from("apiuser@tenantA:secret-password-a").toString("base64"),
     );
     assert.equal(post.headers.Accept, "multipart/mixed");
-    assert.match(post.headers["Content-Type"] ?? "", /^multipart\/mixed; boundary=batch_\d+$/);
+    assert.match(post.headers["Content-Type"] ?? "", /^multipart\/mixed; boundary=batch_[A-Za-z0-9_-]+$/);
     assert.equal(post.headers["User-Agent"], `ssff-mcp/${PACKAGE_VERSION} (+mcp; ${process.platform})`);
     assert.equal(Object.keys(post.headers).length, 4);
     const lines = requestLinesOf(post.body);
@@ -186,8 +186,8 @@ test("batch_get dispatches exactly ONE $batch POST with GET-only direct parts an
     assert.ok(lines.every((line) => line.startsWith("GET ")));
     assert.ok(lines[0]!.includes("User?"));
     assert.ok(!/changeset/i.test(post.body));
-    assert.match(post.body, /^--batch_\d+\r\n/);
-    assert.match(post.body, /--batch_\d+--$/);
+    assert.match(post.body, /^--batch_[A-Za-z0-9_-]+\r\n/);
+    assert.match(post.body, /--batch_[A-Za-z0-9_-]+--$/);
     // Options pass through to the embedded URL with LITERAL $ prefixes:
     // SAP's $batch does not percent-decode inner request targets (verified
     // live: %24top=1 is silently ignored, $top=1 returns 1 record).

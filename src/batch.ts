@@ -3,7 +3,7 @@
  * DS-P2-01/DS-P2-04).
  *
  * Contract enforced here:
- * - The multipart envelope is built EXCLUSIVELY by `odata-batch` 2.1.0's
+ * - The multipart envelope is built EXCLUSIVELY by `odata-batch` 3.1.0's
  *   retrieve mode (`RetrieveCall[]`): direct `GET` parts, never `Call[]`,
  *   never changesets, never any library write surface (FR-31).
  * - `SsffBatchRepository` is a narrow adapter around that library: it
@@ -63,7 +63,7 @@ export interface BatchSendContext {
  * Structural view of the runtime parser class odata-batch hands to the
  * repository. The package's public types only expose `response`; the runtime
  * class also carries `parseData`/`parseResponse`, which the subclasses below
- * override (verified against odata-batch@2.1.0 dist).
+ * override (verified against odata-batch@3.1.0 dist).
  */
 interface BatchParserInstance {
   response: BatchResponseParsed[];
@@ -81,9 +81,10 @@ type BatchParserClass = new (
  * - json: tolerant embedded-body parse (an empty or non-JSON part body
  *   becomes `undefined` and surfaces as a sanitized per-item error instead
  *   of failing the whole envelope parse).
- * - xml: full raw bodies. The stock parser returns only the FIRST line for
- *   non-JSON accept and cuts the body at any embedded blank line; raw Atom
- *   bodies are required for `<entry>` counting and next-link extraction.
+ * - xml: full raw bodies, required for `<entry>` counting and next-link
+ *   extraction. odata-batch 3.x already returns the whole payload; the
+ *   re-join keeps the trailing framing CRLF that ssff-mcp has always returned.
+ *   The library normalizes every line break to CRLF before parsing.
  * All multipart/status/header parsing stays in the library (FR-31).
  */
 function buildSafeParser(
